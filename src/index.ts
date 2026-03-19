@@ -55,8 +55,12 @@ fastify.register(rawBody, {
 })
 
 // Supabase uses JWT for auth. We verify it using the Supabase JWT secret.
+// IMPORTANT: Supabase JWTs always have aud: "authenticated"
 fastify.register(jwt, {
-  secret: process.env.SUPABASE_JWT_SECRET!
+  secret: process.env.SUPABASE_JWT_SECRET!,
+  verify: {
+    allowedAudiences: ['authenticated']
+  }
 })
 
 fastify.register(authPlugin)
@@ -108,6 +112,11 @@ fastify.register(leadsRoutes, { prefix: '/leads' })
 fastify.register(analyticsRoutes, { prefix: '/analytics' })
 fastify.register(dashboardRoutes, { prefix: '/dashboard' })
 fastify.register(profileRoutes, { prefix: '/profile' })
+
+// Alias for /plans (used by frontend dashboard) to avoid 404
+fastify.get('/plans', async (request, reply) => {
+  return reply.redirect('/billing/plans', 301)
+})
 
 fastify.setNotFoundHandler((request, reply) => {
   reply.code(404).send({
