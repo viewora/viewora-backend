@@ -138,7 +138,7 @@ export default async function (fastify: FastifyInstance) {
 
     if (eventType === 'charge.success' || eventType === 'subscription.create') {
       if (!userId || !planId || !billingCycle) {
-        fastify.log.error('Webhook missing required metadata', event.data)
+        fastify.log.error({ data }, 'Webhook missing required metadata')
         return
       }
       // Upsert Subscription
