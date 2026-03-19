@@ -32,8 +32,12 @@ export default fp(async (fastify: FastifyInstance) => {
         })
       }
 
-      // Attach user to request. Routes expect request.user.id
-      request.user = user as any
+      // Attach user to request. 
+      // Existing routes expect request.user.sub (JWT standard)
+      request.user = {
+        ...user,
+        sub: user.id
+      } as any
     } catch (err: any) {
       request.log.error(`Auth exception: ${err.message}`)
       return reply.code(401).send({ error: { code: 'UNAUTHORIZED', message: 'Authentication error' } })
