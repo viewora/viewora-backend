@@ -86,7 +86,16 @@ fastify.setErrorHandler(function (error: FastifyError, request, reply) {
   })
 })
 
-// Health check
+// Root & Health check
+fastify.get('/', async () => {
+  return { 
+    message: 'Welcome to Viewora API', 
+    status: 'online', 
+    rebranded: true,
+    version: '1.0.0'
+  }
+})
+
 fastify.get('/health', async () => {
   return { status: 'ok', service: 'Viewora API' }
 })
