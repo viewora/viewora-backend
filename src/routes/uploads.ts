@@ -12,9 +12,10 @@ export default async function (fastify: FastifyInstance) {
     const userId = user.sub
     const body = request.body as any
 
-    const { propertyId, mediaType, fileName, contentType, fileSize } = body
+    const { spaceId, propertyId, mediaType, fileName, contentType, fileSize } = body
+    const finalId = spaceId || propertyId
 
-    if (!propertyId || !mediaType || !fileName || !contentType || !fileSize) {
+    if (!finalId || !mediaType || !fileName || !contentType || !fileSize) {
       return reply.code(400).send({ statusMessage: 'Missing required fields' })
     }
 
@@ -44,16 +45,16 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(403).send({ statusMessage: 'Storage limit reached. Please upgrade your plan.' })
     }
 
-    // 3. Verify Property Ownership
-    const { data: property, error: propErr } = await fastify.supabase
+    // 3. Verify Space Ownership
+    const { data: space, error: spaceErr } = await fastify.supabase
       .from('properties')
       .select('id')
-      .eq('id', propertyId)
+      .eq('id', finalId)
       .eq('user_id', userId)
       .single()
 
-    if (propErr || !property) {
-      return reply.code(403).send({ statusMessage: 'Unauthorized to upload to this property' })
+    if (spaceErr || !space) {
+      return reply.code(403).send({ statusMessage: 'Unauthorized to upload to this space' })
     }
 
     // 4. Define path
@@ -67,7 +68,7 @@ export default async function (fastify: FastifyInstance) {
     const fileExt = fileName.split('.').pop()
     const uniqueFileName = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${fileExt}`
     
-    let objectKey = `users/${userId}/properties/${propertyId}/${folder}/${uniqueFileName}`
+    let objectKey = `users/${userId}/spaces/${finalId}/${folder}/${uniqueFileName}`
     if (mediaType === 'logo') {
       objectKey = `users/${userId}/branding/${uniqueFileName}`
     }
@@ -94,7 +95,7 @@ export default async function (fastify: FastifyInstance) {
       const customDomain = process.env.MEDIA_DOMAIN || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
       const publicUrl = `${customDomain}/${objectKey}`
 
-      request.log.info({ userId, fileSize, type: mediaType }, 'Generated secure R2 signed upload URL')
+      request.log.info({ userId, fileSize, type: mediaType, spaceId: finalId }, 'Generated secure R2 signed upload URL')
       return reply.send({
         signedUrl,
         objectKey,
@@ -112,17 +113,18 @@ export default async function (fastify: FastifyInstance) {
     const userId = user.sub
     const body = request.body as any
 
-    const { propertyId, mediaType, objectKey, publicUrl, width, height, fileSize } = body
+    const { spaceId, propertyId, mediaType, objectKey, publicUrl, width, height, fileSize } = body
+    const finalId = spaceId || propertyId
 
-    // 1. Verify Property Ownership
-    const { data: property, error: propErr } = await fastify.supabase
+    // 1. Verify Space Ownership
+    const { data: space, error: spaceErr } = await fastify.supabase
       .from('properties')
       .select('id')
-      .eq('id', propertyId)
+      .eq('id', finalId)
       .eq('user_id', userId)
       .single()
 
-    if (propErr || !property) {
+    if (spaceErr || !space) {
       return reply.code(403).send({ statusMessage: 'Unauthorized' })
     }
 
@@ -130,7 +132,7 @@ export default async function (fastify: FastifyInstance) {
     const { data: media, error: mediaErr } = await fastify.supabase
       .from('property_media')
       .insert({
-        property_id: propertyId,
+        property_id: finalId,
         media_type: mediaType,
         storage_key: objectKey,
         public_url: publicUrl,
@@ -146,7 +148,7 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(500).send({ statusMessage: 'Failed to save media record' })
     }
 
-    request.log.info({ userId, mediaId: media.id, size: fileSize }, 'Completed media metadata R2 sync securely')
+    request.log.info({ userId, mediaId: media.id, size: fileSize, spaceId: finalId }, 'Completed media metadata R2 sync securely')
 
     // 3. Update storage counter via RPC
     if (fileSize) {

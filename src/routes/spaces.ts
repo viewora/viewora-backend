@@ -1,30 +1,30 @@
 import { FastifyInstance } from 'fastify'
-import { canCreateProperty, checkUserQuota } from '../utils/quotas.js'
+import { canCreateSpace, checkUserQuota } from '../utils/quotas.js'
 
 export default async function (fastify: FastifyInstance) {
-  // PUBLIC ROUTE: Get property by slug
+  // PUBLIC ROUTE: Get space by slug
   fastify.get('/by-slug/:slug', async (request, reply) => {
     const { slug } = request.params as any
     
-    const { data: property, error } = await fastify.supabase
+    const { data: space, error } = await fastify.supabase
       .from('properties')
       .select('*, property_media(*), property_360_settings(*)')
       .eq('slug', slug)
       .eq('is_published', true)
       .single()
 
-    if (error || !property) {
-      return reply.code(404).send({ statusMessage: 'Property not found or unpublished' })
+    if (error || !space) {
+      return reply.code(404).send({ statusMessage: 'Space not found or unpublished' })
     }
 
     reply.header('Cache-Control', 'public, max-age=60, s-maxage=300')
-    return reply.send(property)
+    return reply.send(space)
   })
 
-  // All other property routes require authentication
+  // All other space routes require authentication
   fastify.addHook('preHandler', fastify.authenticate)
 
-  // GET all user properties
+  // GET all user spaces
   fastify.get('/', async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
@@ -35,14 +35,16 @@ export default async function (fastify: FastifyInstance) {
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
 
-    if (error) {
-      return reply.code(500).send({ statusMessage: error.message })
-    }
+    const mappedData = (data || []).map(d => ({
+      ...d,
+      space_type: d.property_type,
+      property_type: undefined
+    }))
 
-    return reply.send(data || [])
+    return reply.send(mappedData)
   })
 
-  // GET specific property
+  // GET specific space
   fastify.get('/:id', async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
@@ -62,48 +64,61 @@ export default async function (fastify: FastifyInstance) {
       .single()
 
     if (error) {
-      return reply.code(404).send({ statusMessage: 'Property not found' })
+      return reply.code(404).send({ statusMessage: 'Space not found' })
     }
 
-    return reply.send(data)
+    const mappedSpace = {
+      ...data,
+      space_type: data.property_type,
+      property_type: undefined
+    }
+
+    return reply.send(mappedSpace)
   })
 
-  // CREATE property
+  // CREATE space
   fastify.post('/', async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
     const body = request.body as any
 
     // 1. Quota check
-    const allowed = await canCreateProperty(fastify, userId)
+    const allowed = await canCreateSpace(fastify, userId)
     if (!allowed) {
-      return reply.code(403).send({ statusMessage: 'Property creation limit reached for your current plan.' })
+      return reply.code(403).send({ statusMessage: 'Space creation limit reached for your current plan.' })
     }
 
-    // 2. Create property
-    const { data: property, error } = await fastify.supabase
+    // 2. Create space
+    const { data: space, error } = await fastify.supabase
       .from('properties')
       .insert({
         user_id: userId,
-        title: body.title || 'New Property',
+        title: body.title || 'New Space',
         description: body.description || null,
-        slug: body.slug || null
+        slug: body.slug || null,
+        property_type: body.space_type || body.property_type || null
       })
       .select()
       .single()
 
     if (error) {
       fastify.log.error(error)
-      return reply.code(500).send({ statusMessage: 'Failed to create property' })
+      return reply.code(500).send({ statusMessage: 'Failed to create space' })
+    }
+
+    const mappedSpace = {
+      ...space,
+      space_type: space.property_type,
+      property_type: undefined
     }
 
     // 3. Update usage counter (RPC defined in migration 013)
     await fastify.supabase.rpc('increment_active_properties', { u_id: userId })
 
-    return reply.code(201).send(property)
+    return reply.code(201).send(mappedSpace)
   })
 
-  // UPDATE property
+  // UPDATE space
   fastify.patch('/:id', async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
@@ -115,12 +130,15 @@ export default async function (fastify: FastifyInstance) {
     if (body.description !== undefined) updates.description = body.description
     if (body.cover_image_url !== undefined) updates.cover_image_url = body.cover_image_url
     if (body.location_text !== undefined) updates.location_text = body.location_text
-    if (body.property_type !== undefined) updates.property_type = body.property_type
+    
+    if (body.space_type !== undefined) updates.property_type = body.space_type
+    else if (body.property_type !== undefined) updates.property_type = body.property_type
+
     if (body.lead_form_enabled !== undefined) updates.lead_form_enabled = body.lead_form_enabled
     if (body.branding_enabled !== undefined) updates.branding_enabled = body.branding_enabled
     if (body.slug !== undefined) updates.slug = body.slug
 
-    const { data: property, error } = await fastify.supabase
+    const { data: space, error } = await fastify.supabase
       .from('properties')
       .update(updates)
       .eq('id', id)
@@ -129,13 +147,19 @@ export default async function (fastify: FastifyInstance) {
       .single()
 
     if (error) {
-      return reply.code(500).send({ statusMessage: 'Failed to update property' })
+      return reply.code(500).send({ statusMessage: 'Failed to update space' })
     }
 
-    return reply.send(property)
+    const mappedSpace = {
+      ...space,
+      space_type: space.property_type,
+      property_type: undefined
+    }
+
+    return reply.send(mappedSpace)
   })
 
-  // DELETE property
+  // DELETE space
   fastify.delete('/:id', async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
@@ -148,7 +172,7 @@ export default async function (fastify: FastifyInstance) {
       .eq('user_id', userId)
 
     if (error) {
-      return reply.code(500).send({ statusMessage: 'Failed to delete property' })
+      return reply.code(500).send({ statusMessage: 'Failed to delete space' })
     }
 
     // Decrement counter
@@ -157,7 +181,7 @@ export default async function (fastify: FastifyInstance) {
     return reply.code(204).send()
   })
 
-  // PUBLISH property
+  // PUBLISH space
   fastify.post('/:id/publish', async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
@@ -167,15 +191,15 @@ export default async function (fastify: FastifyInstance) {
     const isPublishing = body.publish === true
 
     // 1. Ownership & Current State
-    const { data: currentProp, error: fetchErr } = await fastify.supabase
+    const { data: currentSpace, error: fetchErr } = await fastify.supabase
       .from('properties')
       .select('*, property_media(id)')
       .eq('id', id)
       .eq('user_id', userId)
       .single()
 
-    if (fetchErr || !currentProp) {
-      return reply.code(404).send({ statusMessage: 'Property not found' })
+    if (fetchErr || !currentSpace) {
+      return reply.code(404).send({ statusMessage: 'Space not found' })
     }
 
     if (isPublishing) {
@@ -183,7 +207,7 @@ export default async function (fastify: FastifyInstance) {
       const { plan, canWrite, isGrace } = await checkUserQuota(fastify, userId)
 
       if (isGrace) {
-        return reply.code(403).send({ statusMessage: 'Publishing new properties is disabled during the grace period. Please renew your subscription.' })
+        return reply.code(403).send({ statusMessage: 'Publishing new spaces is disabled during the grace period. Please renew your subscription.' })
       }
       if (!canWrite) {
         return reply.code(403).send({ statusMessage: 'Your subscription is not active. Please check your billing status.' })
@@ -198,13 +222,13 @@ export default async function (fastify: FastifyInstance) {
       }
 
       // 4. Media Requirement Check
-      const mediaCount = currentProp.property_media?.length || 0
+      const mediaCount = currentSpace.property_media?.length || 0
       if (mediaCount === 0) {
-        return reply.code(400).send({ statusMessage: 'Property must have at least one media item (Panorama or Gallery) to be published.' })
+        return reply.code(400).send({ statusMessage: 'Space must have at least one media item (Panorama or Gallery) to be published.' })
       }
 
       // 5. Slug Check
-      if (!body.slug && !currentProp.slug) {
+      if (!body.slug && !currentSpace.slug) {
         return reply.code(400).send({ statusMessage: 'A unique slug is required to publish.' })
       }
     }
@@ -217,7 +241,7 @@ export default async function (fastify: FastifyInstance) {
       updates.published_at = null
     }
 
-    const { data: property, error } = await fastify.supabase
+    const { data: space, error } = await fastify.supabase
       .from('properties')
       .update(updates)
       .eq('id', id)
@@ -232,6 +256,6 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(500).send({ statusMessage: 'Failed to update publish status' })
     }
 
-    return reply.send(property)
+    return reply.send(space)
   })
 }

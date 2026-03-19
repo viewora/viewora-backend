@@ -12,18 +12,18 @@ export default async function (fastify: FastifyInstance) {
   // PUBLIC ROUTE: Increment views
   fastify.post('/view', async (request, reply) => {
     const body = request.body as Record<string, unknown>
-    const propertyId = typeof body?.propertyId === 'string' ? body.propertyId : null
+    const spaceId = typeof body?.spaceId === 'string' ? body.spaceId : (typeof body?.propertyId === 'string' ? body.propertyId : null)
     const rawSource = typeof body?.source === 'string' ? body.source : 'direct'
     const source: ViewSource = VALID_SOURCES.includes(rawSource as ViewSource)
       ? (rawSource as ViewSource)
       : 'direct'
     const today = new Date().toISOString().split('T')[0]
 
-    if (!propertyId) return reply.code(400).send({ statusMessage: 'propertyId is required' })
+    if (!spaceId) return reply.code(400).send({ statusMessage: 'spaceId is required' })
 
     // Increment via RPC
     const { error } = await fastify.supabase.rpc('increment_daily_views', {
-      prop_id: propertyId,
+      prop_id: spaceId,
       event_date: today,
       view_source: source,
     })
@@ -34,7 +34,7 @@ export default async function (fastify: FastifyInstance) {
       const { data: existing } = await fastify.supabase
         .from('analytics_daily')
         .select('id, total_views, direct_views, qr_views, embed_views')
-        .eq('property_id', propertyId)
+        .eq('property_id', spaceId)
         .eq('date', today)
         .single()
 
@@ -50,7 +50,7 @@ export default async function (fastify: FastifyInstance) {
         await fastify.supabase
           .from('analytics_daily')
           .insert({
-            property_id: propertyId,
+            property_id: spaceId,
             date: today,
             total_views: 1,
             [sourceCol]: 1,
@@ -61,12 +61,12 @@ export default async function (fastify: FastifyInstance) {
     return reply.code(204).send()
   })
 
-  // AUTH ROUTE: Get total summary for all properties
+  // AUTH ROUTE: Get total summary for all spaces
   fastify.get('/summary', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
 
-    // Fetch daily stats for all user's properties
+    // Fetch daily stats for all user's spaces
     const { data, error } = await fastify.supabase
       .from('analytics_daily')
       .select('*, properties!inner(user_id, title)')
@@ -78,10 +78,17 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(500).send({ statusMessage: 'Failed to fetch analytics' })
     }
 
-    return reply.send(data)
+    // Map property_id to space_id for frontend consistency
+    const mappedData = (data || []).map(d => ({
+      ...d,
+      space_id: d.property_id,
+      spaces: d.properties
+    }))
+
+    return reply.send(mappedData)
   })
 
-  // AUTH ROUTE: Get property stats
+  // AUTH ROUTE: Get space stats
   fastify.get('/summary/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub

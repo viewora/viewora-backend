@@ -9,7 +9,7 @@ import authPlugin from './plugins/auth.js'
 import supabasePlugin from './plugins/supabase.js'
 import s3Plugin from './plugins/s3.js'
 
-import propertiesRoutes from './routes/properties.js'
+import spaceRoutes from './routes/spaces.js'
 import billingRoutes from './routes/billing.js'
 import uploadsRoutes from './routes/uploads.js'
 import leadsRoutes from './routes/leads.js'
@@ -92,7 +92,7 @@ fastify.get('/health', async () => {
 })
 
 // Routes
-fastify.register(propertiesRoutes, { prefix: '/properties' })
+fastify.register(spaceRoutes, { prefix: '/spaces' })
 fastify.register(billingRoutes, { prefix: '/billing' })
 fastify.register(uploadsRoutes, { prefix: '/uploads' })
 fastify.register(leadsRoutes, { prefix: '/leads' })

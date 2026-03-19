@@ -12,7 +12,14 @@ export default async function (fastify: FastifyInstance) {
       .order('price_monthly_kes', { ascending: true })
     
     if (error) return reply.code(500).send({ statusMessage: 'Failed to fetch plans' })
-    return reply.send(plans)
+
+    const mappedPlans = (plans || []).map(p => ({
+      ...p,
+      max_active_spaces: p.max_active_properties,
+      max_active_properties: undefined
+    }))
+
+    return reply.send(mappedPlans)
   })
 
   // INITIALIZE PAYSTACK TRANSACTION
@@ -182,28 +189,55 @@ export default async function (fastify: FastifyInstance) {
     }
   })
 
-  // GET SUBSCRIPTION STATUS
-  fastify.get('/subscription-status', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  // GET SUBSCRIPTION STATUS (RENAMED to /status for frontend consistency)
+  fastify.get('/status', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
 
-    const { data: sub, error } = await fastify.supabase
+    // 1. Get Subscription + Plan
+    const { data: sub } = await fastify.supabase
       .from('subscriptions')
       .select('*, plans(*)')
       .eq('user_id', userId)
       .single()
 
-    if (error || !sub) {
+    // 2. Get Usage
+    const { data: usage } = await fastify.supabase
+      .from('usage_counters')
+      .select('active_properties_count, storage_used_bytes')
+      .eq('user_id', userId)
+      .single()
+
+    const finalPlan = sub?.plans || null
+    let responsePlan: any = null
+
+    if (!finalPlan) {
       // Return default free state
       const { data: freePlan } = await fastify.supabase
         .from('plans')
         .select('*')
         .eq('name', 'Free')
         .single()
-      
-      return reply.send({ subscription: null, plan: freePlan })
+      responsePlan = freePlan
+    } else {
+      responsePlan = finalPlan
     }
 
-    return reply.send({ subscription: sub, plan: sub.plans })
+    const mappedPlan = responsePlan ? {
+      ...responsePlan,
+      max_active_spaces: responsePlan.max_active_properties,
+      max_active_properties: undefined
+    } : null
+
+    const mappedUsage = {
+      active_spaces_count: usage?.active_properties_count || 0,
+      storage_used_bytes: usage?.storage_used_bytes || 0
+    }
+
+    return reply.send({ 
+      subscription: sub || null, 
+      plan: mappedPlan,
+      usage: mappedUsage
+    })
   })
 }

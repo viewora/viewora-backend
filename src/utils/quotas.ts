@@ -37,9 +37,13 @@ export async function checkUserQuota(fastify: FastifyInstance, userId: string): 
     if (planError || !freePlan) throw new Error('Free plan not found in database')
 
     return {
-      plan: freePlan,
+      plan: {
+        ...freePlan,
+        max_active_spaces: freePlan.max_active_properties,
+        max_active_properties: undefined
+      },
       subscription: null,
-      canWrite: true,   // Free plan users can still create up to their limit
+      canWrite: true,
       isGrace: false,
       isFree: true,
     }
@@ -60,7 +64,11 @@ export async function checkUserQuota(fastify: FastifyInstance, userId: string): 
   const isGrace = (GRACE_STATUSES as readonly string[]).includes(effectiveStatus)
 
   return {
-    plan: sub.plans,
+    plan: {
+      ...sub.plans,
+      max_active_spaces: sub.plans.max_active_properties,
+      max_active_properties: undefined
+    },
     subscription: sub,
     canWrite,
     isGrace,
@@ -68,7 +76,7 @@ export async function checkUserQuota(fastify: FastifyInstance, userId: string): 
   }
 }
 
-export async function canCreateProperty(fastify: FastifyInstance, userId: string): Promise<boolean> {
+export async function canCreateSpace(fastify: FastifyInstance, userId: string): Promise<boolean> {
   const { plan } = await checkUserQuota(fastify, userId)
 
   const { data: counter, error: counterError } = await fastify.supabase
@@ -79,7 +87,7 @@ export async function canCreateProperty(fastify: FastifyInstance, userId: string
 
   if (counterError || !counter) return false
 
-  return counter.active_properties_count < plan.max_active_properties
+  return counter.active_properties_count < plan.max_active_spaces
 }
 
 export async function checkStorageQuota(fastify: FastifyInstance, userId: string, newFileSize: number): Promise<boolean> {
