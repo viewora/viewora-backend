@@ -109,6 +109,15 @@ fastify.register(analyticsRoutes, { prefix: '/analytics' })
 fastify.register(dashboardRoutes, { prefix: '/dashboard' })
 fastify.register(profileRoutes, { prefix: '/profile' })
 
+fastify.setNotFoundHandler((request, reply) => {
+  reply.code(404).send({
+    error: 'Not Found',
+    message: `The route ${request.method}:${request.url} was not found on this server.`,
+    hint: 'If you just rebranded, ensure your deployment is using the latest code with /spaces and /billing routes.',
+    timestamp: new Date().toISOString()
+  })
+})
+
 const start = async () => {
   try {
     const port = parseInt(process.env.PORT || '3000')
