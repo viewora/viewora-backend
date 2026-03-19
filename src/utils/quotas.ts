@@ -85,9 +85,10 @@ export async function canCreateSpace(fastify: FastifyInstance, userId: string): 
     .eq('user_id', userId)
     .single()
 
-  if (counterError || !counter) return false
-
-  return counter.active_properties_count < plan.max_active_spaces
+  // If counter is missing, it means the user has not created anything yet.
+  // We treat this as 0 usage instead of blocking the user.
+  const currentCount = counter?.active_properties_count || 0
+  return currentCount < plan.max_active_spaces
 }
 
 export async function checkStorageQuota(fastify: FastifyInstance, userId: string, newFileSize: number): Promise<boolean> {
@@ -99,9 +100,8 @@ export async function checkStorageQuota(fastify: FastifyInstance, userId: string
     .eq('user_id', userId)
     .single()
 
-  if (counterError || !counter) return false
-
-  const currentUsage = Number(counter.storage_used_bytes || 0)
+  // If counter is missing, assume 0 storage used.
+  const currentUsage = Number(counter?.storage_used_bytes || 0)
   const maxBytes = Number(plan.max_storage_bytes || 0)
 
   return (currentUsage + newFileSize) <= maxBytes
