@@ -129,8 +129,9 @@ export default async function (fastify: FastifyInstance) {
     reply.code(200).send()
 
     // 2. Process Event asynchronously after ack
-    const eventType = event.event
-    const { metadata, reference } = event.data ?? {}
+    const eventType = body.event
+    const { metadata, data } = body ?? {}
+    const { reference } = data ?? {}
     const userId: string | undefined = metadata?.user_id
     const planId: string | undefined = metadata?.plan_id
     const billingCycle: string | undefined = metadata?.billing_cycle
