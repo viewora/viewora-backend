@@ -57,10 +57,7 @@ fastify.register(rawBody, {
 // Supabase uses JWT for auth. We verify it using the Supabase JWT secret.
 // IMPORTANT: Supabase JWTs always have aud: "authenticated"
 fastify.register(jwt, {
-  secret: process.env.SUPABASE_JWT_SECRET!,
-  verify: {
-    audience: 'authenticated'
-  }
+  secret: process.env.SUPABASE_JWT_SECRET!
 })
 
 fastify.register(authPlugin)
