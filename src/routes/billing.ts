@@ -2,15 +2,25 @@ import { FastifyInstance } from 'fastify'
 import crypto from 'crypto'
 import axios from 'axios'
 
+// Simple in-memory cache for plans (data rarely changes)
+let _plansCache: { data: any[]; expiresAt: number } | null = null
+const PLANS_TTL_MS = 5 * 60 * 1000 // 5 minutes
+
 export default async function (fastify: FastifyInstance) {
-  
+
   // GET ALL PLANS
   fastify.get('/plans', async (request, reply) => {
+    const now = Date.now()
+    if (_plansCache && now < _plansCache.expiresAt) {
+      reply.header('Cache-Control', 'public, max-age=300')
+      return reply.send(_plansCache.data)
+    }
+
     const { data: plans, error } = await fastify.supabase
       .from('plans')
       .select('*')
       .order('price_monthly_kes', { ascending: true })
-    
+
     if (error) return reply.code(500).send({ statusMessage: 'Failed to fetch plans' })
 
     const mappedPlans = (plans || []).map(p => ({
@@ -19,6 +29,8 @@ export default async function (fastify: FastifyInstance) {
       max_active_properties: undefined
     }))
 
+    _plansCache = { data: mappedPlans, expiresAt: now + PLANS_TTL_MS }
+    reply.header('Cache-Control', 'public, max-age=300')
     return reply.send(mappedPlans)
   })
 
@@ -78,7 +90,7 @@ export default async function (fastify: FastifyInstance) {
           email,
           amount: amountKES * 100, // Paystack expects amount in smallest currency unit (cents/kobo)
           currency: 'KES',
-          callback_url: `${process.env.FRONTEND_URL || 'https://app.viewora.software'}/billing/callback`,
+          callback_url: `${process.env.APP_URL || 'https://app.viewora.software'}/app/billing`,
           metadata: {
             user_id: userId,
             plan_id: planId,
