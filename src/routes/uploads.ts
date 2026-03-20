@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify'
-import { PutObjectCommand } from '@aws-sdk/client-s3'
+import { PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { checkStorageQuota, checkFileSizeLimit, isValidFileType, checkUserQuota } from '../utils/quotas.js'
 
@@ -36,7 +36,7 @@ export default async function (fastify: FastifyInstance) {
 
     // Per-file size limit
     if (!checkFileSizeLimit(plan, Number(fileSize))) {
-      const mbLimit = Math.round(Number(plan.max_upload_bytes) / 1048576)
+      const mbLimit = Math.round(Number(plan.max_upload_bytes || 15728640) / 1048576)
       return reply.code(413).send({ statusMessage: `File too large. Your plan allows up to ${mbLimit} MB per upload.` })
     }
 
@@ -129,11 +129,15 @@ export default async function (fastify: FastifyInstance) {
     }
 
     // 2. Insert record
+    let dbMediaType = mediaType
+    if (mediaType === 'gallery') dbMediaType = 'gallery_image'
+    if (mediaType === 'thumb')   dbMediaType = 'thumbnail'
+    
     const { data: media, error: mediaErr } = await fastify.supabase
       .from('property_media')
       .insert({
         property_id: finalId,
-        media_type: mediaType,
+        media_type: dbMediaType,
         storage_key: objectKey,
         public_url: publicUrl,
         width: width || null,
@@ -156,5 +160,68 @@ export default async function (fastify: FastifyInstance) {
     }
 
     return reply.send(media)
+  })
+
+  // DELETE MEDIA
+  fastify.delete('/:id', async (request, reply) => {
+    const user = request.user as any
+    const userId = user.sub
+    const { id } = request.params as any
+
+    // 1. Get media record to verify ownership and get storage info
+    const { data: media, error: fetchErr } = await fastify.supabase
+      .from('property_media')
+      .select('id, storage_key, file_size_bytes, property_id, properties!inner(user_id)')
+      .eq('id', id)
+      .eq('properties.user_id', userId)
+      .single()
+
+    if (fetchErr || !media) {
+      return reply.code(404).send({ statusMessage: 'Media not found or unauthorized' })
+    }
+
+    // 2. Delete from Cloudflare R2
+    const bucketName = process.env.R2_BUCKET_NAME
+    if (bucketName && media.storage_key) {
+      try {
+        const deleteCommand = new DeleteObjectCommand({
+          Bucket: bucketName,
+          Key: media.storage_key
+        })
+        await fastify.s3.send(deleteCommand)
+      } catch (err) {
+        fastify.log.error(err, 'Failed to delete object from R2 during media cleanup')
+      }
+    }
+
+    // 3. Delete from Database
+    const { error: deleteErr } = await fastify.supabase
+      .from('property_media')
+      .delete()
+      .eq('id', id)
+
+    if (deleteErr) {
+      return reply.code(500).send({ statusMessage: 'Failed to delete media record' })
+    }
+
+    // 4. Decrement Storage Quota
+    if (media.file_size_bytes) {
+      const { data: counter } = await fastify.supabase
+        .from('usage_counters')
+        .select('storage_used_bytes')
+        .eq('user_id', userId)
+        .single()
+
+      if (counter) {
+        const newUsage = Math.max(0, Number(counter.storage_used_bytes) - Number(media.file_size_bytes))
+        await fastify.supabase
+          .from('usage_counters')
+          .update({ storage_used_bytes: newUsage })
+          .eq('user_id', userId)
+      }
+    }
+
+    request.log.info({ userId, mediaId: id, size: media.file_size_bytes }, 'Deleted media and synced R2/Quota')
+    return reply.code(204).send()
   })
 }

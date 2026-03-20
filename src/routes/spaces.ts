@@ -1,17 +1,27 @@
 import { FastifyInstance } from 'fastify'
+import { DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { canCreateSpace, checkUserQuota } from '../utils/quotas.js'
 
 export default async function (fastify: FastifyInstance) {
-  // PUBLIC ROUTE: Get space by slug
+  // PUBLIC ROUTE: Get space by slug or ID
   fastify.get('/by-slug/:slug', async (request, reply) => {
     const { slug } = request.params as any
     
-    const { data: space, error } = await fastify.supabase
+    // Check if slug is a valid UUID
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slug)
+
+    let query = fastify.supabase
       .from('properties')
-      .select('*, property_media(*), property_360_settings(*)')
-      .eq('slug', slug)
+      .select('*, property_media(*), property_360_settings(*), profiles(agency_name, agency_logo_url)')
       .eq('is_published', true)
-      .single()
+
+    if (isUuid) {
+      query = query.or(`id.eq.${slug},slug.eq.${slug}`)
+    } else {
+      query = query.eq('slug', slug)
+    }
+
+    const { data: space, error } = await query.single()
 
     if (error || !space) {
       return reply.code(404).send({ statusMessage: 'Space not found or unpublished' })
@@ -165,6 +175,31 @@ export default async function (fastify: FastifyInstance) {
     const userId = user.sub
     const { id } = request.params as any
 
+    // 1. Get all media for this space before deleting
+    const { data: mediaItems, error: mediaFetchErr } = await fastify.supabase
+      .from('property_media')
+      .select('id, storage_key, file_size_bytes')
+      .eq('property_id', id)
+
+    // 2. Cleanup R2
+    const bucketName = process.env.R2_BUCKET_NAME
+    if (bucketName && mediaItems && mediaItems.length > 0) {
+      for (const item of mediaItems) {
+        if (item.storage_key) {
+          try {
+            await fastify.s3.send(new DeleteObjectCommand({
+              Bucket: bucketName,
+              Key: item.storage_key
+            }))
+          } catch (err) {
+            fastify.log.error(err, `Failed to delete R2 object ${item.storage_key} during space deletion`)
+          }
+        }
+      }
+    }
+
+    // 3. Delete property (DB handles cascading to property_media if configured, 
+    // but we'll be explicit or rely on Supabase)
     const { error } = await fastify.supabase
       .from('properties')
       .delete()
@@ -175,8 +210,29 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(500).send({ statusMessage: 'Failed to delete space' })
     }
 
-    // Decrement counter
+    // 4. Update Quotas
+    // Decrement active properties count
     await fastify.supabase.rpc('decrement_active_properties', { u_id: userId })
+
+    // Decrement total storage used
+    if (mediaItems && mediaItems.length > 0) {
+      const totalSize = mediaItems.reduce((acc, item) => acc + Number(item.file_size_bytes || 0), 0)
+      if (totalSize > 0) {
+        const { data: counter } = await fastify.supabase
+          .from('usage_counters')
+          .select('storage_used_bytes')
+          .eq('user_id', userId)
+          .single()
+
+        if (counter) {
+          const newUsage = Math.max(0, Number(counter.storage_used_bytes) - totalSize)
+          await fastify.supabase
+            .from('usage_counters')
+            .update({ storage_used_bytes: newUsage })
+            .eq('user_id', userId)
+        }
+      }
+    }
 
     return reply.code(204).send()
   })

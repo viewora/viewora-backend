@@ -16,6 +16,7 @@ import leadsRoutes from './routes/leads.js'
 import analyticsRoutes from './routes/analytics.js'
 import dashboardRoutes from './routes/dashboard.js'
 import profileRoutes from './routes/profile.js'
+import maintenanceRoutes from './routes/maintenance.js'
 
 dotenv.config()
 
@@ -109,6 +110,7 @@ fastify.register(leadsRoutes, { prefix: '/leads' })
 fastify.register(analyticsRoutes, { prefix: '/analytics' })
 fastify.register(dashboardRoutes, { prefix: '/dashboard' })
 fastify.register(profileRoutes, { prefix: '/profile' })
+fastify.register(maintenanceRoutes, { prefix: '/maintenance' })
 
 // Alias for /plans (used by frontend dashboard) to avoid 404
 fastify.get('/plans', async (request, reply) => {
