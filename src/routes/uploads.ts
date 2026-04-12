@@ -30,7 +30,8 @@ const createSignedUrlBodySchema = z.object({
   contentType: z.string().trim().min(1).max(120),
   fileSize: z.number().int().positive().max(100_000_000),
 }).superRefine((data, ctx) => {
-  if (!data.spaceId && !data.propertyId) {
+  const isBrandingUpload = data.mediaType === 'logo' || data.mediaType === 'branding_logo'
+  if (!isBrandingUpload && !data.spaceId && !data.propertyId) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'spaceId or propertyId is required',
@@ -105,16 +106,20 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(403).send({ statusMessage: 'Storage limit reached. Please upgrade your plan.' })
     }
 
-    // 3. Verify Space Ownership
-    const { data: space, error: spaceErr } = await fastify.supabase
-      .from('properties')
-      .select('id')
-      .eq('id', finalId)
-      .eq('user_id', userId)
-      .single()
+    const isBrandingUpload = mediaType === 'logo' || mediaType === 'branding_logo'
 
-    if (spaceErr || !space) {
-      return reply.code(403).send({ statusMessage: 'Unauthorized to upload to this space' })
+    // 3. Verify Space Ownership for space-bound uploads
+    if (!isBrandingUpload) {
+      const { data: space, error: spaceErr } = await fastify.supabase
+        .from('properties')
+        .select('id')
+        .eq('id', finalId)
+        .eq('user_id', userId)
+        .single()
+
+      if (spaceErr || !space) {
+        return reply.code(403).send({ statusMessage: 'Unauthorized to upload to this space' })
+      }
     }
 
     // 4. Define path
@@ -122,14 +127,14 @@ export default async function (fastify: FastifyInstance) {
     if (mediaType === 'panorama') folder = 'panorama'
     else if (mediaType === 'gallery') folder = 'gallery'
     else if (mediaType === 'thumb') folder = 'thumb'
-    else if (mediaType === 'logo') folder = 'branding'
+    else if (mediaType === 'logo' || mediaType === 'branding_logo') folder = 'branding'
     else return reply.code(400).send({ statusMessage: 'Invalid media type' })
 
     const fileExt = fileName.split('.').pop()
     const uniqueFileName = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${fileExt}`
     
     let objectKey = `users/${userId}/spaces/${finalId}/${folder}/${uniqueFileName}`
-    if (mediaType === 'logo') {
+    if (mediaType === 'logo' || mediaType === 'branding_logo') {
       objectKey = `users/${userId}/branding/${uniqueFileName}`
     }
 

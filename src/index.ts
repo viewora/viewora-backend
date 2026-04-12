@@ -92,11 +92,42 @@ function toErrorCode(statusCode: number, fallback?: string): string {
   return 'ERROR'
 }
 
+function normalizeOriginPattern(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+function isOriginAllowed(origin: string, patterns: string[]): boolean {
+  const normalizedOrigin = normalizeOriginPattern(origin)
+  return patterns.some((pattern) => {
+    if (!pattern) return false
+    if (pattern.includes('*')) {
+      const regex = new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`)
+      return regex.test(normalizedOrigin)
+    }
+    return normalizedOrigin === pattern
+  })
+}
+
+const defaultCorsOrigins = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'https://viewora.software',
+  'https://app.viewora.software',
+  'https://*.vercel.app',
+].map(normalizeOriginPattern)
+
+const configuredCorsOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map(normalizeOriginPattern).filter(Boolean)
+  : defaultCorsOrigins
+
 // Register plugins
 fastify.register(cors, {
-  origin: process.env.CORS_ORIGIN
-    ? process.env.CORS_ORIGIN.split(',').map(o => o.trim())
-    : ['http://localhost:3000', 'http://localhost:3001', 'https://viewora.software', 'https://app.viewora.software'],
+  origin: (origin, cb) => {
+    // Allow non-browser clients and same-origin server-to-server requests.
+    if (!origin) return cb(null, true)
+    const allowed = isOriginAllowed(origin, configuredCorsOrigins)
+    return cb(null, allowed)
+  },
   credentials: true,
 })
 
@@ -174,15 +205,25 @@ fastify.addHook('onSend', async (request, reply, payload) => {
 
   if (statusCode >= 400) {
     const record = isRecord(parsedPayload) ? parsedPayload : {}
+    const nestedError = isRecord(record.error) ? record.error : null
     const envelope: ApiErrorEnvelope = {
       success: false,
       code: typeof record.code === 'string'
         ? record.code
-        : toErrorCode(statusCode, typeof record.error === 'string' ? record.error : undefined),
+        : toErrorCode(
+            statusCode,
+            typeof record.error === 'string'
+              ? record.error
+              : typeof nestedError?.code === 'string'
+                ? nestedError.code
+                : undefined,
+          ),
       message: typeof record.message === 'string'
         ? record.message
         : typeof record.statusMessage === 'string'
           ? record.statusMessage
+          : typeof nestedError?.message === 'string'
+            ? nestedError.message
           : 'Request failed',
     }
 

@@ -160,10 +160,11 @@ export default async function (fastify: FastifyInstance) {
     // 2. Process Event asynchronously after ack
     const eventType = body.event
     const { metadata, data } = body ?? {}
+    const eventMetadata = data?.metadata || metadata || {}
     const { reference } = data ?? {}
-    const userId: string | undefined = metadata?.user_id
-    const planId: string | undefined = metadata?.plan_id
-    const billingCycle: string | undefined = metadata?.billing_cycle
+    const userId: string | undefined = eventMetadata?.user_id
+    const planId: string | undefined = eventMetadata?.plan_id
+    const billingCycle: string | undefined = eventMetadata?.billing_cycle
 
     if (eventType === 'charge.success' || eventType === 'subscription.create') {
       if (!userId || !planId || !billingCycle) {
