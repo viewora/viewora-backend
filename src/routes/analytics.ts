@@ -1,4 +1,26 @@
 import { FastifyInstance } from 'fastify'
+import { z } from 'zod'
+import { parseWithSchema } from '../utils/validation.js'
+
+const sourceSchema = z.enum(['direct', 'qr', 'embed'])
+
+const viewBodySchema = z.object({
+  spaceId: z.string().uuid().optional(),
+  propertyId: z.string().uuid().optional(),
+  source: sourceSchema.optional(),
+}).superRefine((data, ctx) => {
+  if (!data.spaceId && !data.propertyId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'spaceId or propertyId is required',
+      path: ['spaceId'],
+    })
+  }
+})
+
+const idParamsSchema = z.object({
+  id: z.string().uuid(),
+})
 
 export default async function (fastify: FastifyInstance) {
   type ViewSource = 'direct' | 'qr' | 'embed'
@@ -10,16 +32,24 @@ export default async function (fastify: FastifyInstance) {
   }
 
   // PUBLIC ROUTE: Increment views
-  fastify.post('/view', async (request, reply) => {
-    const body = request.body as Record<string, unknown>
-    const spaceId = typeof body?.spaceId === 'string' ? body.spaceId : (typeof body?.propertyId === 'string' ? body.propertyId : null)
-    const rawSource = typeof body?.source === 'string' ? body.source : 'direct'
+  fastify.post('/view', {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: '1 minute',
+        keyGenerator: (request: any) => request.ip,
+      },
+    },
+  }, async (request, reply) => {
+    const body = parseWithSchema(reply, viewBodySchema, request.body)
+    if (!body) return
+
+    const spaceId = body.spaceId || body.propertyId || null
+    const rawSource = body.source || 'direct'
     const source: ViewSource = VALID_SOURCES.includes(rawSource as ViewSource)
       ? (rawSource as ViewSource)
       : 'direct'
     const today = new Date().toISOString().split('T')[0]
-
-    if (!spaceId) return reply.code(400).send({ statusMessage: 'spaceId is required' })
 
     // Increment via RPC
     const { error } = await fastify.supabase.rpc('increment_daily_views', {
@@ -92,7 +122,9 @@ export default async function (fastify: FastifyInstance) {
   fastify.get('/summary/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
-    const { id } = request.params as any
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const { id } = params
 
     const { data, error } = await fastify.supabase
       .from('analytics_daily')

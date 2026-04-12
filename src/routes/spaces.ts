@@ -1,11 +1,51 @@
 import { FastifyInstance } from 'fastify'
 import { DeleteObjectCommand } from '@aws-sdk/client-s3'
+import { z } from 'zod'
 import { canCreateSpace, checkUserQuota } from '../utils/quotas.js'
+import { parseWithSchema } from '../utils/validation.js'
+
+const uuidSchema = z.string().uuid()
+
+const slugParamsSchema = z.object({
+  slug: z.string().trim().min(1).max(200),
+})
+
+const idParamsSchema = z.object({
+  id: uuidSchema,
+})
+
+const createSpaceBodySchema = z.object({
+  title: z.string().trim().min(1).max(120),
+  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'other']),
+  description: z.string().max(2000).optional(),
+  location_text: z.string().max(200).optional(),
+  slug: z.string().trim().min(3).max(120).optional(),
+})
+
+const updateSpaceBodySchema = z.object({
+  title: z.string().trim().min(1).max(120).optional(),
+  description: z.string().max(2000).nullable().optional(),
+  cover_image_url: z.string().url().max(2048).nullable().optional(),
+  location_text: z.string().max(200).nullable().optional(),
+  slug: z.string().trim().min(3).max(120).nullable().optional(),
+  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'other']).optional(),
+  lead_form_enabled: z.boolean().optional(),
+  branding_enabled: z.boolean().optional(),
+})
+
+const publishBodySchema = z.object({
+  publish: z.boolean(),
+  slug: z.string().trim().min(3).max(120).optional(),
+  lead_form_enabled: z.boolean().optional(),
+  branding_enabled: z.boolean().optional(),
+})
 
 export default async function (fastify: FastifyInstance) {
   // PUBLIC ROUTE: Get space by slug or ID
   fastify.get('/by-slug/:slug', async (request, reply) => {
-    const { slug } = request.params as any
+    const params = parseWithSchema(reply, slugParamsSchema, request.params)
+    if (!params) return
+    const { slug } = params
     
     // Check if slug is a valid UUID
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slug)
@@ -58,7 +98,9 @@ export default async function (fastify: FastifyInstance) {
   fastify.get('/:id', async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
-    const { id } = request.params as any
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const { id } = params
 
     const { data, error } = await fastify.supabase
       .from('properties')
@@ -90,7 +132,8 @@ export default async function (fastify: FastifyInstance) {
   fastify.post('/', async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
-    const body = request.body as any
+    const body = parseWithSchema(reply, createSpaceBodySchema, request.body)
+    if (!body) return
 
     // 1. Quota check
     const allowed = await canCreateSpace(fastify, userId)
@@ -103,10 +146,10 @@ export default async function (fastify: FastifyInstance) {
       .from('properties')
       .insert({
         user_id: userId,
-        title: body.title || 'New Space',
+        title: body.title,
         description: body.description || null,
         slug: body.slug || null,
-        property_type: body.space_type || body.property_type || null
+        property_type: body.space_type
       })
       .select()
       .single()
@@ -132,8 +175,11 @@ export default async function (fastify: FastifyInstance) {
   fastify.patch('/:id', async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
-    const { id } = request.params as any
-    const body = request.body as any
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const { id } = params
+    const body = parseWithSchema(reply, updateSpaceBodySchema, request.body)
+    if (!body) return
 
     const updates: any = {}
     if (body.title !== undefined) updates.title = body.title
@@ -142,7 +188,6 @@ export default async function (fastify: FastifyInstance) {
     if (body.location_text !== undefined) updates.location_text = body.location_text
     
     if (body.space_type !== undefined) updates.property_type = body.space_type
-    else if (body.property_type !== undefined) updates.property_type = body.property_type
 
     if (body.lead_form_enabled !== undefined) updates.lead_form_enabled = body.lead_form_enabled
     if (body.branding_enabled !== undefined) updates.branding_enabled = body.branding_enabled
@@ -173,13 +218,16 @@ export default async function (fastify: FastifyInstance) {
   fastify.delete('/:id', async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
-    const { id } = request.params as any
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const { id } = params
 
     // 1. Get all media for this space before deleting
     const { data: mediaItems, error: mediaFetchErr } = await fastify.supabase
       .from('property_media')
-      .select('id, storage_key, file_size_bytes')
+      .select('id, storage_key, file_size_bytes, properties!inner(user_id)')
       .eq('property_id', id)
+      .eq('properties.user_id', userId)
 
     // 2. Cleanup R2
     const bucketName = process.env.R2_BUCKET_NAME
@@ -241,8 +289,11 @@ export default async function (fastify: FastifyInstance) {
   fastify.post('/:id/publish', async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
-    const { id } = request.params as any
-    const body = request.body as any
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const { id } = params
+    const body = parseWithSchema(reply, publishBodySchema, request.body)
+    if (!body) return
 
     const isPublishing = body.publish === true
 

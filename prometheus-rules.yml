@@ -1,0 +1,201 @@
+# Prometheus Alert Rules for Viewora Backend
+# 
+# Used with: Prometheus AlertManager
+# Deploy to: /etc/prometheus/rules/ or environment-specific path
+#
+# Thresholds:
+# - HIGH: Error spike, queue backlog, processing timeout
+# - MEDIUM: Elevated error rate, elevated processing time
+# - LOW: Informational, trends
+
+groups:
+  - name: viewora_backend_alerts
+    interval: 30s
+    rules:
+      # HIGH SEVERITY ALERTS
+      
+      - alert: UploadErrorRateCritical
+        expr: |
+          (
+            rate(viewora_jobs_processed_total{outcome="failed"}[5m]) /
+            (rate(viewora_jobs_processed_total{outcome="success"}[5m]) + 
+             rate(viewora_jobs_processed_total{outcome="failed"}[5m]))
+          ) > 0.10
+        for: 2m
+        labels:
+          severity: critical
+          component: upload_processing
+        annotations:
+          summary: "Upload error rate critical ({{ $value | humanizePercentage }})"
+          description: "Upload failure rate has exceeded 10% over the last 5 minutes. Investigate media processing issues."
+          runbook_url: "https://wiki.viewora.internal/runbook/upload-error-rate"
+
+      - alert: QueueBacklogCritical
+        expr: viewora_queue_depth > 500
+        for: 5m
+        labels:
+          severity: critical
+          component: upload_queue
+        annotations:
+          summary: "Upload queue backlog critical ({{ $value }} jobs)"
+          description: "Queue depth has exceeded 500 jobs. Worker may be stuck or overloaded."
+          action: "1. Check worker logs: journalctl -u viewora-worker\n2. Check queue stats: curl /admin/queue-stats\n3. Consider scaling workers up"
+
+      - alert: JobProcessingTimeout
+        expr: rate(viewora_jobs_stalled_total[5m]) > 1
+        for: 2m
+        labels:
+          severity: critical
+          component: upload_processing
+        annotations:
+          summary: "Jobs timing out ({{ $value | humanize }}/sec)"
+          description: "Multiple jobs are stalling/timing out. This indicates processing is stuck or very slow."
+          action: "Restart worker service or increase timeout"
+
+      # MEDIUM SEVERITY ALERTS
+
+      - alert: UploadErrorRateElevated
+        expr: |
+          (
+            rate(viewora_jobs_processed_total{outcome="failed"}[5m]) /
+            (rate(viewora_jobs_processed_total{outcome="success"}[5m]) + 
+             rate(viewora_jobs_processed_total{outcome="failed"}[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: upload_processing
+        annotations:
+          summary: "Upload error rate elevated ({{ $value | humanizePercentage }})"
+          description: "Error rate has been above 5% for 5 minutes. Monitor closely."
+
+      - alert: QueueBacklogElevated
+        expr: viewora_queue_depth > 200
+        for: 10m
+        labels:
+          severity: warning
+          component: upload_queue
+        annotations:
+          summary: "Upload queue backlog elevated ({{ $value }} jobs)"
+          description: "Queue depth has been elevated for 10 minutes. Processing may be slower than ingestion."
+
+      - alert: ProcessingRatioUnbalanced
+        expr: |
+          (
+            rate(viewora_jobs_retried_total[5m]) /
+            rate(viewora_jobs_processed_total[5m])
+          ) > 0.3
+        for: 5m
+        labels:
+          severity: warning
+          component: upload_processing
+        annotations:
+          summary: "High job retry rate ({{ $value | humanizePercentage }})"
+          description: "More than 30% of jobs are being retried. Investigate transient failures."
+
+      # LOW SEVERITY / INFORMATIONAL ALERTS
+
+      - alert: DeadLetterQueueGrowing
+        expr: delta(viewora_jobs_dead_letter_total[1h]) > 10
+        for: 10m
+        labels:
+          severity: info
+          component: upload_processing
+        annotations:
+          summary: "{{ $value | humanize }} jobs moved to dead-letter in last hour"
+          description: "Jobs are failing permanently. Review /admin/failed-jobs for details."
+          action: "curl -H 'Authorization: Bearer $ADMIN_SECRET' /admin/failed-jobs"
+
+      - alert: SlowMediaProcessing
+        expr: |
+          histogram_quantile(0.95, rate(viewora_job_duration_ms_bucket[5m])) > 5000
+        for: 10m
+        labels:
+          severity: info
+          component: upload_processing
+        annotations:
+          summary: "p95 media processing time elevated ({{ $value }}ms)"
+          description: "95th percentile of processing time is above 5 seconds. Normal for large files, but monitor."
+
+      # SLA MONITORING
+
+      - alert: MediaProcessingP99Exceeded
+        expr: |
+          histogram_quantile(0.99, rate(viewora_job_duration_ms_bucket[5m])) > 10000
+        for: 5m
+        labels:
+          severity: warning
+          component: upload_processing
+        annotations:
+          summary: "p99 media processing time is {{ $value }}ms (SLA: <10s)"
+          description: "99th percentile processing time exceeds SLA. Investigate slow jobs."
+
+      # WORKER HEALTH
+
+      - alert: WorkerInactive
+        expr: rate(viewora_jobs_processed_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: upload_worker
+        annotations:
+          summary: "Worker appears inactive (0 jobs processed in 5m)"
+          description: "No jobs have been processed in the last 5 minutes. Worker may be crashed."
+          action: "Check worker status: systemctl status viewora-worker"
+
+      - alert: ActiveJobsStuck
+        expr: viewora_active_jobs > 0 and delta(viewora_active_jobs[10m]) == 0
+        for: 15m
+        labels:
+          severity: warning
+          component: upload_worker
+        annotations:
+          summary: "{{ $value }} jobs appear stuck (no change in 10m)"
+          description: "Active job count hasn't changed—jobs may be hung."
+          action: "Check worker logs and consider restart"
+
+      # CLEANUP HEALTH ALERTS
+
+      - alert: CleanupFailureRateElevated
+        expr: |
+          (
+            increase(cleanup_jobs_total{outcome="failed"}[24h]) /
+            clamp_min(increase(cleanup_jobs_total[24h]), 1)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          component: cleanup
+        annotations:
+          summary: "Cleanup failure rate above 5% in the last 24h"
+          description: "More than 5% of cleanup jobs failed in the last 24 hours. Storage growth risk is increasing."
+          action: "Check cleanup worker logs and verify Supabase/R2 connectivity"
+
+      - alert: CleanupSuccessRateSlaBreach
+        expr: |
+          (
+            increase(cleanup_jobs_total{outcome="success"}[24h]) /
+            clamp_min(increase(cleanup_jobs_total[24h]), 1)
+          ) < 0.99
+        for: 15m
+        labels:
+          severity: warning
+          component: cleanup
+        annotations:
+          summary: "Cleanup success rate SLA breach (<99% in 24h)"
+          description: "Cleanup success rate dropped below 99% over the last 24h. SLA enforcement triggered."
+          action: "Inspect cleanup failures and storage/provider health"
+
+      - alert: CleanupJobNotRunIn24h
+        expr: |
+          absent(cleanup_last_run_timestamp_seconds{task="cleanup-failed-media"})
+          or
+          (time() - max(cleanup_last_run_timestamp_seconds{task="cleanup-failed-media"})) > 86400
+        for: 15m
+        labels:
+          severity: critical
+          component: cleanup
+        annotations:
+          summary: "Failed media cleanup has not run in 24h"
+          description: "No completion signal from cleanup-failed-media in 24 hours. Cleanup may be down and storage can grow silently."
+          action: "Check scheduler/worker status, Redis connection, and cleanup logs"

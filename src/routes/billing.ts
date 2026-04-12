@@ -1,6 +1,13 @@
 import { FastifyInstance } from 'fastify'
 import crypto from 'crypto'
 import axios from 'axios'
+import { z } from 'zod'
+import { parseWithSchema } from '../utils/validation.js'
+
+const initializeBillingBodySchema = z.object({
+  planId: z.string().uuid(),
+  billingCycle: z.enum(['monthly', 'yearly']),
+})
 
 // Simple in-memory cache for plans (data rarely changes)
 let _plansCache: { data: any[]; expiresAt: number } | null = null
@@ -38,12 +45,9 @@ export default async function (fastify: FastifyInstance) {
   fastify.post('/initialize-paystack', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
-    const body = request.body as any
+    const body = parseWithSchema(reply, initializeBillingBodySchema, request.body)
+    if (!body) return
     const { planId, billingCycle } = body
-
-    if (!planId || !billingCycle) {
-      return reply.code(400).send({ statusMessage: 'planId and billingCycle are required' })
-    }
 
     // 1. Get Plan details
     const { data: plan, error: planErr } = await fastify.supabase
@@ -129,7 +133,20 @@ export default async function (fastify: FastifyInstance) {
       .update(request.rawBody)
       .digest('hex')
 
-    if (hash !== request.headers['x-paystack-signature']) {
+    const incomingSignatureRaw = request.headers['x-paystack-signature']
+    const incomingSignature = Array.isArray(incomingSignatureRaw) ? incomingSignatureRaw[0] : incomingSignatureRaw
+
+    if (!incomingSignature || incomingSignature.length !== hash.length) {
+      fastify.log.warn({ ip: request.ip }, 'CRITICAL: Missing or malformed Paystack webhook signature')
+      return reply.code(400).send()
+    }
+
+    const isValidSignature = crypto.timingSafeEqual(
+      Buffer.from(hash, 'hex'),
+      Buffer.from(incomingSignature, 'hex')
+    )
+
+    if (!isValidSignature) {
       fastify.log.warn({ ip: request.ip }, 'CRITICAL: Blocked invalid Paystack webhook signature')
       return reply.code(400).send()
     }

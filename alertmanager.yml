@@ -1,0 +1,104 @@
+global:
+  resolve_timeout: 5m
+  slack_api_url: 'YOUR_SLACK_WEBHOOK_URL_HERE'
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'component']
+
+  - source_match:
+      severity: 'warning'
+    target_match:
+      severity: 'info'
+    equal: ['alertname', 'component']
+
+route:
+  receiver: 'viewora-default'
+  group_by: ['alertname', 'component', 'severity']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 12h
+
+  routes:
+    - match:
+        component: 'cleanup'
+        severity: 'critical'
+      receiver: 'critical-slack'
+      group_wait: 0s
+      repeat_interval: 1h
+
+    - match:
+        component: 'cleanup'
+        severity: 'warning'
+      receiver: 'warning-slack'
+      group_wait: 30s
+      repeat_interval: 6h
+
+    - match:
+        severity: 'critical'
+      receiver: 'critical-slack'
+      group_wait: 0s
+      repeat_interval: 1h
+
+    - match:
+        severity: 'warning'
+      receiver: 'warning-slack'
+      group_wait: 30s
+      repeat_interval: 6h
+
+    - match:
+        severity: 'info'
+      receiver: 'info-email'
+      group_wait: 5m
+      repeat_interval: 24h
+
+receivers:
+  - name: 'viewora-default'
+    slack_configs:
+      - channel: '#viewora-alerts'
+        title: 'Viewora Alert'
+        text: '{{ .GroupLabels.alertname }}: {{ .GroupLabels.severity }}'
+        send_resolved: true
+
+  - name: 'critical-slack'
+    slack_configs:
+      - channel: '#viewora-critical'
+        title: 'CRITICAL: {{ .GroupLabels.alertname }}'
+        text: |
+          *Component*: {{ .GroupLabels.component }}
+          *Severity*: {{ .GroupLabels.severity }}
+          *Details*: {{ .CommonAnnotations.description }}
+          *Action*: {{ .CommonAnnotations.action }}
+
+          <{{ .ExternalURL }}|View in Prometheus>
+        send_resolved: true
+        color: 'danger'
+
+  - name: 'warning-slack'
+    slack_configs:
+      - channel: '#viewora-warnings'
+        title: 'WARNING: {{ .GroupLabels.alertname }}'
+        text: |
+          *Component*: {{ .GroupLabels.component }}
+          *Details*: {{ .CommonAnnotations.description }}
+
+          <{{ .ExternalURL }}|View in Prometheus>
+        send_resolved: true
+        color: 'warning'
+
+  - name: 'info-email'
+    email_configs:
+      - to: 'viewora-team@example.com'
+        from: 'alertmanager@viewora.internal'
+        smarthost: 'smtp.example.com:587'
+        auth_username: 'alertmanager@example.com'
+        auth_password: 'PASSWORD_HERE'
+        headers:
+          Subject: 'Viewora Info Alert: {{ .GroupLabels.alertname }}'
+        html: |
+          <h2>{{ .GroupLabels.alertname }}</h2>
+          <p><strong>Component</strong>: {{ .GroupLabels.component }}</p>
+          <p><strong>Details</strong>: {{ .CommonAnnotations.description }}</p>

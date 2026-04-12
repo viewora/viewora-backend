@@ -3,7 +3,7 @@
 Shared global logic and service integrations injected into the Fastify lifecycle.
 
 ## 🔌 Core Plugins
-- **`auth.ts`**: Implements the JWT strategy using the Supabase Service Key.
+- **`auth.ts`**: Decorates `fastify.authenticate`. Verifies Bearer tokens by calling `supabase.auth.getUser(token)` — not by parsing the JWT locally. This handles key rotation and algorithm differences automatically.
 - **`supabase.ts`**: Provides a global `fastify.supabase` client for database operations.
 - **`s3.ts`**: Configures the S3-compatible client for R2 storage (AWS SDK v3).
 

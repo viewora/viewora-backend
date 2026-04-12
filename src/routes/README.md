@@ -2,11 +2,14 @@
 
 This folder contains the domain-driven API modules for Viewora.
 
-## 📁 Key Modules
-- **`spaces.ts`**: Properties CRUD, publishing logic, and R2 signed URL generation.
-- **`leads.ts`**: Prospect capture and CRM status management.
-- **`analytics.ts`**: Aggregated performance metrics for virtual tours.
-- **`billing.ts`**: Subscription lifecycle, plan listing, and Paystack integration.
+- **`spaces.ts`**: Properties CRUD + publishing logic. Note: DB table is `properties`, but API exposes `space_type` (not `property_type`).
+- **`uploads.ts`**: Presigned R2 URL generation, upload completion registration, and media deletion.
+- **`leads.ts`**: Prospect capture and retrieval by space or user.
+- **`analytics.ts`**: Daily view tracking (public) and aggregated metrics (authenticated).
+- **`billing.ts`**: Subscription lifecycle, plan listing (in-memory cached), and Paystack webhook handling.
+- **`dashboard.ts`**: Aggregated home dashboard summary (spaces, views, leads).
+- **`profile.ts`**: User profile row read/update.
+- **`maintenance.ts`**: Admin-only sync endpoint (key-protected, not JWT-protected).
 
 ## 🛠️ Routing Patterns
 - **Namespacing**: Routes are grouped by entity.

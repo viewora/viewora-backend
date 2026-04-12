@@ -1,24 +1,59 @@
 import { FastifyInstance } from 'fastify'
+import { z } from 'zod'
+import { parseWithSchema } from '../utils/validation.js'
+import { sanitizeLeadPhone, sanitizeLeadText } from '../utils/sanitize.js'
+
+const leadBodySchema = z.object({
+  spaceId: z.string().uuid().optional(),
+  propertyId: z.string().uuid().optional(),
+  name: z.string().trim().min(1).max(100),
+  email: z.string().trim().email().max(254),
+  phone: z.string().trim().max(20).optional(),
+  message: z.string().max(1000).optional(),
+  source: z.enum(['direct', 'qr', 'embed', 'hotspot']).optional(),
+}).superRefine((data, ctx) => {
+  if (!data.spaceId && !data.propertyId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'spaceId or propertyId is required',
+      path: ['spaceId'],
+    })
+  }
+})
+
+const idParamsSchema = z.object({
+  id: z.string().uuid(),
+})
 
 export default async function (fastify: FastifyInstance) {
   // PUBLIC ROUTE: Submit a lead
-  fastify.post('/', async (request, reply) => {
-    const body = request.body as any
+  fastify.post('/', {
+    config: {
+      rateLimit: {
+        max: 3,
+        timeWindow: '1 minute',
+        keyGenerator: (request: any) => request.ip,
+      },
+    },
+  }, async (request, reply) => {
+    const body = parseWithSchema(reply, leadBodySchema, request.body)
+    if (!body) return
+
     const { spaceId, propertyId, name, email, phone, message, source } = body
     const finalId = spaceId || propertyId
-
-    if (!finalId) {
-      return reply.code(400).send({ statusMessage: 'spaceId is required' })
-    }
+    const cleanName = sanitizeLeadText(name, 100)
+    const cleanEmail = email.trim().toLowerCase().slice(0, 254)
+    const cleanPhone = sanitizeLeadPhone(phone)
+    const cleanMessage = message ? sanitizeLeadText(message, 1000) : null
 
     const { data, error } = await fastify.supabase
       .from('leads')
       .insert({
         property_id: finalId,
-        name,
-        email,
-        phone,
-        message,
+        name: cleanName,
+        email: cleanEmail,
+        phone: cleanPhone,
+        message: cleanMessage,
         source: source || 'direct'
       })
       .select()
@@ -63,7 +98,9 @@ export default async function (fastify: FastifyInstance) {
   fastify.get('/space/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
-    const { id } = request.params as any
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const { id } = params
 
     // Verify ownership via Supabase select
     const { data: space } = await fastify.supabase

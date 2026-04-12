@@ -1,12 +1,14 @@
 {
   "name": "backend",
   "version": "1.0.0",
+  "type": "module",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon --watch src --ext ts --exec ts-node src/index.ts",
+    "dev": "nodemon --watch src --ext ts --exec tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "worker": "tsx src/worker.ts",
+    "test": "tsx --test src/tests/**/*.test.ts"
   },
   "keywords": [],
   "author": "",
@@ -23,9 +25,12 @@
     "@fastify/rate-limit": "^10.3.0",
     "@supabase/supabase-js": "^2.99.2",
     "axios": "^1.13.6",
+    "bullmq": "^5.19.0",
     "dotenv": "^17.3.1",
     "fastify": "^5.8.2",
     "fastify-raw-body": "^5.0.0",
+    "prom-client": "^15.1.0",
+    "redis": "^4.7.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -33,6 +38,7 @@
     "@types/node": "^25.5.0",
     "nodemon": "^3.1.14",
     "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
 }

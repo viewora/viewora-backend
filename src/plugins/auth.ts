@@ -1,9 +1,31 @@
 import fp from 'fastify-plugin'
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+import { checkUserQuota } from '../utils/quotas.js'
+
+type RequestIdentity = {
+  id: string
+  plan: {
+    id: string | null
+    name: string
+    isFree: boolean
+  }
+  permissions: {
+    canWrite: boolean
+    leadCaptureEnabled: boolean
+    brandingCustomizationEnabled: boolean
+    embedsEnabled: boolean
+    qrDownloadEnabled: boolean
+    advancedAnalyticsEnabled: boolean
+  }
+}
 
 declare module 'fastify' {
   interface FastifyInstance {
     authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>
+  }
+
+  interface FastifyRequest {
+    identity?: RequestIdentity
   }
 }
 
@@ -38,6 +60,44 @@ export default fp(async (fastify: FastifyInstance) => {
         ...user,
         sub: user.id
       } as any
+
+      try {
+        const { plan, canWrite, isFree } = await checkUserQuota(fastify, user.id)
+        request.identity = {
+          id: user.id,
+          plan: {
+            id: typeof plan.id === 'string' ? plan.id : null,
+            name: String(plan.name || 'Free'),
+            isFree,
+          },
+          permissions: {
+            canWrite,
+            leadCaptureEnabled: Boolean(plan.lead_capture_enabled),
+            brandingCustomizationEnabled: Boolean(plan.branding_customization_enabled),
+            embedsEnabled: Boolean(plan.embeds_enabled),
+            qrDownloadEnabled: Boolean(plan.qr_download_enabled),
+            advancedAnalyticsEnabled: Boolean(plan.advanced_analytics_enabled),
+          },
+        }
+      } catch (quotaError: any) {
+        request.log.warn({ err: quotaError?.message }, 'Failed to enrich identity context from quota data')
+        request.identity = {
+          id: user.id,
+          plan: {
+            id: null,
+            name: 'Unknown',
+            isFree: true,
+          },
+          permissions: {
+            canWrite: false,
+            leadCaptureEnabled: false,
+            brandingCustomizationEnabled: false,
+            embedsEnabled: false,
+            qrDownloadEnabled: false,
+            advancedAnalyticsEnabled: false,
+          },
+        }
+      }
     } catch (err: any) {
       request.log.error(`Auth exception: ${err.message}`)
       return reply.code(401).send({ error: { code: 'UNAUTHORIZED', message: 'Authentication error' } })

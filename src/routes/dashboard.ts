@@ -1,10 +1,17 @@
 import { FastifyInstance } from 'fastify'
+import { z } from 'zod'
 import { checkUserQuota } from '../utils/quotas.js'
+import { parseWithSchema } from '../utils/validation.js'
+
+const emptyQuerySchema = z.object({}).passthrough()
 
 export default async function (fastify: FastifyInstance) {
   fastify.addHook('preHandler', fastify.authenticate)
 
   fastify.get('/summary', async (request, reply) => {
+    const query = parseWithSchema(reply, emptyQuerySchema, request.query)
+    if (!query) return
+
     const user = request.user as any
     const userId = user.sub
 

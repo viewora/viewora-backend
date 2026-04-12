@@ -1,9 +1,17 @@
 import { FastifyInstance } from 'fastify'
+import { z } from 'zod'
+import { parseWithSchema } from '../utils/validation.js'
+
+const maintenanceQuerySchema = z.object({
+  key: z.string().min(1),
+})
 
 export default async function (fastify: FastifyInstance) {
   fastify.get('/sync-limits', async (request, reply) => {
     // Basic protection
-    const { key } = request.query as any
+    const query = parseWithSchema(reply, maintenanceQuerySchema, request.query)
+    if (!query) return
+    const { key } = query
     if (key !== 'viewora-admin-sync') {
       return reply.code(403).send({ error: 'Unauthorized' })
     }

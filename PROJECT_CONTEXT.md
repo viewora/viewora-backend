@@ -212,6 +212,19 @@ Server **exits on startup** if any of the first 7 required vars are missing.
 
 ---
 
+## Product Blueprint (Read Before Building Any API Route for the Viewer/Editor)
+
+The 360° viewer and editor system has a full engineering contract. It lives in the **root workspace** (parent folder of this repo):
+
+| Document | What it covers |
+|---|---|
+| `../360-viewer-implementation.md` | Product blueprint v4.0 — full data model, viewer/editor/review modes, guided tours, floor plan, all planned features |
+| `../360-viewer-execution-spec.md` | **Engineering contract** — exact route specs, error codes, state machines, data lifecycle, validation Zod schemas, observability, security rules, release gates |
+
+> The execution spec is the authoritative reference for every new or modified API route. Check it before writing any route handler.
+
+---
+
 ## Coding Rules for AI Editing This Repo
 
 1. **Quota before every write** — call `checkUserQuota()` before create/upload/publish. Never skip this.

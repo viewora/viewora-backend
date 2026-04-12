@@ -1,23 +1,83 @@
 import { FastifyInstance } from 'fastify'
 import { PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { z } from 'zod'
 import { checkStorageQuota, checkFileSizeLimit, isValidFileType, checkUserQuota } from '../utils/quotas.js'
+import { parseWithSchema } from '../utils/validation.js'
+import { scheduleMediaProcessing, updateUploadStatus } from '../utils/uploads.js'
+
+const idParamsSchema = z.object({
+  id: z.string().uuid(),
+})
+
+const uploadMediaTypeSchema = z.enum([
+  'panorama',
+  'gallery',
+  'gallery_image',
+  'thumb',
+  'thumbnail',
+  'logo',
+  'floor_plan',
+  'branding_logo',
+  'audio',
+])
+
+const createSignedUrlBodySchema = z.object({
+  spaceId: z.string().uuid().optional(),
+  propertyId: z.string().uuid().optional(),
+  mediaType: uploadMediaTypeSchema,
+  fileName: z.string().trim().min(1).max(255),
+  contentType: z.string().trim().min(1).max(120),
+  fileSize: z.number().int().positive().max(100_000_000),
+}).superRefine((data, ctx) => {
+  if (!data.spaceId && !data.propertyId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'spaceId or propertyId is required',
+      path: ['spaceId'],
+    })
+  }
+})
+
+const completeUploadBodySchema = z.object({
+  spaceId: z.string().uuid().optional(),
+  propertyId: z.string().uuid().optional(),
+  mediaType: uploadMediaTypeSchema,
+  objectKey: z.string().trim().min(1).max(512),
+  publicUrl: z.string().url().max(2048),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  fileSize: z.number().int().positive().optional(),
+}).superRefine((data, ctx) => {
+  if (!data.spaceId && !data.propertyId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'spaceId or propertyId is required',
+      path: ['spaceId'],
+    })
+  }
+})
 
 export default async function (fastify: FastifyInstance) {
   fastify.addHook('preHandler', fastify.authenticate)
 
   // CREATE SIGNED URL
-  fastify.post('/create-signed-url', async (request, reply) => {
+  fastify.post('/create-signed-url', {
+    config: {
+      rateLimit: {
+        max: 20,
+        timeWindow: '1 minute',
+        keyGenerator: (request: any) => request.user?.sub || request.ip,
+      },
+    },
+  }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
-    const body = request.body as any
+    const body = parseWithSchema(reply, createSignedUrlBodySchema, request.body)
+    if (!body) return
 
     const { spaceId, propertyId, mediaType, fileName, contentType, fileSize } = body
     const finalId = spaceId || propertyId
-
-    if (!finalId || !mediaType || !fileName || !contentType || !fileSize) {
-      return reply.code(400).send({ statusMessage: 'Missing required fields' })
-    }
 
     // 1. Validate File Type
     if (!isValidFileType(contentType, mediaType)) {
@@ -108,13 +168,26 @@ export default async function (fastify: FastifyInstance) {
   })
 
   // COMPLETE UPLOAD
-  fastify.post('/complete', async (request, reply) => {
+  fastify.post('/complete', {
+    config: {
+      rateLimit: {
+        max: 20,
+        timeWindow: '1 minute',
+        keyGenerator: (request: any) => request.user?.sub || request.ip,
+      },
+    },
+  }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
-    const body = request.body as any
+    const body = parseWithSchema(reply, completeUploadBodySchema, request.body)
+    if (!body) return
 
     const { spaceId, propertyId, mediaType, objectKey, publicUrl, width, height, fileSize } = body
     const finalId = spaceId || propertyId
+
+    if (!objectKey.startsWith(`users/${userId}/`)) {
+      return reply.code(403).send({ statusMessage: 'Invalid object key ownership' })
+    }
 
     // 1. Verify Space Ownership
     const { data: space, error: spaceErr } = await fastify.supabase
@@ -128,7 +201,33 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(403).send({ statusMessage: 'Unauthorized' })
     }
 
-    // 2. Insert record
+    // 2. Idempotency: if this objectKey is already registered for the same space, return it.
+    const { data: existingMedia } = await fastify.supabase
+      .from('property_media')
+      .select('*')
+      .eq('property_id', finalId)
+      .eq('storage_key', objectKey)
+      .maybeSingle()
+
+    if (existingMedia) {
+      if (existingMedia.processing_status === 'failed') {
+        await updateUploadStatus(fastify, existingMedia.id, 'pending')
+        if (finalId) {
+          scheduleMediaProcessing(
+            fastify,
+            existingMedia.id,
+            finalId,
+            userId,
+            existingMedia.storage_key
+          )
+        }
+      }
+
+      request.log.info({ userId, mediaId: existingMedia.id, objectKey }, 'Upload completion idempotent hit')
+      return reply.send(existingMedia)
+    }
+
+    // 3. Insert record
     let dbMediaType = mediaType
     if (mediaType === 'gallery') dbMediaType = 'gallery_image'
     if (mediaType === 'thumb')   dbMediaType = 'thumbnail'
@@ -142,7 +241,8 @@ export default async function (fastify: FastifyInstance) {
         public_url: publicUrl,
         width: width || null,
         height: height || null,
-        file_size_bytes: fileSize || null
+        file_size_bytes: fileSize || null,
+        processing_status: 'pending'
       })
       .select()
       .single()
@@ -154,19 +254,54 @@ export default async function (fastify: FastifyInstance) {
 
     request.log.info({ userId, mediaId: media.id, size: fileSize, spaceId: finalId }, 'Completed media metadata R2 sync securely')
 
-    // 3. Update storage counter via RPC
+    // 4. Update storage counter via RPC
     if (fileSize) {
       await fastify.supabase.rpc('increment_storage_usage', { u_id: userId, bytes: Number(fileSize) })
     }
 
+    if (finalId) {
+      scheduleMediaProcessing(fastify, media.id, finalId, userId, objectKey)
+    }
+
     return reply.send(media)
+  })
+
+  // RETRY MEDIA PROCESSING
+  fastify.post('/:id/retry-processing', async (request, reply) => {
+    const user = request.user as any
+    const userId = user.sub
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const { id } = params
+
+    const { data: media, error: fetchErr } = await fastify.supabase
+      .from('property_media')
+      .select('id, processing_status, storage_key, property_id, properties!inner(user_id)')
+      .eq('id', id)
+      .eq('properties.user_id', userId)
+      .single()
+
+    if (fetchErr || !media) {
+      return reply.code(404).send({ statusMessage: 'Media not found or unauthorized' })
+    }
+
+    if (media.processing_status === 'processing') {
+      return reply.code(409).send({ statusMessage: 'Media is already processing' })
+    }
+
+    await updateUploadStatus(fastify, media.id, 'pending')
+    scheduleMediaProcessing(fastify, media.id, media.property_id, userId, media.storage_key)
+
+    return reply.send({ mediaId: media.id, status: 'pending' })
   })
 
   // DELETE MEDIA
   fastify.delete('/:id', async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
-    const { id } = request.params as any
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const { id } = params
 
     // 1. Get media record to verify ownership and get storage info
     const { data: media, error: fetchErr } = await fastify.supabase
