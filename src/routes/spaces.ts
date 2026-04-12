@@ -229,6 +229,15 @@ export default async function (fastify: FastifyInstance) {
       .eq('property_id', id)
       .eq('properties.user_id', userId)
 
+    if (mediaFetchErr) {
+      return reply.code(500).send({ statusMessage: 'Failed to load space media' })
+    }
+
+    await fastify.supabase
+      .from('property_360_settings')
+      .delete()
+      .eq('property_id', id)
+
     // 2. Cleanup R2
     const bucketName = process.env.R2_BUCKET_NAME
     if (bucketName && mediaItems && mediaItems.length > 0) {
@@ -337,6 +346,13 @@ export default async function (fastify: FastifyInstance) {
       // 5. Slug Check
       if (!body.slug && !currentSpace.slug) {
         return reply.code(400).send({ statusMessage: 'A unique slug is required to publish.' })
+      }
+    }
+
+    if (isPublishing) {
+      const hasPanorama = currentSpace.property_media?.some((item: any) => item.media_type === 'panorama')
+      if (!hasPanorama) {
+        return reply.code(400).send({ statusMessage: 'Space must have at least one panorama image to be published.' })
       }
     }
 

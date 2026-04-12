@@ -257,6 +257,20 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(500).send({ statusMessage: 'Failed to save media record' })
     }
 
+    const { data: mediaTypes } = await fastify.supabase
+      .from('property_media')
+      .select('media_type')
+      .eq('property_id', finalId)
+
+    const uploadedTypes = new Set((mediaTypes || []).map((item: any) => item.media_type))
+    await fastify.supabase
+      .from('properties')
+      .update({
+        has_360: uploadedTypes.has('panorama'),
+        has_gallery: uploadedTypes.has('gallery_image'),
+      })
+      .eq('id', finalId)
+
     request.log.info({ userId, mediaId: media.id, size: fileSize, spaceId: finalId }, 'Completed media metadata R2 sync securely')
 
     // 4. Update storage counter via RPC
@@ -311,7 +325,7 @@ export default async function (fastify: FastifyInstance) {
     // 1. Get media record to verify ownership and get storage info
     const { data: media, error: fetchErr } = await fastify.supabase
       .from('property_media')
-      .select('id, storage_key, file_size_bytes, property_id, properties!inner(user_id)')
+      .select('id, media_type, storage_key, file_size_bytes, property_id, properties!inner(user_id)')
       .eq('id', id)
       .eq('properties.user_id', userId)
       .single()
@@ -343,6 +357,27 @@ export default async function (fastify: FastifyInstance) {
     if (deleteErr) {
       return reply.code(500).send({ statusMessage: 'Failed to delete media record' })
     }
+
+    if (media.media_type === 'panorama') {
+      await fastify.supabase
+        .from('property_360_settings')
+        .delete()
+        .eq('property_id', media.property_id)
+    }
+
+    const { data: remainingMedia } = await fastify.supabase
+      .from('property_media')
+      .select('media_type')
+      .eq('property_id', media.property_id)
+
+    const remainingTypes = new Set((remainingMedia || []).map((item: any) => item.media_type))
+    await fastify.supabase
+      .from('properties')
+      .update({
+        has_360: remainingTypes.has('panorama'),
+        has_gallery: remainingTypes.has('gallery_image'),
+      })
+      .eq('id', media.property_id)
 
     // 4. Decrement Storage Quota
     if (media.file_size_bytes) {
