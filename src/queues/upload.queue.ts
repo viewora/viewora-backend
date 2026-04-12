@@ -12,17 +12,39 @@ export interface ProcessMediaJob {
 // Queue names
 export const UPLOAD_QUEUE_NAME = 'media-processing'
 
-// Redis connection configuration
-const redisHost = process.env.REDIS_HOST || 'localhost'
-const redisPort = parseInt(process.env.REDIS_PORT || '6379', 10)
-const redisPassword = process.env.REDIS_PASSWORD
+// Redis connection configuration for BullMQ/ioredis.
+// Priority: REDIS_URL (Railway) -> REDIS_HOST/PORT/PASSWORD fallback.
+function getBullMqRedisOptions() {
+  const redisUrl = process.env.REDIS_URL
 
-const redisOptions = {
-  host: redisHost,
-  port: redisPort,
-  ...(redisPassword && { password: redisPassword }),
-  maxRetriesPerRequest: null,
+  if (redisUrl) {
+    const parsed = new URL(redisUrl)
+    const isTls = parsed.protocol === 'rediss:'
+    const port = parsed.port ? parseInt(parsed.port, 10) : (isTls ? 6380 : 6379)
+
+    return {
+      host: parsed.hostname,
+      port,
+      ...(parsed.password ? { password: parsed.password } : {}),
+      ...(parsed.username ? { username: parsed.username } : {}),
+      ...(isTls ? { tls: {} } : {}),
+      maxRetriesPerRequest: null,
+    }
+  }
+
+  const redisHost = process.env.REDIS_HOST || 'localhost'
+  const redisPort = parseInt(process.env.REDIS_PORT || '6379', 10)
+  const redisPassword = process.env.REDIS_PASSWORD
+
+  return {
+    host: redisHost,
+    port: redisPort,
+    ...(redisPassword ? { password: redisPassword } : {}),
+    maxRetriesPerRequest: null,
+  }
 }
+
+const redisOptions = getBullMqRedisOptions()
 
 /**
  * Shared Redis client instance
@@ -30,7 +52,7 @@ const redisOptions = {
  */
 export function createRedisConnection() {
   return createClient({
-    url: process.env.REDIS_URL || `redis://${redisHost}:${redisPort}`,
+    url: process.env.REDIS_URL || `redis://${redisOptions.host}:${redisOptions.port}`,
   })
 }
 
