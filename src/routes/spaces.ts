@@ -71,11 +71,8 @@ export default async function (fastify: FastifyInstance) {
     return reply.send(space)
   })
 
-  // All other space routes require authentication
-  fastify.addHook('preHandler', fastify.authenticate)
-
   // GET all user spaces
-  fastify.get('/', async (request, reply) => {
+  fastify.get('/', { preHandler: fastify.authenticate }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
 
@@ -95,7 +92,7 @@ export default async function (fastify: FastifyInstance) {
   })
 
   // GET specific space
-  fastify.get('/:id', async (request, reply) => {
+  fastify.get('/:id', { preHandler: fastify.authenticate }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
     const params = parseWithSchema(reply, idParamsSchema, request.params)
@@ -129,7 +126,7 @@ export default async function (fastify: FastifyInstance) {
   })
 
   // CREATE space
-  fastify.post('/', async (request, reply) => {
+  fastify.post('/', { preHandler: fastify.authenticate }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
     const body = parseWithSchema(reply, createSpaceBodySchema, request.body)
@@ -172,7 +169,7 @@ export default async function (fastify: FastifyInstance) {
   })
 
   // UPDATE space
-  fastify.patch('/:id', async (request, reply) => {
+  fastify.patch('/:id', { preHandler: fastify.authenticate }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
     const params = parseWithSchema(reply, idParamsSchema, request.params)
@@ -215,7 +212,7 @@ export default async function (fastify: FastifyInstance) {
   })
 
   // DELETE space
-  fastify.delete('/:id', async (request, reply) => {
+  fastify.delete('/:id', { preHandler: fastify.authenticate }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
     const params = parseWithSchema(reply, idParamsSchema, request.params)
@@ -295,7 +292,7 @@ export default async function (fastify: FastifyInstance) {
   })
 
   // PUBLISH space
-  fastify.post('/:id/publish', async (request, reply) => {
+  fastify.post('/:id/publish', { preHandler: fastify.authenticate }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
     const params = parseWithSchema(reply, idParamsSchema, request.params)
