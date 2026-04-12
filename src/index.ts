@@ -128,6 +128,8 @@ fastify.register(cors, {
     const allowed = isOriginAllowed(origin, configuredCorsOrigins)
     return cb(null, allowed)
   },
+  methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Authorization', 'Content-Type', 'Accept', 'Origin', 'X-Request-Id'],
   credentials: true,
 })
 
