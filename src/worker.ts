@@ -3,8 +3,10 @@ import { createUploadWorker, createUploadQueue, createUploadQueueEvents, type Pr
 import { createClient } from 'redis'
 import Fastify from 'fastify'
 import supabasePlugin from './plugins/supabase.js'
+import s3Plugin from './plugins/s3.js'
 import { processMedia } from './utils/media-processor.js'
 import { updateUploadStatus } from './utils/uploads.js'
+import { processTileScene } from './utils/tile-processor.js'
 import {
   recordJobSuccess,
   recordJobFailure,
@@ -28,9 +30,10 @@ if (missing.length) {
   process.exit(1)
 }
 
-// Create a minimal Fastify instance for database access
+// Create a minimal Fastify instance for database and S3 access
 const fastify = Fastify({ logger: true })
 await fastify.register(supabasePlugin)
+await fastify.register(s3Plugin)
 
 // Create Redis client for cleanup
 const redis = createClient({
@@ -42,6 +45,13 @@ const queueEvents = createUploadQueueEvents()
 
 // Job processor function
 async function processUploadJob(job: any) {
+  // Route tile-scene jobs to the tile processor
+  if (job.name === 'tile-scene') {
+    const { sceneId, rawImageUrl, spaceId } = job.data
+    await processTileScene(fastify.s3, fastify.supabase, { sceneId, rawImageUrl, spaceId })
+    return
+  }
+
   const { mediaId, spaceId, userId, objectKey } = job.data as ProcessMediaJob
   const jobId = job.id
   const attempt = job.attemptsMade + 1

@@ -19,6 +19,10 @@ import dashboardRoutes from './routes/dashboard.js'
 import profileRoutes from './routes/profile.js'
 import maintenanceRoutes from './routes/maintenance.js'
 import adminRoutes from './routes/admin.js'
+import scenesRoutes from './routes/scenes.js'
+import hotspotsRoutes from './routes/hotspots.js'
+import publicRoutes from './routes/public.js'
+import internalRoutes from './routes/internal.js'
 
 import { createUploadQueue } from './queues/upload.queue.js'
 import type { Queue, Worker } from 'bullmq'
@@ -301,6 +305,11 @@ fastify.register(dashboardRoutes, { prefix: '/dashboard' })
 fastify.register(profileRoutes, { prefix: '/profile' })
 fastify.register(maintenanceRoutes, { prefix: '/maintenance' })
 fastify.register(adminRoutes, { prefix: '/admin' })
+// New routes (no prefix — mixed URL shapes: /spaces/:id/scenes, /scenes/:id, /hotspots/:id, etc.)
+fastify.register(scenesRoutes)
+fastify.register(hotspotsRoutes)
+fastify.register(publicRoutes)
+fastify.register(internalRoutes)
 
 // Alias for /plans (used by frontend dashboard) to avoid 404
 fastify.get('/plans', async (request, reply) => {
