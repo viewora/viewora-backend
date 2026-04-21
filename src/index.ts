@@ -1,5 +1,6 @@
 import Fastify, { FastifyError } from 'fastify'
 import cors from '@fastify/cors'
+import compress from '@fastify/compress'
 import jwt from '@fastify/jwt'
 import dotenv from 'dotenv'
 import rawBody from 'fastify-raw-body'
@@ -7,6 +8,7 @@ import rateLimit from '@fastify/rate-limit'
 import { randomUUID } from 'crypto'
 
 import authPlugin from './plugins/auth.js'
+import redisPlugin from './plugins/redis.js'
 import supabasePlugin from './plugins/supabase.js'
 import s3Plugin from './plugins/s3.js'
 
@@ -123,6 +125,12 @@ const defaultCorsOrigins = [
 const configuredCorsOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map(normalizeOriginPattern).filter(Boolean)
   : defaultCorsOrigins
+
+// Compression — brotli preferred, gzip fallback. Must be first.
+fastify.register(compress, { global: true, encodings: ['br', 'gzip'] })
+
+// Redis cache pool
+fastify.register(redisPlugin)
 
 // Register plugins
 fastify.register(cors, {

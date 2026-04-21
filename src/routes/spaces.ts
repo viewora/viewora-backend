@@ -6,10 +6,6 @@ import { parseWithSchema } from '../utils/validation.js'
 
 const uuidSchema = z.string().uuid()
 
-const slugParamsSchema = z.object({
-  slug: z.string().trim().min(1).max(200),
-})
-
 const idParamsSchema = z.object({
   id: uuidSchema,
 })
@@ -41,36 +37,6 @@ const publishBodySchema = z.object({
 })
 
 export default async function (fastify: FastifyInstance) {
-  // PUBLIC ROUTE: Get space by slug or ID
-  fastify.get('/by-slug/:slug', async (request, reply) => {
-    const params = parseWithSchema(reply, slugParamsSchema, request.params)
-    if (!params) return
-    const { slug } = params
-    
-    // Check if slug is a valid UUID
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slug)
-
-    let query = fastify.supabase
-      .from('properties')
-      .select('*, property_media(*), property_360_settings(*), profiles(agency_name, agency_logo_url)')
-      .eq('is_published', true)
-
-    if (isUuid) {
-      query = query.or(`id.eq.${slug},slug.eq.${slug}`)
-    } else {
-      query = query.eq('slug', slug)
-    }
-
-    const { data: space, error } = await query.single()
-
-    if (error || !space) {
-      return reply.code(404).send({ statusMessage: 'Space not found or unpublished' })
-    }
-
-    reply.header('Cache-Control', 'public, max-age=60, s-maxage=300')
-    return reply.send(space)
-  })
-
   // GET all user spaces
   fastify.get('/', { preHandler: fastify.authenticate }, async (request, reply) => {
     const user = request.user as any

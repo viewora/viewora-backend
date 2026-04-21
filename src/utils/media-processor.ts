@@ -1,43 +1,80 @@
 import { FastifyInstance } from 'fastify'
+import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
+import sharp from 'sharp'
 import { updateUploadStatus } from './uploads.js'
 
-/**
- * Process a media file
- * This is a placeholder for the actual image processing logic
- * In production, this should:
- * - Download file from R2
- * - Optimize images (resize, compress)
- * - Generate thumbnails
- * - Upload processed versions back to R2
- */
+const MAX_WIDTH_PX = 4096
+const MAX_HEIGHT_PX = 2048
+
+async function streamToBuffer(body: unknown): Promise<Buffer> {
+  // AWS SDK v3 Body is a Readable stream in Node.js
+  const readable = body as NodeJS.ReadableStream
+  const chunks: Buffer[] = []
+  for await (const chunk of readable) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as any))
+  }
+  return Buffer.concat(chunks)
+}
+
 export async function processMedia(
   fastify: FastifyInstance,
   mediaId: string,
   objectKey: string,
   userId: string,
-) {
-  fastify.log.info({ mediaId, objectKey, userId }, 'Starting media processing')
+): Promise<void> {
+  fastify.log.info({ mediaId, objectKey }, 'Starting media processing')
+
+  const bucketName = process.env.R2_BUCKET_NAME
+  if (!bucketName) throw new Error('R2_BUCKET_NAME not configured')
 
   try {
-    // TODO: Implement actual image processing pipeline
-    // For now, simulate processing by:
-    // 1. Validating file exists in R2
-    // 2. Generating thumbnail (if image)
-    // 3. Uploading processed versions
-    // 4. Updating media record with processed URLs
+    // 1. Download original from R2
+    const getResult = await fastify.s3.send(
+      new GetObjectCommand({ Bucket: bucketName, Key: objectKey })
+    )
+    if (!getResult.Body) throw new Error(`Empty R2 body for key: ${objectKey}`)
 
-    // Placeholder: Simulate processing delay
-    await new Promise(resolve => setTimeout(resolve, 100))
+    const contentType = getResult.ContentType || 'image/jpeg'
+    const originalBuffer = await streamToBuffer(getResult.Body)
 
-    fastify.log.info({ mediaId }, 'Media processing completed successfully')
+    // 2. Process with sharp:
+    //    - Strip ALL EXIF/XMP/IPTC metadata (removes GPS coordinates, device info, timestamps)
+    //    - Read dimensions for DB record
+    const image = sharp(originalBuffer, { failOn: 'none' })
+    const metadata = await image.metadata()
+
+    const width = metadata.width ?? 0
+    const height = metadata.height ?? 0
+
+    if (width > MAX_WIDTH_PX || height > MAX_HEIGHT_PX) {
+      fastify.log.warn({ mediaId, width, height }, 'Image exceeds dimension limits — continuing anyway')
+    }
+
+    // sharp strips all EXIF/GPS/device metadata by default — calling .toBuffer() without
+    // .withMetadata() is sufficient and is the correct sharp v0.33+ API.
+    const cleanBuffer = await image.toBuffer()
+
+    // 3. Re-upload stripped version back to R2 (same key, same CDN URL)
+    await fastify.s3.send(
+      new PutObjectCommand({
+        Bucket: bucketName,
+        Key: objectKey,
+        Body: cleanBuffer,
+        ContentType: contentType,
+        CacheControl: 'public, max-age=31536000, immutable',
+      })
+    )
+
+    // 4. Persist confirmed dimensions to the media record
+    await fastify.supabase
+      .from('property_media')
+      .update({ width: width || null, height: height || null })
+      .eq('id', mediaId)
+
+    fastify.log.info({ mediaId, width, height, originalBytes: originalBuffer.length, cleanBytes: cleanBuffer.length }, 'EXIF stripped and re-uploaded')
     await updateUploadStatus(fastify, mediaId, 'complete')
   } catch (error: any) {
-    fastify.log.error(
-      { mediaId, objectKey, error: error?.message },
-      'Media processing failed, will retry',
-    )
-    // Don't update status here—let BullMQ handle retries
-    // The job will be retried automatically with exponential backoff
+    fastify.log.error({ mediaId, objectKey, error: error?.message }, 'Media processing failed')
     throw error
   }
 }
