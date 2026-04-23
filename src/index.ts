@@ -30,8 +30,11 @@ import { createUploadQueue } from './queues/upload.queue.js'
 import type { Queue, Worker } from 'bullmq'
 import { getMetrics } from './utils/metrics.js'
 import { cleanupTasks, executeCleanupTask } from './utils/cleanup-scheduler.js'
+import { initSentry, captureException } from './utils/sentry.js'
 
 dotenv.config()
+// initSentry is async (dynamic ESM import) — fire-and-forget; errors are caught internally
+void initSentry()
 
 // Extend FastifyInstance with uploadQueue decorator
 declare module 'fastify' {
@@ -269,6 +272,12 @@ fastify.setErrorHandler(function (error: FastifyError, request, reply) {
   this.log.error({ err: error, reqId: request.id }, 'System Error')
 
   const statusCode = error.statusCode || 500
+
+  // Report unhandled 5xx errors to Sentry
+  if (statusCode >= 500) {
+    captureException(error, { requestId: request.id, url: request.url, method: request.method })
+  }
+
   const code = statusCode === 429
     ? 'RATE_LIMITED'
     : toErrorCode(statusCode, error.code)

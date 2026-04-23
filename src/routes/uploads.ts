@@ -130,7 +130,10 @@ export default async function (fastify: FastifyInstance) {
     else if (mediaType === 'logo' || mediaType === 'branding_logo') folder = 'branding'
     else return reply.code(400).send({ statusMessage: 'Invalid media type' })
 
-    const fileExt = fileName.split('.').pop()
+    // Sanitise extension: only allow alphanumeric chars, clamp to 8 chars.
+    // Raw fileName comes from the client and must not influence the R2 key path.
+    const rawExt = (fileName.split('.').pop() ?? '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+    const fileExt = rawExt || 'bin'
     const uniqueFileName = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${fileExt}`
     
     let objectKey = `users/${userId}/spaces/${finalId}/${folder}/${uniqueFileName}`

@@ -3,6 +3,7 @@ import { DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { z } from 'zod'
 import { canCreateSpace, checkUserQuota } from '../utils/quotas.js'
 import { parseWithSchema } from '../utils/validation.js'
+import { sendTourPublishedEmail } from '../email/index.js'
 
 const uuidSchema = z.string().uuid()
 
@@ -10,12 +11,14 @@ const idParamsSchema = z.object({
   id: uuidSchema,
 })
 
+const slugSchema = z.string().trim().min(3).max(120).regex(/^[a-z0-9-]+$/, 'Slug must contain only lowercase letters, numbers, and hyphens')
+
 const createSpaceBodySchema = z.object({
   title: z.string().trim().min(1).max(120),
   space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'other']),
   description: z.string().max(2000).optional(),
   location_text: z.string().max(200).optional(),
-  slug: z.string().trim().min(3).max(120).optional(),
+  slug: slugSchema.optional(),
 })
 
 const updateSpaceBodySchema = z.object({
@@ -23,7 +26,7 @@ const updateSpaceBodySchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   cover_image_url: z.string().url().max(2048).nullable().optional(),
   location_text: z.string().max(200).nullable().optional(),
-  slug: z.string().trim().min(3).max(120).nullable().optional(),
+  slug: slugSchema.nullable().optional(),
   space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'other']).optional(),
   lead_form_enabled: z.boolean().optional(),
   branding_enabled: z.boolean().optional(),
@@ -340,6 +343,19 @@ export default async function (fastify: FastifyInstance) {
         return reply.code(400).send({ statusMessage: 'This URL slug is already in use. Please choose another one.' })
       }
       return reply.code(500).send({ statusMessage: 'Failed to update publish status' })
+    }
+
+    // Fire-and-forget: notify owner when tour first goes live
+    if (isPublishing && !currentSpace.is_published) {
+      const ownerEmail = (request.user as any)?.email as string | undefined
+      const slug = space.slug || currentSpace.slug
+      if (ownerEmail && slug) {
+        void sendTourPublishedEmail({
+          ownerEmail,
+          spaceName: space.title,
+          spaceSlug: slug,
+        }).catch(err => fastify.log.error(err, 'Tour published email failed'))
+      }
     }
 
     return reply.send(space)

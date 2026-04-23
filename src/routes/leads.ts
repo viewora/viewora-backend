@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { sanitizeLeadPhone, sanitizeLeadText } from '../utils/sanitize.js'
+import { sendLeadNotification } from '../email/index.js'
 
 const leadBodySchema = z.object({
   spaceId: z.string().uuid().optional(),
@@ -46,6 +47,24 @@ export default async function (fastify: FastifyInstance) {
     const cleanPhone = sanitizeLeadPhone(phone)
     const cleanMessage = message ? sanitizeLeadText(message, 1000) : null
 
+    // Verify the space exists, is published, and has lead capture enabled.
+    // Prevents lead spam into arbitrary UUIDs and respects the owner's settings.
+    const { data: space, error: spaceErr } = await fastify.supabase
+      .from('properties')
+      .select('id, is_published, lead_form_enabled')
+      .eq('id', finalId)
+      .single()
+
+    if (spaceErr || !space) {
+      return reply.code(404).send({ statusMessage: 'Tour not found' })
+    }
+    if (!space.is_published) {
+      return reply.code(403).send({ statusMessage: 'This tour is not published' })
+    }
+    if (!space.lead_form_enabled) {
+      return reply.code(403).send({ statusMessage: 'Lead capture is disabled for this tour' })
+    }
+
     const { data, error } = await fastify.supabase
       .from('leads')
       .insert({
@@ -71,6 +90,31 @@ export default async function (fastify: FastifyInstance) {
     } catch {
       // Non-fatal — ignore
     }
+
+    // Fire-and-forget: notify space owner by email
+    void (async () => {
+      try {
+        const { data: prop } = await fastify.supabase
+          .from('properties')
+          .select('title, slug, user_id')
+          .eq('id', finalId)
+          .single()
+
+        if (!prop?.user_id || !prop?.slug) return
+
+        const { data: { user: owner } } = await fastify.supabase.auth.admin.getUserById(prop.user_id)
+        if (!owner?.email) return
+
+        await sendLeadNotification({
+          ownerEmail: owner.email,
+          spaceName: prop.title,
+          spaceSlug: prop.slug,
+          lead: { name: cleanName, email: cleanEmail, phone: cleanPhone, message: cleanMessage },
+        })
+      } catch (err) {
+        fastify.log.error(err, 'Lead notification email failed')
+      }
+    })()
 
     return reply.code(201).send(data)
   })

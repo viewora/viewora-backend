@@ -118,6 +118,17 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     const params = parseWithSchema(reply, sceneParamsSchema, (req as any).params)
     if (!params) return
 
+    // Verify ownership BEFORE loading scene data — avoids loading potentially large
+    // hotspot arrays for scenes the requester doesn't own.
+    const { data: ownerCheck } = await fastify.supabase
+      .from('scenes')
+      .select('id, properties!inner(user_id)')
+      .eq('id', params.sceneId)
+      .eq('properties.user_id', userId)
+      .single()
+
+    if (!ownerCheck) return reply.code(404).send({ statusMessage: 'Scene not found' })
+
     const { data: scene } = await fastify.supabase
       .from('scenes')
       .select('*, hotspots(*)')
@@ -125,16 +136,6 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       .single()
 
     if (!scene) return reply.code(404).send({ statusMessage: 'Scene not found' })
-
-    // Verify ownership via the parent space
-    const { data: space } = await fastify.supabase
-      .from('properties')
-      .select('user_id')
-      .eq('id', scene.space_id)
-      .single()
-
-    if (!space || space.user_id !== userId)
-      return reply.code(403).send({ statusMessage: 'Forbidden' })
 
     return reply.send({ scene })
   })
@@ -149,20 +150,12 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     const { data: scene } = await fastify.supabase
       .from('scenes')
-      .select('space_id')
+      .select('id, properties!inner(user_id)')
       .eq('id', params.sceneId)
+      .eq('properties.user_id', userId)
       .single()
 
     if (!scene) return reply.code(404).send({ statusMessage: 'Scene not found' })
-
-    const { data: space } = await fastify.supabase
-      .from('properties')
-      .select('user_id')
-      .eq('id', scene.space_id)
-      .single()
-
-    if (!space || space.user_id !== userId)
-      return reply.code(403).send({ statusMessage: 'Forbidden' })
 
     const { data: updated, error: updateError } = await fastify.supabase
       .from('scenes')
@@ -184,20 +177,12 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     const { data: scene } = await fastify.supabase
       .from('scenes')
-      .select('space_id')
+      .select('id, properties!inner(user_id)')
       .eq('id', params.sceneId)
+      .eq('properties.user_id', userId)
       .single()
 
     if (!scene) return reply.code(404).send({ statusMessage: 'Scene not found' })
-
-    const { data: space } = await fastify.supabase
-      .from('properties')
-      .select('user_id')
-      .eq('id', scene.space_id)
-      .single()
-
-    if (!space || space.user_id !== userId)
-      return reply.code(403).send({ statusMessage: 'Forbidden' })
 
     await fastify.supabase.from('scenes').delete().eq('id', params.sceneId)
     return reply.code(204).send()

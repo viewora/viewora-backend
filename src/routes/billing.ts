@@ -162,13 +162,22 @@ export default async function (fastify: FastifyInstance) {
     const { metadata, data } = body ?? {}
     const eventMetadata = data?.metadata || metadata || {}
     const { reference } = data ?? {}
-    const userId: string | undefined = eventMetadata?.user_id
-    const planId: string | undefined = eventMetadata?.plan_id
+
+    // Validate that metadata fields are proper UUIDs before touching the DB.
+    // The webhook body is Paystack-signed but the metadata was set by our own code;
+    // a UUID check guards against any future metadata tampering or Paystack bugs.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const userId: string | undefined = typeof eventMetadata?.user_id === 'string' && UUID_RE.test(eventMetadata.user_id)
+      ? eventMetadata.user_id
+      : undefined
+    const planId: string | undefined = typeof eventMetadata?.plan_id === 'string' && UUID_RE.test(eventMetadata.plan_id)
+      ? eventMetadata.plan_id
+      : undefined
     const billingCycle: string | undefined = eventMetadata?.billing_cycle
 
     if (eventType === 'charge.success' || eventType === 'subscription.create') {
       if (!userId || !planId || !billingCycle) {
-        fastify.log.error({ data }, 'Webhook missing required metadata')
+        fastify.log.error({ data }, 'Webhook missing or invalid required metadata')
         return
       }
       // Upsert Subscription
