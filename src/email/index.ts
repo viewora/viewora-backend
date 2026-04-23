@@ -1,7 +1,13 @@
 import { Resend } from 'resend'
 
-const resend = new Resend(process.env.RESEND_API_KEY)
 const FROM = 'Viewora <hello@viewora.software>'
+
+let resend: Resend | null = null
+if (process.env.RESEND_API_KEY) {
+  resend = new Resend(process.env.RESEND_API_KEY)
+} else {
+  console.warn('[email] RESEND_API_KEY not set — email notifications disabled')
+}
 
 export async function sendLeadNotification(params: {
   ownerEmail: string
@@ -9,6 +15,7 @@ export async function sendLeadNotification(params: {
   spaceSlug: string
   lead: { name: string; email: string; phone?: string | null; message?: string | null }
 }): Promise<void> {
+  if (!resend) return
   const { ownerEmail, spaceName, spaceSlug, lead } = params
 
   await resend.emails.send({
@@ -47,6 +54,7 @@ export async function sendTourPublishedEmail(params: {
   spaceName: string
   spaceSlug: string
 }): Promise<void> {
+  if (!resend) return
   const { ownerEmail, spaceName, spaceSlug } = params
   const tourUrl = `https://viewora.software/p/${spaceSlug}`
 
