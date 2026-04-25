@@ -44,12 +44,22 @@ export default async function (fastify: FastifyInstance) {
   fastify.get('/', { preHandler: fastify.authenticate }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
+    const query = request.query as { page?: string; limit?: string }
+    const limit = Math.min(Number(query.limit) || 100, 200)
+    const page = Math.max(Number(query.page) || 1, 1)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
 
-    const { data, error } = await fastify.supabase
+    const { data, error, count } = await fastify.supabase
       .from('properties')
-      .select('id, title, slug, description, property_type, location_text, cover_image_url, has_360, has_gallery, is_published, visibility, lead_form_enabled, branding_enabled, created_at, updated_at')
+      .select('id, title, slug, description, property_type, location_text, cover_image_url, has_360, has_gallery, is_published, visibility, lead_form_enabled, branding_enabled, created_at, updated_at', { count: 'exact' })
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (error) {
+      return reply.code(500).send({ statusMessage: 'Failed to fetch spaces' })
+    }
 
     const mappedData = (data || []).map(d => ({
       ...d,
@@ -57,7 +67,7 @@ export default async function (fastify: FastifyInstance) {
       property_type: undefined
     }))
 
-    return reply.send(mappedData)
+    return reply.send({ data: mappedData, total: count ?? 0, page, limit })
   })
 
   // GET specific space

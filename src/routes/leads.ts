@@ -123,19 +123,25 @@ export default async function (fastify: FastifyInstance) {
   fastify.get('/', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = request.user as any
     const userId = user.sub
+    const query = request.query as { page?: string; limit?: string }
+    const limit = Math.min(Number(query.limit) || 100, 500)
+    const page = Math.max(Number(query.page) || 1, 1)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
 
-    const { data: leads, error } = await fastify.supabase
+    const { data: leads, error, count } = await fastify.supabase
       .from('leads')
-      .select('*, properties!inner(title, user_id)')
+      .select('*, properties!inner(title, user_id)', { count: 'exact' })
       .eq('properties.user_id', userId)
       .order('created_at', { ascending: false })
+      .range(from, to)
 
     if (error) {
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: 'Failed to fetch leads' })
     }
 
-    return reply.send(leads)
+    return reply.send({ data: leads, total: count ?? 0, page, limit })
   })
 
   // AUTH ROUTE: Get leads for a specific space
