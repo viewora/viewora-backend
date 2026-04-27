@@ -7,7 +7,7 @@ const hotspotParamsSchema = z.object({ hotspotId: z.string().uuid() })
 const sceneParamsSchema   = z.object({ sceneId:   z.string().uuid() })
 
 const CreateHotspotBodySchema = z.object({
-  type: z.enum(['info', 'scene_link', 'url']),
+  type: z.enum(['info', 'scene_link', 'url', 'video', 'youtube']),
   yaw: z.number().min(-180).max(180),
   pitch: z.number().min(-90).max(90),
   label: z.string().max(60).optional(),
@@ -16,18 +16,21 @@ const CreateHotspotBodySchema = z.object({
     text: z.string().max(500).optional(),
     image_url: z.string().url().optional(),
     url: z.string().url().optional(),
+    icon: z.string().max(40).optional(),
     button_label: z.string().max(40).optional(),
   }).optional(),
 }).refine(data => {
   if (data.type === 'scene_link' && !data.target_scene_id) return false
   if (data.type === 'url' && !data.content?.url) return false
+  if (data.type === 'video' && !data.content?.url) return false
+  if (data.type === 'youtube' && !data.content?.url) return false
   return true
-}, { message: 'scene_link requires target_scene_id; url type requires content.url' })
+}, { message: 'scene_link requires target_scene_id; url/video/youtube type requires content.url' })
 
 // Standalone partial schema — avoids inheriting the .refine() from CreateHotspotBodySchema
 // which would force scene_link/url constraints even on unrelated partial updates.
 const UpdateHotspotBodySchema = z.object({
-  type: z.enum(['info', 'scene_link', 'url']).optional(),
+  type: z.enum(['info', 'scene_link', 'url', 'video', 'youtube']).optional(),
   yaw: z.number().min(-180).max(180).optional(),
   pitch: z.number().min(-90).max(90).optional(),
   label: z.string().max(60).optional().nullable(),
@@ -36,6 +39,7 @@ const UpdateHotspotBodySchema = z.object({
     text: z.string().max(500).optional(),
     image_url: z.string().url().optional(),
     url: z.string().url().optional(),
+    icon: z.string().max(40).optional(),
     button_label: z.string().max(40).optional(),
   }).optional().nullable(),
 })
