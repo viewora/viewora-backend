@@ -19,6 +19,7 @@ const CreateHotspotBodySchema = z.object({
     icon: z.string().max(40).optional(),
     scale: z.number().min(0.1).max(5).optional(),
     hoverScale: z.number().min(1).max(5).optional(),
+    corners: z.array(z.object({ yaw: z.number(), pitch: z.number() })).length(4).optional(),
     button_label: z.string().max(40).optional(),
   }).optional(),
 }).refine(data => {
@@ -44,6 +45,7 @@ const UpdateHotspotBodySchema = z.object({
     icon: z.string().max(40).optional(),
     scale: z.number().min(0.1).max(5).optional(),
     hoverScale: z.number().min(1).max(5).optional(),
+    corners: z.array(z.object({ yaw: z.number(), pitch: z.number() })).length(4).optional(),
     button_label: z.string().max(40).optional(),
   }).optional().nullable(),
 })
