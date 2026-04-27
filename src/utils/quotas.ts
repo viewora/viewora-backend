@@ -109,7 +109,7 @@ export async function checkStorageQuota(fastify: FastifyInstance, userId: string
 
 /** Check single-file size against plan's per-upload limit */
 export function checkFileSizeLimit(plan: Record<string, any>, fileSize: number): boolean {
-  const maxUpload = Number(plan.max_upload_bytes || 15728640) // default 15 MB
+  const maxUpload = Number(plan.max_upload_bytes || 262144000) // default 250 MB
   return fileSize <= maxUpload
 }
 
