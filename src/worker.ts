@@ -16,183 +16,188 @@ import {
   updateQueueMetrics,
 } from './utils/metrics.js'
 
-dotenv.config()
+;(async () => {
+  dotenv.config()
 
-// Validate required environment variables
-const REQUIRED_ENV = [
-  'SUPABASE_URL',
-  'SUPABASE_SERVICE_KEY',
-  'REDIS_URL',
-]
-const missing = REQUIRED_ENV.filter(k => !process.env[k])
-if (missing.length) {
-  console.error(`Missing required environment variables: ${missing.join(', ')}`)
-  process.exit(1)
-}
-
-// Create a minimal Fastify instance for database and S3 access
-const fastify = Fastify({ logger: true })
-await fastify.register(supabasePlugin)
-await fastify.register(s3Plugin)
-
-// Create Redis client for cleanup
-const redis = createClient({
-  url: process.env.REDIS_URL,
-})
-
-// Create queue events listener
-const queueEvents = createUploadQueueEvents()
-
-// Job processor function
-async function processUploadJob(job: any) {
-  // Route tile-scene jobs to the tile processor
-  if (job.name === 'tile-scene') {
-    const { sceneId, rawImageUrl, spaceId } = job.data
-    await processTileScene(fastify.s3, fastify.supabase, { sceneId, rawImageUrl, spaceId })
-    return
+  // Validate required environment variables
+  const REQUIRED_ENV = [
+    'SUPABASE_URL',
+    'SUPABASE_SERVICE_KEY',
+    'REDIS_URL',
+  ]
+  const missing = REQUIRED_ENV.filter(k => !process.env[k])
+  if (missing.length) {
+    console.error(`Missing required environment variables: ${missing.join(', ')}`)
+    process.exit(1)
   }
 
-  const { mediaId, spaceId, userId, objectKey } = job.data as ProcessMediaJob
-  const jobId = job.id
-  const attempt = job.attemptsMade + 1
-  const maxAttempts = 5
-  const startTime = Date.now()
+  // Create a minimal Fastify instance for database and S3 access
+  const fastify = Fastify({ logger: true })
+  await fastify.register(supabasePlugin)
+  await fastify.register(s3Plugin)
 
-  fastify.log.info(
-    { 
-      jobId,
-      mediaId, 
-      spaceId, 
-      userId, 
-      objectKey, 
-      attempt, 
-      maxAttempts,
-    },
-    `Processing upload job (attempt ${attempt}/${maxAttempts})`,
-  )
+  // Create Redis client for cleanup
+  const redis = createClient({
+    url: process.env.REDIS_URL,
+  })
 
-  try {
-    // Mark job as processing
-    await updateUploadStatus(fastify, mediaId, 'processing')
+  // Create queue events listener
+  const queueEvents = createUploadQueueEvents()
 
-    // Process the media file
-    await processMedia(fastify, mediaId, objectKey, userId)
+  // Job processor function
+  async function processUploadJob(job: any) {
+    // Route tile-scene jobs to the tile processor
+    if (job.name === 'tile-scene') {
+      const { sceneId, rawImageUrl, spaceId } = job.data
+      await processTileScene(fastify.s3, fastify.supabase, { sceneId, rawImageUrl, spaceId })
+      return
+    }
 
-    const durationMs = Date.now() - startTime
+    const { mediaId, spaceId, userId, objectKey } = job.data as ProcessMediaJob
+    const jobId = job.id
+    const attempt = job.attemptsMade + 1
+    const maxAttempts = 5
+    const startTime = Date.now()
+
     fastify.log.info(
       { 
         jobId,
         mediaId, 
-        durationMs,
-        attempt,
-      }, 
-      'Media processing job completed successfully',
-    )
-
-    // Record metrics
-    recordJobSuccess(durationMs)
-  } catch (error: any) {
-    const durationMs = Date.now() - startTime
-    const isLastAttempt = attempt === maxAttempts
-    const failureReason = error?.message || error?.code || 'Unknown error'
-
-    fastify.log.error(
-      { 
-        jobId,
-        mediaId, 
+        spaceId, 
+        userId, 
+        objectKey, 
         attempt, 
-        maxAttempts, 
-        isLastAttempt,
-        durationMs,
-        failureReason,
+        maxAttempts,
       },
-      'Media processing job failed',
+      `Processing upload job (attempt ${attempt}/${maxAttempts})`,
     )
 
-    // Record metrics
-    if (isLastAttempt) {
-      recordJobFailure(durationMs)
-      recordJobDeadLetter()
-    } else {
-      recordJobRetry()
-    }
+    try {
+      // Mark job as processing
+      await updateUploadStatus(fastify, mediaId, 'processing')
 
-    // If this is the last attempt, mark as permanently failed
-    if (isLastAttempt) {
-      await updateUploadStatus(
-        fastify,
-        mediaId,
-        'failed',
-        `Failed after ${maxAttempts} attempts: ${failureReason}`,
-      )
-      fastify.log.warn(
+      // Process the media file
+      await processMedia(fastify, mediaId, objectKey, userId)
+
+      const durationMs = Date.now() - startTime
+      fastify.log.info(
         { 
           jobId,
-          mediaId,
-          failureReason,
+          mediaId, 
+          durationMs,
+          attempt,
         }, 
-        'Media processing moved to dead-letter (permanent failure)',
+        'Media processing job completed successfully',
       )
+
+      // Record metrics
+      recordJobSuccess(durationMs)
+    } catch (error: any) {
+      const durationMs = Date.now() - startTime
+      const isLastAttempt = attempt === maxAttempts
+      const failureReason = error?.message || error?.code || 'Unknown error'
+
+      fastify.log.error(
+        { 
+          jobId,
+          mediaId, 
+          attempt, 
+          maxAttempts, 
+          isLastAttempt,
+          durationMs,
+          failureReason,
+        },
+        'Media processing job failed',
+      )
+
+      // Record metrics
+      if (isLastAttempt) {
+        recordJobFailure(durationMs)
+        recordJobDeadLetter()
+      } else {
+        recordJobRetry()
+      }
+
+      // If this is the last attempt, mark as permanently failed
+      if (isLastAttempt) {
+        await updateUploadStatus(
+          fastify,
+          mediaId,
+          'failed',
+          `Failed after ${maxAttempts} attempts: ${failureReason}`,
+        )
+        fastify.log.warn(
+          { 
+            jobId,
+            mediaId,
+            failureReason,
+          }, 
+          'Media processing moved to dead-letter (permanent failure)',
+        )
+      }
+
+      // Re-throw to let BullMQ handle retry
+      throw error
     }
-
-    // Re-throw to let BullMQ handle retry
-    throw error
   }
-}
 
-// Create the worker
-const worker = createUploadWorker(processUploadJob)
+  // Create the worker
+  const worker = createUploadWorker(processUploadJob)
 
-// Monitor queue events for better observability
-queueEvents.on('failed', (data: any) => {
-  const { jobId, failedReason } = data
-  fastify.log.error({ jobId, failedReason }, 'Job failed event from queue')
-})
+  // Monitor queue events for better observability
+  queueEvents.on('failed', (data: any) => {
+    const { jobId, failedReason } = data
+    fastify.log.error({ jobId, failedReason }, 'Job failed event from queue')
+  })
 
-queueEvents.on('completed', (data: any) => {
-  const { jobId } = data
-  fastify.log.info({ jobId }, 'Job completed event from queue')
-})
+  queueEvents.on('completed', (data: any) => {
+    const { jobId } = data
+    fastify.log.info({ jobId }, 'Job completed event from queue')
+  })
 
-queueEvents.on('stalled', (data: any) => {
-  const { jobId } = data
-  fastify.log.warn({ jobId }, 'Job stalled (may indicate timeout or hang)')
-  recordJobStalled()
-})
+  queueEvents.on('stalled', (data: any) => {
+    const { jobId } = data
+    fastify.log.warn({ jobId }, 'Job stalled (may indicate timeout or hang)')
+    recordJobStalled()
+  })
 
-// Periodic queue health update (every 10 seconds)
-setInterval(async () => {
-  try {
-    const uploadQueue = createUploadQueue()
-    const waitingCount = await uploadQueue.count()
-    const activeCount = await uploadQueue.getActiveCount()
-    const failedCount = await uploadQueue.getFailed()
-    
-    await updateQueueMetrics(waitingCount, activeCount, failedCount.length)
-    await uploadQueue.close()
-  } catch (error: any) {
-    fastify.log.error({ error: error?.message }, 'Failed to update queue metrics')
+  // Periodic queue health update (every 10 seconds)
+  setInterval(async () => {
+    try {
+      const uploadQueue = createUploadQueue()
+      const waitingCount = await uploadQueue.count()
+      const activeCount = await uploadQueue.getActiveCount()
+      const failedCount = await uploadQueue.getFailed()
+      
+      await updateQueueMetrics(waitingCount, activeCount, failedCount.length)
+      await uploadQueue.close()
+    } catch (error: any) {
+      fastify.log.error({ error: error?.message }, 'Failed to update queue metrics')
+    }
+  }, 10000)
+
+  // Graceful shutdown
+  const shutdown = async (signal: string) => {
+    fastify.log.info(`Received ${signal}, shutting down gracefully...`)
+
+    try {
+      await worker.close()
+      await queueEvents.close()
+      await redis.quit()
+      await fastify.close()
+      fastify.log.info('Worker shutdown complete')
+      process.exit(0)
+    } catch (error: any) {
+      fastify.log.error({ error: error?.message }, 'Error during shutdown')
+      process.exit(1)
+    }
   }
-}, 10000)
 
-// Graceful shutdown
-const shutdown = async (signal: string) => {
-  fastify.log.info(`Received ${signal}, shutting down gracefully...`)
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
 
-  try {
-    await worker.close()
-    await queueEvents.close()
-    await redis.quit()
-    await fastify.close()
-    fastify.log.info('Worker shutdown complete')
-    process.exit(0)
-  } catch (error: any) {
-    fastify.log.error({ error: error?.message }, 'Error during shutdown')
-    process.exit(1)
-  }
-}
-
-process.on('SIGTERM', () => shutdown('SIGTERM'))
-process.on('SIGINT', () => shutdown('SIGINT'))
-
-fastify.log.info('Upload worker started, listening for jobs...')
+  fastify.log.info('Upload worker started, listening for jobs...')
+})().catch((error) => {
+  console.error('Fatal error in worker:', error)
+  process.exit(1)
+})
