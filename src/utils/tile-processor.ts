@@ -40,7 +40,9 @@ export async function processTileScene(
     await fs.writeFile(inputPath, Buffer.from(await res.arrayBuffer()))
 
     // 2. Generate DZI tiles (512px, no overlap, deep-zoom format)
+    // Use high quality (95) and progressive for the best viewing experience.
     await sharp(inputPath)
+      .jpeg({ quality: 95, progressive: true, chromaSubsampling: '4:4:4' })
       .tile({ size: TILE_SIZE, overlap: 0, layout: 'dz', container: 'fs' })
       .toFile(tilesDir)
 

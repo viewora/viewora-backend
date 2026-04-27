@@ -28,7 +28,7 @@ const createSignedUrlBodySchema = z.object({
   mediaType: uploadMediaTypeSchema,
   fileName: z.string().trim().min(1).max(255),
   contentType: z.string().trim().min(1).max(120),
-  fileSize: z.number().int().positive().max(100_000_000),
+  fileSize: z.number().int().positive().max(250_000_000),
 }).superRefine((data, ctx) => {
   const isBrandingUpload = data.mediaType === 'logo' || data.mediaType === 'branding_logo'
   if (!isBrandingUpload && !data.spaceId && !data.propertyId) {

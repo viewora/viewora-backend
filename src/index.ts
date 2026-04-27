@@ -61,7 +61,8 @@ if (missing.length) {
 }
 
 const fastify = Fastify({
-  logger: true
+  logger: true,
+  bodyLimit: 262144000, // 250MB
 })
 
 type ApiSuccessEnvelope = {

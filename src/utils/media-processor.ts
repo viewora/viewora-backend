@@ -3,8 +3,8 @@ import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import sharp from 'sharp'
 import { updateUploadStatus } from './uploads.js'
 
-const MAX_WIDTH_PX = 4096
-const MAX_HEIGHT_PX = 2048
+const MAX_WIDTH_PX = 12288
+const MAX_HEIGHT_PX = 6144
 
 async function streamToBuffer(body: unknown): Promise<Buffer> {
   // AWS SDK v3 Body is a Readable stream in Node.js
@@ -52,7 +52,10 @@ export async function processMedia(
 
     // sharp strips all EXIF/GPS/device metadata by default — calling .toBuffer() without
     // .withMetadata() is sufficient and is the correct sharp v0.33+ API.
-    const cleanBuffer = await image.toBuffer()
+    // Explicitly set quality to 100 to avoid default compression (usually 80).
+    const cleanBuffer = await image
+      .jpeg({ quality: 100, progressive: true, chromaSubsampling: '4:4:4' })
+      .toBuffer()
 
     // 3. Re-upload stripped version back to R2 (same key, same CDN URL)
     await fastify.s3.send(
