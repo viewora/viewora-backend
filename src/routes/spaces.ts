@@ -32,6 +32,13 @@ const updateSpaceBodySchema = z.object({
   branding_enabled: z.boolean().optional(),
 })
 
+const updateSettingsBodySchema = z.object({
+  hfov_default: z.number().min(30).max(120).optional(),
+  yaw_default: z.number().min(-180).max(180).optional(),
+  pitch_default: z.number().min(-90).max(90).optional(),
+  auto_rotate_enabled: z.boolean().optional(),
+})
+
 const publishBodySchema = z.object({
   publish: z.boolean(),
   slug: z.string().trim().min(3).max(120).optional(),
@@ -268,6 +275,34 @@ export default async function (fastify: FastifyInstance) {
     }
 
     return reply.code(204).send()
+  })
+
+  // UPDATE viewer settings (property_360_settings)
+  fastify.patch('/:id/settings', { preHandler: fastify.authenticate }, async (request, reply) => {
+    const user = request.user as any
+    const userId = user.sub
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const body = parseWithSchema(reply, updateSettingsBodySchema, request.body)
+    if (!body) return
+
+    const { data: space } = await fastify.supabase
+      .from('properties')
+      .select('id')
+      .eq('id', params.id)
+      .eq('user_id', userId)
+      .single()
+
+    if (!space) return reply.code(404).send({ statusMessage: 'Space not found' })
+
+    const { data: settings, error } = await fastify.supabase
+      .from('property_360_settings')
+      .upsert({ property_id: params.id, ...body }, { onConflict: 'property_id' })
+      .select()
+      .single()
+
+    if (error) throw error
+    return reply.send({ settings })
   })
 
   // PUBLISH space
