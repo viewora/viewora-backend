@@ -44,7 +44,7 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     const { data: scenes, error } = await fastify.supabase
       .from('scenes')
-      .select('*, hotspots(*)')
+      .select('*, hotspots!scene_id(*)')
       .eq('space_id', params.spaceId)
       .order('order_index', { ascending: true })
 
@@ -131,7 +131,7 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     const { data: scene } = await fastify.supabase
       .from('scenes')
-      .select('*, hotspots(*)')
+      .select('*, hotspots!scene_id(*)')
       .eq('id', params.sceneId)
       .single()
 
