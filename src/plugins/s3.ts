@@ -25,7 +25,12 @@ export default fp(async (fastify: FastifyInstance) => {
     credentials: {
       accessKeyId,
       secretAccessKey
-    }
+    },
+    // Only compute checksums when R2 explicitly requires them.
+    // Default ('WHEN_SUPPORTED') adds CRC32 to presigned PUT URLs, which
+    // browsers don't send — causing R2 to reject the upload.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
   })
 
   fastify.decorate('s3', s3)

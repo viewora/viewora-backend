@@ -154,8 +154,10 @@ export default async function (fastify: FastifyInstance) {
       Bucket: bucketName,
       Key: objectKey,
       ContentType: contentType,
-      ContentLength: Number(fileSize),
       CacheControl: cacheControl
+      // ContentLength intentionally omitted: including it in the signature requires
+      // browsers to send an exact Content-Length header, which some omit when streaming
+      // a File body — causing R2 to reject the first attempt and triggering a retry.
     })
 
     try {
