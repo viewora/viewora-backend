@@ -22,6 +22,7 @@ export default fp(async (fastify: FastifyInstance) => {
   const s3 = new S3Client({
     region: 'auto',
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    forcePathStyle: true, // REQUIRED for R2 to prevent SSL errors
     credentials: {
       accessKeyId,
       secretAccessKey
