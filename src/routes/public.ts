@@ -37,6 +37,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       .from('properties')
       .select(`
         *,
+        property_360_settings (id, hfov_default, pitch_default, yaw_default, auto_rotate_enabled),
         scenes (
           id,
           name,
@@ -60,8 +61,14 @@ export default async function publicRoutes(fastify: FastifyInstance) {
     }
 
     // Map to match the get_tour_data RPC output shape
+    const formattedSpace = {
+      ...spaceData,
+      space_type: (spaceData as any).property_type,
+      property_type: undefined
+    }
+
     const formattedData = {
-      space: spaceData,
+      space: formattedSpace,
       scenes: (spaceData as any).scenes.sort((a: any, b: any) => (a.order_index || 0) - (b.order_index || 0))
     }
 
@@ -107,6 +114,12 @@ export default async function publicRoutes(fastify: FastifyInstance) {
 
     if (error) throw error
     if (!data) return reply.code(404).send({ statusMessage: 'Tour not found' })
+
+    // Map property_type to space_type for consistency with the frontend
+    if ((data as any).space) {
+      (data as any).space.space_type = (data as any).space.property_type;
+      delete (data as any).space.property_type;
+    }
 
     // Cache tour data for 60s — invalidated on next publish/update via TTL
     if (fastify.redis && data) {
