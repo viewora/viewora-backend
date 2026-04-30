@@ -116,8 +116,12 @@ export function checkFileSizeLimit(plan: Record<string, any>, fileSize: number):
 export function isValidFileType(contentType: string, mediaType: string): boolean {
   const allowedImages = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
 
-  if (['panorama', 'gallery', 'gallery_image', 'thumb', 'thumbnail', 'logo'].includes(mediaType)) {
+  if (['panorama', 'gallery', 'gallery_image', 'thumb', 'thumbnail', 'logo', 'branding_logo', 'floor_plan'].includes(mediaType)) {
     return allowedImages.includes(contentType)
+  }
+
+  if (mediaType === 'audio') {
+    return ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/mp4'].includes(contentType)
   }
 
   return false

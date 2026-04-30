@@ -41,7 +41,7 @@ export const failedMediaCleanupTask: CleanupTask = {
 
       const { data: failedMedia, error: queryErr } = await fastify.supabase
         .from('property_media')
-        .select('id, storage_key, file_size_bytes, property_id, user_id')
+        .select('id, storage_key, file_size_bytes, property_id')
         .eq('processing_status', 'failed')
         .eq('marked_for_cleanup', true)
         .lt('marked_for_cleanup_at', sevenDaysAgo)
@@ -70,18 +70,11 @@ export const failedMediaCleanupTask: CleanupTask = {
             .eq('id', media.property_id)
             .single()
 
-          // Safety guard: never clean up when media/property ownership does not match.
-          if (property?.user_id && media.user_id && property.user_id !== media.user_id) {
+          // Safety guard: skip cleanup if property ownership cannot be verified.
+          if (!property?.user_id) {
             errorCount++
             recordCleanupFailure(failedMediaCleanupTask.name, 'safety')
-            fastify.log.error(
-              {
-                mediaId: media.id,
-                mediaUserId: media.user_id,
-                propertyUserId: property.user_id,
-              },
-              'Skipped cleanup due to tenant ownership mismatch',
-            )
+            fastify.log.error({ mediaId: media.id }, 'Skipped cleanup: could not verify property ownership')
             continue
           }
 
@@ -102,11 +95,7 @@ export const failedMediaCleanupTask: CleanupTask = {
           }
 
           // 2. Delete DB record
-          const deleteQuery = fastify.supabase.from('property_media').delete().eq('id', media.id)
-          if (media.user_id) {
-            deleteQuery.eq('user_id', media.user_id)
-          }
-          await deleteQuery
+          await fastify.supabase.from('property_media').delete().eq('id', media.id)
 
           // 3. Decrement storage counter
           if (media.file_size_bytes && property?.user_id) {

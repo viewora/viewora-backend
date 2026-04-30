@@ -205,12 +205,21 @@ export default async function (fastify: FastifyInstance) {
     if (!params) return
     const { id } = params
 
-    // 1. Get all media for this space before deleting
-    const { data: mediaItems, error: mediaFetchErr } = await fastify.supabase
-      .from('property_media')
-      .select('id, storage_key, file_size_bytes, properties!inner(user_id)')
-      .eq('property_id', id)
-      .eq('properties.user_id', userId)
+    // 1. Get all media and scenes for this space before deleting
+    const [
+      { data: mediaItems, error: mediaFetchErr },
+      { data: sceneItems },
+    ] = await Promise.all([
+      fastify.supabase
+        .from('property_media')
+        .select('id, storage_key, file_size_bytes, properties!inner(user_id)')
+        .eq('property_id', id)
+        .eq('properties.user_id', userId),
+      fastify.supabase
+        .from('scenes')
+        .select('id, space_id')
+        .eq('space_id', id),
+    ])
 
     if (mediaFetchErr) {
       return reply.code(500).send({ statusMessage: 'Failed to load space media' })
@@ -221,7 +230,7 @@ export default async function (fastify: FastifyInstance) {
       .delete()
       .eq('property_id', id)
 
-    // 2. Cleanup R2
+    // 2. Cleanup R2 — property_media objects
     const bucketName = process.env.R2_BUCKET_NAME
     if (bucketName && mediaItems && mediaItems.length > 0) {
       for (const item of mediaItems) {
@@ -234,6 +243,24 @@ export default async function (fastify: FastifyInstance) {
           } catch (err) {
             fastify.log.error(err, `Failed to delete R2 object ${item.storage_key} during space deletion`)
           }
+        }
+      }
+    }
+
+    // 2b. Cleanup R2 — scene tile directories (DZI manifest + tile files + thumbnail)
+    if (bucketName && sceneItems && sceneItems.length > 0) {
+      const { ListObjectsV2Command } = await import('@aws-sdk/client-s3')
+      for (const scene of sceneItems) {
+        const prefix = `spaces/${id}/scenes/${scene.id}/`
+        try {
+          const listed = await fastify.s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: prefix }))
+          for (const obj of listed.Contents ?? []) {
+            if (obj.Key) {
+              await fastify.s3.send(new DeleteObjectCommand({ Bucket: bucketName, Key: obj.Key })).catch(() => {})
+            }
+          }
+        } catch (err) {
+          fastify.log.error(err, `Failed to delete scene tiles for scene ${scene.id}`)
         }
       }
     }

@@ -37,7 +37,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       .from('properties')
       .select(`
         *,
-        scenes:property_media (
+        scenes (
           id,
           name,
           order_index,
@@ -53,7 +53,6 @@ export default async function publicRoutes(fastify: FastifyInstance) {
         )
       `)
       .eq('id', params.id)
-      .eq('property_media.media_type', 'panorama')
       .single()
 
     if (spaceDataError || !spaceData) {

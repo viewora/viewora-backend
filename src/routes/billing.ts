@@ -211,8 +211,7 @@ export default async function (fastify: FastifyInstance) {
           { onConflict: 'user_id' }
         )
     } else if (eventType === 'subscription.disable' || eventType === 'invoice.payment_failed') {
-      // Move to past_due or grace_period
-      // For simplicity in MVP, we move to grace_period if they had an active sub
+      if (!userId) { fastify.log.error({ event: eventType }, 'Webhook missing user_id for disable event'); return }
       const { data: sub } = await fastify.supabase
         .from('subscriptions')
         .select('*')
@@ -220,7 +219,6 @@ export default async function (fastify: FastifyInstance) {
         .single()
 
       if (sub && (sub.status === 'active' || sub.status === 'trialing')) {
-        if (!userId) { fastify.log.error('Webhook missing user_id for disable event'); return }
         await fastify.supabase
           .from('subscriptions')
           .update({ status: 'past_due', updated_at: new Date().toISOString() })
