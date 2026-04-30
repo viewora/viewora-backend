@@ -234,50 +234,48 @@ export default async function (fastify: FastifyInstance) {
     const user = request.user as any
     const userId = user.sub
 
-    // 1. Get Subscription + Plan
-    const { data: sub } = await fastify.supabase
-      .from('subscriptions')
-      .select('*, plans(*)')
-      .eq('user_id', userId)
-      .single()
+    // Serve from Redis cache for 5 minutes — this is polled on every editor load
+    const cacheKey = `billing:status:${userId}`
+    if (fastify.redis) {
+      const cached = await fastify.redis.get(cacheKey).catch(() => null)
+      if (cached) {
+        reply.header('Cache-Control', 'private, max-age=300')
+        return reply.send(JSON.parse(cached))
+      }
+    }
 
-    // 2. Get Usage
-    const { data: usage } = await fastify.supabase
-      .from('usage_counters')
-      .select('active_properties_count, storage_used_bytes')
-      .eq('user_id', userId)
-      .single()
+    // Run subscription + usage queries in parallel
+    const [{ data: sub }, { data: usage }] = await Promise.all([
+      fastify.supabase.from('subscriptions').select('*, plans(*)').eq('user_id', userId).single(),
+      fastify.supabase.from('usage_counters').select('active_properties_count, storage_used_bytes').eq('user_id', userId).single(),
+    ])
 
-    const finalPlan = sub?.plans || null
-    let responsePlan: any = null
-
-    if (!finalPlan) {
-      // Return default free state
-      const { data: freePlan } = await fastify.supabase
-        .from('plans')
-        .select('*')
-        .eq('name', 'Free')
-        .single()
+    let responsePlan: any = sub?.plans || null
+    if (!responsePlan) {
+      const { data: freePlan } = await fastify.supabase.from('plans').select('*').eq('name', 'Free').single()
       responsePlan = freePlan
-    } else {
-      responsePlan = finalPlan
     }
 
     const mappedPlan = responsePlan ? {
       ...responsePlan,
       max_active_spaces: responsePlan.max_active_properties,
-      max_active_properties: undefined
+      max_active_properties: undefined,
     } : null
 
-    const mappedUsage = {
-      active_spaces_count: usage?.active_properties_count || 0,
-      storage_used_bytes: usage?.storage_used_bytes || 0
+    const result = {
+      subscription: sub || null,
+      plan: mappedPlan,
+      usage: {
+        active_spaces_count: usage?.active_properties_count || 0,
+        storage_used_bytes: usage?.storage_used_bytes || 0,
+      },
     }
 
-    return reply.send({ 
-      subscription: sub || null, 
-      plan: mappedPlan,
-      usage: mappedUsage
-    })
+    if (fastify.redis) {
+      void fastify.redis.setEx(cacheKey, 300, JSON.stringify(result)).catch(() => {})
+    }
+
+    reply.header('Cache-Control', 'private, max-age=300')
+    return reply.send(result)
   })
 }

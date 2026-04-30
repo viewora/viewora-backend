@@ -168,7 +168,14 @@ fastify.register(s3Plugin)
 
 fastify.register(rateLimit, {
   max: 100,
-  timeWindow: '1 minute'
+  timeWindow: '1 minute',
+  // Rate limit per authenticated user (falls back to IP for unauthenticated requests)
+  keyGenerator: (request: any) => {
+    const user = request.user
+    return user?.sub || user?.id || request.ip
+  },
+  // Exempt health checks from rate limiting
+  allowList: (request: any) => request.url === '/health' || request.url === '/',
 })
 
 // Initialize upload queue (only if REDIS_URL is available)
@@ -180,6 +187,12 @@ if (process.env.REDIS_URL) {
 fastify.addHook('onRequest', async (request, reply) => {
   ;(request as any).receivedAt = Date.now()
   reply.header('X-Request-Id', request.id || randomUUID())
+  // Security headers on every response
+  reply.header('X-Content-Type-Options', 'nosniff')
+  reply.header('X-Frame-Options', 'DENY')
+  reply.header('Referrer-Policy', 'strict-origin-when-cross-origin')
+  reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  reply.header('X-Permitted-Cross-Domain-Policies', 'none')
 })
 
 fastify.addHook('onResponse', async (request, reply) => {
@@ -307,8 +320,15 @@ fastify.get('/health', async () => {
   return { status: 'ok', service: 'Viewora API' }
 })
 
-// Prometheus metrics endpoint (public, no auth required)
+// Prometheus metrics endpoint — restrict to internal/Railway health probes
 fastify.get('/metrics', async (request, reply) => {
+  const allowedToken = process.env.METRICS_TOKEN
+  if (allowedToken) {
+    const authHeader = request.headers.authorization
+    if (!authHeader || authHeader !== `Bearer ${allowedToken}`) {
+      return reply.code(401).send({ error: 'Unauthorized' })
+    }
+  }
   reply.header('Content-Type', 'text/plain; version=0.0.4')
   return getMetrics()
 })

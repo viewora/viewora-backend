@@ -143,6 +143,9 @@ async function processUploadJob(job: any) {
 // Create the worker
 const worker = createUploadWorker(processUploadJob)
 
+// Reuse a single queue instance for metric polling — never close it inside the interval
+const metricsQueue = createUploadQueue()
+
 // Monitor queue events for better observability
 queueEvents.on('failed', (data: any) => {
   const { jobId, failedReason } = data
@@ -160,16 +163,15 @@ queueEvents.on('stalled', (data: any) => {
   recordJobStalled()
 })
 
-// Periodic queue health update (every 10 seconds)
+// Periodic queue health update — reuses single metricsQueue connection
 setInterval(async () => {
   try {
-    const uploadQueue = createUploadQueue()
-    const waitingCount = await uploadQueue.count()
-    const activeCount = await uploadQueue.getActiveCount()
-    const failedCount = await uploadQueue.getFailed()
-    
-    await updateQueueMetrics(waitingCount, activeCount, failedCount.length)
-    await uploadQueue.close()
+    const [waitingCount, activeCount, failedJobs] = await Promise.all([
+      metricsQueue.count(),
+      metricsQueue.getActiveCount(),
+      metricsQueue.getFailed(),
+    ])
+    await updateQueueMetrics(waitingCount, activeCount, failedJobs.length)
   } catch (error: any) {
     fastify.log.error({ error: error?.message }, 'Failed to update queue metrics')
   }
@@ -182,6 +184,7 @@ const shutdown = async (signal: string) => {
   try {
     await worker.close()
     await queueEvents.close()
+    await metricsQueue.close()
     await redis.quit()
     await fastify.close()
     fastify.log.info('Worker shutdown complete')
