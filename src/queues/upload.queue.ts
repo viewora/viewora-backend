@@ -90,7 +90,7 @@ export function createUploadQueueEvents() {
  * This is used by the worker process to process jobs
  */
 export function createUploadWorker(processor: (job: any) => Promise<void>) {
-  const concurrency = parseInt(process.env.WORKER_CONCURRENCY || '5', 10)
+  const concurrency = parseInt(process.env.WORKER_CONCURRENCY || '1', 10)
   
   return new Worker<ProcessMediaJob>(UPLOAD_QUEUE_NAME, processor, {
     connection: redisOptions,
