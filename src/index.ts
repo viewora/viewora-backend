@@ -147,6 +147,7 @@ fastify.register(cors, {
   methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Authorization', 'Content-Type', 'Accept', 'Origin', 'X-Request-Id'],
   credentials: true,
+  maxAge: 86400, // Cache preflight for 24h — eliminates repeated OPTIONS round-trips
 })
 
 fastify.register(rawBody, {
