@@ -316,7 +316,14 @@ fastify.get('/', async () => {
   }
 })
 
-fastify.get('/health', async () => {
+fastify.get('/health', async (request, reply) => {
+  if (fastify.redis) {
+    try {
+      await fastify.redis.ping()
+    } catch {
+      return reply.code(503).send({ status: 'unhealthy', reason: 'redis' })
+    }
+  }
   return { status: 'ok', service: 'Viewora API' }
 })
 
