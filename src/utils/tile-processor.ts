@@ -40,8 +40,31 @@ export async function processTileScene(
     if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`)
     await fs.writeFile(inputPath, Buffer.from(await res.arrayBuffer()))
 
-    // 2. Generate DZI tiles (512px, no overlap, deep-zoom format)
-    // Use high quality (95) and progressive for the best viewing experience.
+    // 2. Generate and upload thumbnail FIRST so the UI feels instantaneous (takes ~0.5s)
+    const thumbPath = path.join(tempDir, 'thumbnail.jpg')
+    await sharp(inputPath)
+      .resize(400, 200, { fit: 'cover' })
+      .jpeg({ quality: 80 })
+      .toFile(thumbPath)
+
+    const thumbKey = `spaces/${spaceId}/scenes/${sceneId}/thumbnail.jpg`
+    await s3.send(new PutObjectCommand({
+      Bucket: bucket,
+      Key: thumbKey,
+      Body: await fs.readFile(thumbPath),
+      ContentType: 'image/jpeg',
+      CacheControl: 'public, max-age=86400',
+    }))
+
+    // Mark scene as ready immediately with the thumbnail so the user isn't blocked
+    await supabase.from('scenes').update({
+      status: 'ready',
+      thumbnail_url: `${cdnBase}/${thumbKey}`,
+    }).eq('id', sceneId)
+    console.log(`[TILE PROCESSOR] Thumbnail generated and scene marked ready: ${sceneId}`)
+
+    // 3. Generate DZI tiles (512px, no overlap, deep-zoom format) in the background
+    // This takes ~60 seconds for a 12K image.
     await sharp(inputPath)
       .jpeg({ quality: 95, progressive: true, chromaSubsampling: '4:4:4' })
       .tile({ size: TILE_SIZE, overlap: 0, layout: 'dz', container: 'fs' })
@@ -49,13 +72,6 @@ export async function processTileScene(
 
     const dziFile      = tilesDir + '.dzi'
     const tileFilesDir = tilesDir + '_files'
-
-    // 3. Generate thumbnail (400x200 for scene picker UI)
-    const thumbPath = path.join(tempDir, 'thumbnail.jpg')
-    await sharp(inputPath)
-      .resize(400, 200, { fit: 'cover' })
-      .jpeg({ quality: 80 })
-      .toFile(thumbPath)
 
     // 4. Upload DZI manifest
     const dziKey = `spaces/${spaceId}/scenes/${sceneId}/tiles.dzi`
@@ -79,21 +95,9 @@ export async function processTileScene(
       }))
     }
 
-    // 6. Upload thumbnail
-    const thumbKey = `spaces/${spaceId}/scenes/${sceneId}/thumbnail.jpg`
-    await s3.send(new PutObjectCommand({
-      Bucket: bucket,
-      Key: thumbKey,
-      Body: await fs.readFile(thumbPath),
-      ContentType: 'image/jpeg',
-      CacheControl: 'public, max-age=86400',
-    }))
-
-    // 7. Mark scene as ready in DB
+    // 6. Finally, update the manifest URL
     await supabase.from('scenes').update({
-      status: 'ready',
       tile_manifest_url: `${cdnBase}/${dziKey}`,
-      thumbnail_url: `${cdnBase}/${thumbKey}`,
     }).eq('id', sceneId)
     console.log(`[TILE PROCESSOR] Successfully generated and uploaded tiles for scene: ${sceneId}`)
 
