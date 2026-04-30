@@ -33,21 +33,13 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     const params = parseWithSchema(reply, spaceParamsSchema, (req as any).params)
     if (!params) return
 
-    const { data: space } = await fastify.supabase
-      .from('properties')
-      .select('id')
-      .eq('id', params.spaceId)
-      .eq('user_id', userId)
-      .single()
+    // Run ownership check and scene fetch in parallel — halves DB round-trip time
+    const [{ data: space }, { data: scenes, error }] = await Promise.all([
+      fastify.supabase.from('properties').select('id').eq('id', params.spaceId).eq('user_id', userId).maybeSingle(),
+      fastify.supabase.from('scenes').select('*, hotspots!scene_id(*)').eq('space_id', params.spaceId).order('order_index', { ascending: true }),
+    ])
 
     if (!space) return reply.code(404).send({ statusMessage: 'Space not found' })
-
-    const { data: scenes, error } = await fastify.supabase
-      .from('scenes')
-      .select('*, hotspots!scene_id(*)')
-      .eq('space_id', params.spaceId)
-      .order('order_index', { ascending: true })
-
     if (error) throw error
     return reply.send({ scenes: scenes ?? [] })
   })
