@@ -176,7 +176,11 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     if (!scene) return reply.code(404).send({ statusMessage: 'Scene not found' })
 
-    await fastify.supabase.from('scenes').delete().eq('id', params.sceneId)
+    const { error: deleteError } = await fastify.supabase.from('scenes').delete().eq('id', params.sceneId)
+    if (deleteError) {
+      fastify.log.error(deleteError, 'Failed to delete scene')
+      return reply.code(500).send({ statusMessage: 'Failed to delete scene from database' })
+    }
     return reply.code(204).send()
   })
 }
