@@ -32,6 +32,7 @@ export async function processTileScene(
   const cdnBase = process.env.MEDIA_DOMAIN || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
 
   try {
+    console.log(`[TILE PROCESSOR] Starting tile generation for scene: ${sceneId}... This usually takes ~60 seconds.`)
     await fs.mkdir(tempDir, { recursive: true })
 
     // 1. Download raw image from R2 CDN
@@ -94,6 +95,7 @@ export async function processTileScene(
       tile_manifest_url: `${cdnBase}/${dziKey}`,
       thumbnail_url: `${cdnBase}/${thumbKey}`,
     }).eq('id', sceneId)
+    console.log(`[TILE PROCESSOR] Successfully generated and uploaded tiles for scene: ${sceneId}`)
 
   } catch (err: any) {
     // Mark as failed so the UI can show a retry option
