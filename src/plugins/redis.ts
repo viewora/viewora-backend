@@ -17,11 +17,23 @@ export default fp(async (fastify: FastifyInstance) => {
   }
 
   const client = createClient({ url: process.env.REDIS_URL })
-  client.on('error', (err) => fastify.log.error({ err }, 'Redis client error'))
-  await client.connect()
+  client.on('error', (err) => fastify.log.warn({ err }, 'Redis client error'))
+
+  // Connect in the background — don't block Fastify startup.
+  // If Redis is briefly unavailable, the server degrades gracefully
+  // (cache misses, no distributed rate-limiting) rather than crashing.
+  // We decorate immediately so route handlers can do null checks safely.
   fastify.decorate('redis', client)
 
+  client.connect().then(() => {
+    fastify.log.info('Redis connected')
+  }).catch((err) => {
+    fastify.log.warn({ err }, 'Redis initial connect failed — running without cache')
+    // Null out the decorator so routes fall back to no-cache paths
+    ;(fastify as any).redis = null
+  })
+
   fastify.addHook('onClose', async () => {
-    await client.quit()
+    if (client.isOpen) await client.quit().catch(() => {})
   })
 })
