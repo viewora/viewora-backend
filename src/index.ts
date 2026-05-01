@@ -33,6 +33,20 @@ import { cleanupTasks, executeCleanupTask } from './utils/cleanup-scheduler.js'
 import { initSentry, captureException } from './utils/sentry.js'
 
 dotenv.config()
+
+// Register global error handlers early — before any async operations — so that
+// any unhandled promise rejection or uncaught exception during startup is logged
+// and causes a clean exit instead of a silent crash.
+process.on('unhandledRejection', (reason: unknown) => {
+  console.error('Unhandled promise rejection:', reason)
+  process.exit(1)
+})
+
+process.on('uncaughtException', (err: Error) => {
+  console.error('Uncaught exception:', err)
+  process.exit(1)
+})
+
 // initSentry is async (dynamic ESM import) — fire-and-forget; errors are caught internally
 void initSentry()
 
@@ -425,7 +439,10 @@ const start = async () => {
   }
 }
 
-start()
+start().catch(err => {
+  console.error('Fatal error during startup:', err)
+  process.exit(1)
+})
 
 // Graceful shutdown
 const gracefulShutdown = async (signal: string) => {
