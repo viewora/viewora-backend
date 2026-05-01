@@ -107,7 +107,7 @@ export default async function (fastify: FastifyInstance) {
         const owner = ownerData.user
 
         await sendLeadNotification({
-          ownerEmail: owner.email,
+          ownerEmail: owner.email!,
           spaceName: prop.title,
           spaceSlug: prop.slug,
           lead: { name: cleanName, email: cleanEmail, phone: cleanPhone, message: cleanMessage },
