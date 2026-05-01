@@ -425,7 +425,22 @@ const start = async () => {
   }
 }
 
-start()
+start().catch((err) => {
+  console.error('Fatal startup error:', err)
+  process.exit(1)
+})
+
+// Catch unhandled async rejections that escape try/catch blocks
+// (e.g. fire-and-forget promises, BullMQ event emitters, plugin hooks)
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled promise rejection:', reason)
+  process.exit(1)
+})
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err)
+  process.exit(1)
+})
 
 // Graceful shutdown
 const gracefulShutdown = async (signal: string) => {
