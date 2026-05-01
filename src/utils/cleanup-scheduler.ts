@@ -61,6 +61,7 @@ export const failedMediaCleanupTask: CleanupTask = {
 
       let deletedCount = 0
       let errorCount = 0
+      let freedBytes = 0
 
       for (const media of failedMedia) {
         try {
@@ -87,10 +88,9 @@ export const failedMediaCleanupTask: CleanupTask = {
                 Key: media.storage_key,
               })
               await (fastify as any).s3.send(command)
-              fastify.log.debug({ mediaId: media.id }, 'Deleted from R2')
             } catch (error: any) {
               fastify.log.warn({ mediaId: media.id, error: error?.message }, 'Failed to delete from R2')
-              // Continue anyway—DB cleanup is still important
+              // Continue anyway — DB cleanup is still important
             }
           }
 
@@ -103,10 +103,10 @@ export const failedMediaCleanupTask: CleanupTask = {
               u_id: property.user_id,
               bytes: media.file_size_bytes,
             })
+            freedBytes += Number(media.file_size_bytes)
           }
 
           deletedCount++
-          fastify.log.debug({ mediaId: media.id }, 'Cleaned up failed media')
         } catch (error: any) {
           errorCount++
           recordCleanupFailure(failedMediaCleanupTask.name, 'item')
@@ -117,8 +117,8 @@ export const failedMediaCleanupTask: CleanupTask = {
       recordCleanupDeletedItems(failedMediaCleanupTask.name, deletedCount)
 
       fastify.log.info(
-        { deletedCount, errorCount, total: failedMedia.length },
-        'Cleanup task completed',
+        { deletedCount, errorCount, total: failedMedia.length, freedBytes },
+        'Failed-media cleanup complete',
       )
     } catch (error: any) {
       recordCleanupFailure(failedMediaCleanupTask.name, 'task')
@@ -156,6 +156,7 @@ export const orphanMediaCleanupTask: CleanupTask = {
       fastify.log.info({ count: orphanMedia.length }, 'Found orphan media to clean up')
 
       let deletedCount = 0
+      let freedBytes = 0
 
       for (const media of orphanMedia) {
         try {
@@ -175,6 +176,7 @@ export const orphanMediaCleanupTask: CleanupTask = {
 
           // Delete DB record
           await fastify.supabase.from('property_media').delete().eq('id', media.id)
+          if (media.file_size_bytes) freedBytes += Number(media.file_size_bytes)
           deletedCount++
         } catch (error: any) {
           recordCleanupFailure(orphanMediaCleanupTask.name, 'item')
@@ -184,7 +186,7 @@ export const orphanMediaCleanupTask: CleanupTask = {
 
       recordCleanupDeletedItems(orphanMediaCleanupTask.name, deletedCount)
 
-      fastify.log.info({ deletedCount }, 'Orphan media cleanup completed')
+      fastify.log.info({ deletedCount, freedBytes, total: orphanMedia.length }, 'Orphan media cleanup completed')
     } catch (error: any) {
       recordCleanupFailure(orphanMediaCleanupTask.name, 'task')
       fastify.log.error({ error: error?.message }, 'Orphan media cleanup failed')
@@ -193,12 +195,27 @@ export const orphanMediaCleanupTask: CleanupTask = {
 }
 
 /**
- * Execute cleanup task
+ * Execute cleanup task with a distributed Redis lock so only one instance
+ * runs each task at a time. lockTtlSeconds should be slightly less than the
+ * task's repeat interval so the lock expires before the next scheduled run.
  */
 export async function executeCleanupTask(
   fastify: FastifyInstance,
   task: CleanupTask,
+  lockTtlSeconds = 82800,  // default 23h — safe for a daily task
 ): Promise<void> {
+  // Acquire distributed lock — prevents duplicate runs across Railway instances
+  if (fastify.redis) {
+    const lockKey = `cleanup:lock:${task.name}`
+    const acquired = await fastify.redis
+      .set(lockKey, '1', { NX: true, EX: lockTtlSeconds })
+      .catch(() => null)
+    if (!acquired) {
+      fastify.log.info({ task: task.name }, 'Cleanup skipped — lock held by another instance')
+      return
+    }
+  }
+
   const startedAt = Date.now()
   try {
     await task.execute(fastify)

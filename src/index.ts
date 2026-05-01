@@ -27,7 +27,7 @@ import publicRoutes from './routes/public.js'
 import internalRoutes from './routes/internal.js'
 
 import { createUploadQueue } from './queues/upload.queue.js'
-import type { Queue, Worker } from 'bullmq'
+import type { Queue } from 'bullmq'
 import { getMetrics } from './utils/metrics.js'
 import { cleanupTasks, executeCleanupTask } from './utils/cleanup-scheduler.js'
 import { initSentry, captureException } from './utils/sentry.js'
@@ -40,7 +40,7 @@ void initSentry()
 declare module 'fastify' {
   interface FastifyInstance {
     uploadQueue?: Queue
-    cleanupWorkers?: Worker[]
+    cleanupIntervals?: NodeJS.Timeout[]
   }
 }
 
@@ -382,57 +382,43 @@ const start = async () => {
     console.log(`✅ Server is running on port ${port}`)
     console.log(`🚀 Accessible at http://0.0.0.0:${port}`)
 
-    // Schedule cleanup jobs if Redis is available
-    if (process.env.REDIS_URL && fastify.uploadQueue) {
-      try {
-        const { Worker } = await import('bullmq')
-        const workers: Worker[] = []
-
-        for (const task of cleanupTasks) {
-          const worker = new Worker(
-            `cleanup-${task.name}`,
-            async (job) => {
-              console.log(`🧹 Executing cleanup task: ${task.name}`)
-              await executeCleanupTask(fastify, task)
-              return { completed: true }
-            },
-            {
-              connection: {
-                url: process.env.REDIS_URL,
-              },
-              autorun: false,
-            },
-          )
-
-          // Schedule the task with cron
-          await fastify.uploadQueue?.add(
-            `cleanup-${task.name}`,
-            {},
-            {
-              repeat: {
-                pattern: task.schedule,
-              },
-            },
-          )
-
-          worker.on('completed', (job) => {
-            console.log(`✅ Cleanup task completed: ${task.name}`)
-          })
-
-          worker.on('failed', (job, err) => {
-            console.error(`❌ Cleanup task failed: ${task.name}`, err)
-          })
-
-          workers.push(worker)
-          await worker.run()
-        }
-
-        fastify.decorate('cleanupWorkers', workers)
-        console.log(`🗑️  Started ${workers.length} cleanup tasks`)
-      } catch (error: any) {
-        fastify.log.warn({ error: error?.message }, 'Failed to initialize cleanup tasks')
-      }
+    // Schedule cleanup tasks with setInterval.
+    // Daily task runs every 24h, orphan task runs every 7 days.
+    // Both fire once after a 2-minute warmup delay so the server is fully ready.
+    const CLEANUP_INTERVAL_MS: Record<string, number> = {
+      'cleanup-failed-media': 24 * 60 * 60 * 1000,
+      'cleanup-orphan-media': 7 * 24 * 60 * 60 * 1000,
     }
+
+    // Lock TTL slightly under the repeat interval so the lock expires before the next run.
+    const CLEANUP_LOCK_TTL_S: Record<string, number> = {
+      'cleanup-failed-media': 23 * 60 * 60,           // 23h — daily task
+      'cleanup-orphan-media': 6 * 24 * 60 * 60 + 23 * 60 * 60, // ~6d 23h — weekly task
+    }
+
+    const cleanupIntervals: NodeJS.Timeout[] = []
+
+    for (const task of cleanupTasks) {
+      const intervalMs = CLEANUP_INTERVAL_MS[task.name] ?? 24 * 60 * 60 * 1000
+      const lockTtlSeconds = CLEANUP_LOCK_TTL_S[task.name] ?? 82800
+
+      // Initial run after 2-minute warmup
+      const warmup = setTimeout(async () => {
+        fastify.log.info({ task: task.name }, 'Running initial cleanup task')
+        await executeCleanupTask(fastify, task, lockTtlSeconds)
+      }, 2 * 60 * 1000)
+
+      // Recurring run on interval
+      const recurring = setInterval(async () => {
+        fastify.log.info({ task: task.name }, 'Running scheduled cleanup task')
+        await executeCleanupTask(fastify, task, lockTtlSeconds)
+      }, intervalMs)
+
+      cleanupIntervals.push(warmup, recurring)
+    }
+
+    fastify.decorate('cleanupIntervals', cleanupIntervals)
+    fastify.log.info(`Scheduled ${cleanupTasks.length} cleanup tasks`)
   } catch (err) {
     fastify.log.error(err)
     process.exit(1)
@@ -446,12 +432,12 @@ const gracefulShutdown = async (signal: string) => {
   console.log(`\n⏹️  Received ${signal}, shutting down gracefully...`)
 
   try {
-    // Close cleanup workers
-    if (fastify.cleanupWorkers) {
-      for (const worker of fastify.cleanupWorkers) {
-        await worker.close()
+    // Clear cleanup intervals
+    if (fastify.cleanupIntervals) {
+      for (const interval of fastify.cleanupIntervals) {
+        clearInterval(interval)
       }
-      console.log('✅ Cleanup workers closed')
+      console.log('✅ Cleanup intervals cleared')
     }
 
     // Close upload queue
