@@ -118,7 +118,14 @@ export default async function (fastify: FastifyInstance) {
     const body = parseWithSchema(reply, createSpaceBodySchema, request.body)
     if (!body) return
 
-    // 1. Quota check
+    // 1. Subscription + quota check
+    const { canWrite, isGrace } = await checkUserQuota(fastify, userId)
+    if (isGrace) {
+      return reply.code(403).send({ statusMessage: 'Space creation is disabled during the grace period. Please renew your subscription.' })
+    }
+    if (!canWrite) {
+      return reply.code(403).send({ statusMessage: 'Your subscription is not active. Please check your billing status.' })
+    }
     const allowed = await canCreateSpace(fastify, userId)
     if (!allowed) {
       return reply.code(403).send({ statusMessage: 'Space creation limit reached for your current plan.' })
@@ -225,12 +232,19 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(500).send({ statusMessage: 'Failed to load space media' })
     }
 
-    await fastify.supabase
-      .from('property_360_settings')
+    // 2. Delete DB record first — if this fails we abort before touching R2.
+    // R2 cleanup after a successful DB delete is best-effort; orphan scheduler recovers leftovers.
+    const { error } = await fastify.supabase
+      .from('properties')
       .delete()
-      .eq('property_id', id)
+      .eq('id', id)
+      .eq('user_id', userId)
 
-    // 2. Cleanup R2 — property_media objects
+    if (error) {
+      return reply.code(500).send({ statusMessage: 'Failed to delete space' })
+    }
+
+    // 3. Cleanup R2 — property_media objects (best-effort after confirmed DB delete)
     const bucketName = process.env.R2_BUCKET_NAME
     if (bucketName && mediaItems && mediaItems.length > 0) {
       for (const item of mediaItems) {
@@ -247,7 +261,7 @@ export default async function (fastify: FastifyInstance) {
       }
     }
 
-    // 2b. Cleanup R2 — scene tile directories (DZI manifest + tile files + thumbnail)
+    // 3b. Cleanup R2 — scene tile directories (DZI manifest + tile files + thumbnail)
     if (bucketName && sceneItems && sceneItems.length > 0) {
       const { ListObjectsV2Command } = await import('@aws-sdk/client-s3')
       for (const scene of sceneItems) {
@@ -265,39 +279,13 @@ export default async function (fastify: FastifyInstance) {
       }
     }
 
-    // 3. Delete property (DB handles cascading to property_media if configured, 
-    // but we'll be explicit or rely on Supabase)
-    const { error } = await fastify.supabase
-      .from('properties')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', userId)
-
-    if (error) {
-      return reply.code(500).send({ statusMessage: 'Failed to delete space' })
-    }
-
     // 4. Update Quotas
-    // Decrement active properties count
     await fastify.supabase.rpc('decrement_active_properties', { u_id: userId })
 
-    // Decrement total storage used
     if (mediaItems && mediaItems.length > 0) {
       const totalSize = mediaItems.reduce((acc, item) => acc + Number(item.file_size_bytes || 0), 0)
       if (totalSize > 0) {
-        const { data: counter } = await fastify.supabase
-          .from('usage_counters')
-          .select('storage_used_bytes')
-          .eq('user_id', userId)
-          .single()
-
-        if (counter) {
-          const newUsage = Math.max(0, Number(counter.storage_used_bytes) - totalSize)
-          await fastify.supabase
-            .from('usage_counters')
-            .update({ storage_used_bytes: newUsage })
-            .eq('user_id', userId)
-        }
+        await fastify.supabase.rpc('decrement_storage_usage', { u_id: userId, bytes: totalSize })
       }
     }
 

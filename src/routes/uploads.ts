@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify'
-import { PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import { PutObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { z } from 'zod'
 import { checkStorageQuota, checkFileSizeLimit, isValidFileType, checkUserQuota } from '../utils/quotas.js'
@@ -201,6 +201,19 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(403).send({ statusMessage: 'Invalid object key ownership' })
     }
 
+    // Verify the object was actually uploaded to R2 before creating a DB record
+    const bucketName = process.env.R2_BUCKET_NAME
+    if (bucketName) {
+      try {
+        await fastify.s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: objectKey }))
+      } catch (err: any) {
+        if (err?.name === 'NotFound' || err?.$metadata?.httpStatusCode === 404) {
+          return reply.code(400).send({ statusMessage: 'Upload not found in storage. Please upload the file before completing.' })
+        }
+        fastify.log.warn({ objectKey, error: err?.message }, 'R2 HeadObject check failed — proceeding anyway')
+      }
+    }
+
     // 1. Verify Space Ownership
     const { data: space, error: spaceErr } = await fastify.supabase
       .from('properties')
@@ -388,19 +401,7 @@ export default async function (fastify: FastifyInstance) {
 
     // 4. Decrement Storage Quota
     if (media.file_size_bytes) {
-      const { data: counter } = await fastify.supabase
-        .from('usage_counters')
-        .select('storage_used_bytes')
-        .eq('user_id', userId)
-        .single()
-
-      if (counter) {
-        const newUsage = Math.max(0, Number(counter.storage_used_bytes) - Number(media.file_size_bytes))
-        await fastify.supabase
-          .from('usage_counters')
-          .update({ storage_used_bytes: newUsage })
-          .eq('user_id', userId)
-      }
+      await fastify.supabase.rpc('decrement_storage_usage', { u_id: userId, bytes: Number(media.file_size_bytes) })
     }
 
     request.log.info({ userId, mediaId: id, size: media.file_size_bytes }, 'Deleted media and synced R2/Quota')

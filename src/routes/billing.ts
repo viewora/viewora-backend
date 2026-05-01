@@ -141,10 +141,15 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(400).send()
     }
 
-    const isValidSignature = crypto.timingSafeEqual(
-      Buffer.from(hash, 'hex'),
-      Buffer.from(incomingSignature, 'hex')
-    )
+    let isValidSignature = false
+    try {
+      isValidSignature = crypto.timingSafeEqual(
+        Buffer.from(hash, 'hex'),
+        Buffer.from(incomingSignature, 'hex')
+      )
+    } catch {
+      // timingSafeEqual throws if buffers differ in length (non-hex chars in signature)
+    }
 
     if (!isValidSignature) {
       fastify.log.warn({ ip: request.ip }, 'CRITICAL: Blocked invalid Paystack webhook signature')
@@ -180,6 +185,21 @@ export default async function (fastify: FastifyInstance) {
         fastify.log.error({ data }, 'Webhook missing or invalid required metadata')
         return
       }
+
+      // Idempotency: skip if this transaction reference was already applied
+      if (reference) {
+        const { data: existing } = await fastify.supabase
+          .from('subscriptions')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('provider_reference', reference)
+          .maybeSingle()
+        if (existing) {
+          fastify.log.info({ reference }, 'Webhook skipped — reference already processed')
+          return
+        }
+      }
+
       // Upsert Subscription
       const currentPeriodStart = new Date()
       const currentPeriodEnd = new Date()
@@ -223,6 +243,11 @@ export default async function (fastify: FastifyInstance) {
           .from('subscriptions')
           .update({ status: 'past_due', updated_at: new Date().toISOString() })
           .eq('user_id', userId)
+
+        // Invalidate billing cache so the next request reflects the new status immediately
+        if (fastify.redis) {
+          await fastify.redis.del(`billing:status:${userId}`).catch(() => {})
+        }
       }
     }
   })
