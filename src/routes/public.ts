@@ -79,7 +79,15 @@ export default async function publicRoutes(fastify: FastifyInstance) {
   // ── PUBLIC TOUR VIEWER ────────────────────────────────────
   // No auth required. Calls the get_tour_data() RPC which checks
   // is_published=true AND visibility='public' before returning anything.
-  fastify.get('/p/:slug', async (req, reply) => {
+  fastify.get('/p/:slug', {
+    config: {
+      rateLimit: {
+        max: 60,
+        timeWindow: '1 minute',
+        keyGenerator: (request: any) => request.ip,
+      },
+    },
+  }, async (req, reply) => {
     const params = parseWithSchema(reply, tourParamsSchema, (req as any).params)
     if (!params) return
 
@@ -97,8 +105,8 @@ export default async function publicRoutes(fastify: FastifyInstance) {
               property_id: spaceId,
               event_type: 'property_view',
               source: 'direct',
-              user_agent: req.headers['user-agent'] ?? null,
-              referrer: req.headers['referer'] ?? null,
+              user_agent: (req.headers['user-agent'] ?? '').slice(0, 512) || null,
+              referrer: (req.headers['referer'] ?? '').slice(0, 1024) || null,
             })
           ).catch((err: any) => {
             fastify.log.warn({ err: err?.message }, 'Failed to record tour view event')
@@ -134,8 +142,8 @@ export default async function publicRoutes(fastify: FastifyInstance) {
           property_id: spaceId,
           event_type: 'property_view',
           source: 'direct',
-          user_agent: req.headers['user-agent'] ?? null,
-          referrer: req.headers['referer'] ?? null,
+          user_agent: (req.headers['user-agent'] ?? '').slice(0, 512) || null,
+          referrer: (req.headers['referer'] ?? '').slice(0, 1024) || null,
         })
       ).catch((err: any) => {
         fastify.log.warn({ err: err?.message }, 'Failed to record tour view event')

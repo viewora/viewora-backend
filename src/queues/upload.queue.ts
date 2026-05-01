@@ -94,7 +94,8 @@ export function createUploadWorker(processor: (job: any) => Promise<void>) {
   
   return new Worker<ProcessMediaJob>(UPLOAD_QUEUE_NAME, processor, {
     connection: redisOptions,
-    concurrency, // Configurable via WORKER_CONCURRENCY env var
-    maxStalledCount: 2, // Mark job as stalled after 2 lock losses (timeout prevention)
+    concurrency,
+    lockDuration: 5 * 60 * 1000, // 5 min — covers worst-case 12K panorama tiling (~60s + upload headroom)
+    maxStalledCount: 2,
   })
 }

@@ -118,15 +118,15 @@ export default async function (fastify: FastifyInstance) {
     const body = parseWithSchema(reply, createSpaceBodySchema, request.body)
     if (!body) return
 
-    // 1. Subscription + quota check
-    const { canWrite, isGrace } = await checkUserQuota(fastify, userId)
-    if (isGrace) {
+    // 1. Subscription + quota check (single checkUserQuota call — passed into canCreateSpace)
+    const quotaCtx = await checkUserQuota(fastify, userId)
+    if (quotaCtx.isGrace) {
       return reply.code(403).send({ statusMessage: 'Space creation is disabled during the grace period. Please renew your subscription.' })
     }
-    if (!canWrite) {
+    if (!quotaCtx.canWrite) {
       return reply.code(403).send({ statusMessage: 'Your subscription is not active. Please check your billing status.' })
     }
-    const allowed = await canCreateSpace(fastify, userId)
+    const allowed = await canCreateSpace(fastify, userId, quotaCtx)
     if (!allowed) {
       return reply.code(403).send({ statusMessage: 'Space creation limit reached for your current plan.' })
     }
@@ -254,8 +254,8 @@ export default async function (fastify: FastifyInstance) {
               Bucket: bucketName,
               Key: item.storage_key
             }))
-          } catch (err) {
-            fastify.log.error(err, `Failed to delete R2 object ${item.storage_key} during space deletion`)
+          } catch (err: any) {
+            fastify.log.error({ storageKey: item.storage_key, error: err?.message }, 'R2 delete failed during space deletion — key leaked to storage')
           }
         }
       }

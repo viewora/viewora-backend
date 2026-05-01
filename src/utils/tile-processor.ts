@@ -35,10 +35,16 @@ export async function processTileScene(
     console.log(`[TILE PROCESSOR] Starting tile generation for scene: ${sceneId}... This usually takes ~60 seconds.`)
     await fs.mkdir(tempDir, { recursive: true })
 
-    // 1. Download raw image from R2 CDN
-    const res = await fetch(rawImageUrl)
-    if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`)
-    await fs.writeFile(inputPath, Buffer.from(await res.arrayBuffer()))
+    // 1. Download raw image from R2 CDN (60s timeout — large panoramas can be slow)
+    const dlController = new AbortController()
+    const dlTimeout = setTimeout(() => dlController.abort(), 60_000)
+    try {
+      const res = await fetch(rawImageUrl, { signal: dlController.signal })
+      if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`)
+      await fs.writeFile(inputPath, Buffer.from(await res.arrayBuffer()))
+    } finally {
+      clearTimeout(dlTimeout)
+    }
 
     // 2. Generate and upload thumbnail FIRST so the UI feels instantaneous (takes ~0.5s)
     const thumbPath = path.join(tempDir, 'thumbnail.jpg')

@@ -52,21 +52,15 @@ const UpdateHotspotBodySchema = z.object({
 
 export default async function hotspotsRoutes(fastify: FastifyInstance) {
 
-  // Helper: verify user owns the scene (via space ownership). Returns scene or null.
+  // Single atomic query — verifies scene exists AND caller owns its parent space.
   async function verifySceneOwnership(sceneId: string, userId: string) {
     const { data: scene } = await fastify.supabase
       .from('scenes')
-      .select('id, space_id')
+      .select('id, space_id, properties!inner(user_id)')
       .eq('id', sceneId)
+      .eq('properties.user_id', userId)
       .single()
-    if (!scene) return null
-    const { data: space } = await fastify.supabase
-      .from('properties')
-      .select('user_id')
-      .eq('id', scene.space_id)
-      .single()
-    if (!space || space.user_id !== userId) return null
-    return scene
+    return scene ?? null
   }
 
   // ── LIST HOTSPOTS FOR A SCENE ──────────────────────────────

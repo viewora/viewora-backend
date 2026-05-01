@@ -76,17 +76,15 @@ export async function checkUserQuota(fastify: FastifyInstance, userId: string): 
   }
 }
 
-export async function canCreateSpace(fastify: FastifyInstance, userId: string): Promise<boolean> {
-  const { plan } = await checkUserQuota(fastify, userId)
+export async function canCreateSpace(fastify: FastifyInstance, userId: string, quota?: QuotaContext): Promise<boolean> {
+  const { plan } = quota ?? await checkUserQuota(fastify, userId)
 
-  const { data: counter, error: counterError } = await fastify.supabase
+  const { data: counter } = await fastify.supabase
     .from('usage_counters')
     .select('active_properties_count')
     .eq('user_id', userId)
     .single()
 
-  // If counter is missing, it means the user has not created anything yet.
-  // We treat this as 0 usage instead of blocking the user.
   const currentCount = counter?.active_properties_count || 0
   return currentCount < plan.max_active_spaces
 }
