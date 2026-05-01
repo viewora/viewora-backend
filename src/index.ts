@@ -375,11 +375,37 @@ fastify.setNotFoundHandler((request, reply) => {
   })
 })
 
+// Catch unhandled async rejections that escape try/catch blocks
+// (e.g. fire-and-forget promises, BullMQ event emitters, plugin hooks)
+// Registered BEFORE start() so they are active during the entire startup sequence.
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled promise rejection:', reason)
+  process.exit(1)
+})
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err)
+  process.exit(1)
+})
+
+// Detect unexpected fastify.close() calls (e.g. from a plugin or hook calling close() during startup)
+fastify.addHook('onClose', async (instance) => {
+  console.warn('⚠️  fastify.close() was called — server is shutting down. Stack trace:', new Error('onClose triggered').stack)
+})
+
 const start = async () => {
+  // Startup timeout: if the process hasn't completed startup within 10 seconds, log a warning
+  // so we can tell whether the process is hanging or exiting before this point.
+  const startupTimeoutId = setTimeout(() => {
+    console.warn('⚠️  Startup timeout: server has not completed startup within 10 seconds')
+  }, 10_000)
+
   try {
+    console.log('🔄 start() called — beginning startup sequence')
+
     const port = parseInt(process.env.PORT || '3000')
     await fastify.listen({ port, host: '0.0.0.0' })
-    console.log(`✅ Server is running on port ${port}`)
+    console.log(`✅ fastify.listen() completed — server is running on port ${port}`)
     console.log(`🚀 Accessible at http://0.0.0.0:${port}`)
 
     // Schedule cleanup tasks with setInterval.
@@ -398,6 +424,7 @@ const start = async () => {
 
     const cleanupIntervals: NodeJS.Timeout[] = []
 
+    console.log('🔄 Scheduling cleanup tasks...')
     for (const task of cleanupTasks) {
       const intervalMs = CLEANUP_INTERVAL_MS[task.name] ?? 24 * 60 * 60 * 1000
       const lockTtlSeconds = CLEANUP_LOCK_TTL_S[task.name] ?? 82800
@@ -419,7 +446,12 @@ const start = async () => {
 
     fastify.decorate('cleanupIntervals', cleanupIntervals)
     fastify.log.info(`Scheduled ${cleanupTasks.length} cleanup tasks`)
+    console.log(`✅ Cleanup tasks scheduled (${cleanupTasks.length} tasks)`)
+
+    clearTimeout(startupTimeoutId)
+    console.log('✅ Startup complete')
   } catch (err) {
+    clearTimeout(startupTimeoutId)
     fastify.log.error(err)
     process.exit(1)
   }
@@ -427,18 +459,6 @@ const start = async () => {
 
 start().catch((err) => {
   console.error('Fatal startup error:', err)
-  process.exit(1)
-})
-
-// Catch unhandled async rejections that escape try/catch blocks
-// (e.g. fire-and-forget promises, BullMQ event emitters, plugin hooks)
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled promise rejection:', reason)
-  process.exit(1)
-})
-
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err)
   process.exit(1)
 })
 
