@@ -425,33 +425,9 @@ const start = async () => {
     const cleanupIntervals: NodeJS.Timeout[] = []
 
     console.log(`🔄 Scheduling cleanup tasks... (${cleanupTasks.length} tasks)`)
-    try {
-      for (const task of cleanupTasks) {
-        console.log(`  ⏳ Scheduling task: ${task.name}`)
-        const intervalMs = CLEANUP_INTERVAL_MS[task.name] ?? 24 * 60 * 60 * 1000
-        const lockTtlSeconds = CLEANUP_LOCK_TTL_S[task.name] ?? 82800
-
-        // Initial run after 2-minute warmup
-        const warmup = setTimeout(async () => {
-          fastify.log.info({ task: task.name }, 'Running initial cleanup task')
-          await executeCleanupTask(fastify, task, lockTtlSeconds)
-        }, 2 * 60 * 1000)
-        console.log(`  ✔ warmup setTimeout created for: ${task.name}`)
-
-        // Recurring run on interval
-        const recurring = setInterval(async () => {
-          fastify.log.info({ task: task.name }, 'Running scheduled cleanup task')
-          await executeCleanupTask(fastify, task, lockTtlSeconds)
-        }, intervalMs)
-        console.log(`  ✔ recurring setInterval created for: ${task.name} (every ${intervalMs}ms)`)
-
-        cleanupIntervals.push(warmup, recurring)
-        console.log(`  ✅ Task scheduled: ${task.name}`)
-      }
-    } catch (scheduleErr) {
-      console.error('❌ Error thrown during cleanup task scheduling:', scheduleErr)
-      throw scheduleErr
-    }
+    // TEMPORARY DIAGNOSTIC: cleanup task scheduling disabled to isolate startup crash.
+    // Re-enable once confirmed the process stays up without this block.
+    console.log('⏭️  Skipping cleanup tasks for diagnosis')
 
     fastify.decorate('cleanupIntervals', cleanupIntervals)
     fastify.log.info(`Scheduled ${cleanupTasks.length} cleanup tasks`)
