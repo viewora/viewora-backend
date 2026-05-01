@@ -125,8 +125,10 @@ export default async function (fastify: FastifyInstance) {
     // 4. Define path
     let folder = ''
     if (mediaType === 'panorama') folder = 'panorama'
-    else if (mediaType === 'gallery') folder = 'gallery'
-    else if (mediaType === 'thumb') folder = 'thumb'
+    else if (mediaType === 'gallery' || mediaType === 'gallery_image') folder = 'gallery'
+    else if (mediaType === 'thumb' || mediaType === 'thumbnail') folder = 'thumb'
+    else if (mediaType === 'floor_plan') folder = 'floor_plan'
+    else if (mediaType === 'audio') folder = 'audio'
     else if (mediaType === 'logo' || mediaType === 'branding_logo') folder = 'branding'
     else return reply.code(400).send({ statusMessage: 'Invalid media type' })
 

@@ -102,8 +102,9 @@ export default async function (fastify: FastifyInstance) {
 
         if (!prop?.user_id || !prop?.slug) return
 
-        const { data: { user: owner } } = await fastify.supabase.auth.admin.getUserById(prop.user_id)
-        if (!owner?.email) return
+        const { data: ownerData, error: ownerErr } = await fastify.supabase.auth.admin.getUserById(prop.user_id)
+        if (ownerErr || !ownerData?.user?.email) return
+        const owner = ownerData.user
 
         await sendLeadNotification({
           ownerEmail: owner.email,

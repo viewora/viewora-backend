@@ -140,11 +140,7 @@ export default async function (fastify: FastifyInstance) {
         }
 
         // Reset attempts and re-enqueue
-        await job.update({
-          ...job.data,
-        })
-        await job.clearInstances()
-        await job.moveToWaitingChildren()
+        await job.retry()
 
         fastify.log.info(
           { jobId, mediaId: job.data.mediaId },

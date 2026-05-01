@@ -347,7 +347,7 @@ export default async function (fastify: FastifyInstance) {
     // 1. Ownership & Current State
     const { data: currentSpace, error: fetchErr } = await fastify.supabase
       .from('properties')
-      .select('*, property_media(id)')
+      .select('*, property_media(id, media_type, processing_status)')
       .eq('id', id)
       .eq('user_id', userId)
       .single()
@@ -376,21 +376,16 @@ export default async function (fastify: FastifyInstance) {
       }
 
       // 4. Media Requirement Check
-      const mediaCount = currentSpace.property_media?.length || 0
-      if (mediaCount === 0) {
-        return reply.code(400).send({ statusMessage: 'Space must have at least one media item (Panorama or Gallery) to be published.' })
+      const hasPanorama = currentSpace.property_media?.some(
+        (item: any) => item.media_type === 'panorama' && item.processing_status === 'complete'
+      )
+      if (!hasPanorama) {
+        return reply.code(400).send({ statusMessage: 'Space must have at least one processed panorama image to be published.' })
       }
 
       // 5. Slug Check
       if (!body.slug && !currentSpace.slug) {
         return reply.code(400).send({ statusMessage: 'A unique slug is required to publish.' })
-      }
-    }
-
-    if (isPublishing) {
-      const hasPanorama = currentSpace.property_media?.some((item: any) => item.media_type === 'panorama')
-      if (!hasPanorama) {
-        return reply.code(400).send({ statusMessage: 'Space must have at least one panorama image to be published.' })
       }
     }
 
