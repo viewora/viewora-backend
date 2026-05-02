@@ -35,6 +35,15 @@ const fastify = Fastify({ logger: true })
 await fastify.register(supabasePlugin)
 await fastify.register(s3Plugin)
 
+// Health check route for Railway
+fastify.get('/health', async () => {
+  return { status: 'ok', service: 'Viewora Worker' }
+})
+
+fastify.get('/', async () => {
+  return { service: 'Viewora Worker', status: 'online' }
+})
+
 // Create Redis client for cleanup
 const redis = createClient({
   url: process.env.REDIS_URL,
@@ -203,5 +212,12 @@ const shutdown = async (signal: string) => {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))
+
+const port = parseInt(process.env.PORT || '3001')
+fastify.listen({ port, host: '0.0.0.0' }).then(() => {
+  fastify.log.info(`Worker health check server listening on port ${port}`)
+}).catch((err) => {
+  fastify.log.error({ err }, 'Failed to start worker health check server')
+})
 
 fastify.log.info('Upload worker started, listening for jobs...')
