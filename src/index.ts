@@ -1,3 +1,5 @@
+process.stdout.write('🚀 Node.js process started - evaluating src/index.ts\n')
+try {
 import Fastify, { FastifyError } from 'fastify'
 import cors from '@fastify/cors'
 import compress from '@fastify/compress'
@@ -130,13 +132,13 @@ const configuredCorsOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map(normalizeOriginPattern).filter(Boolean)
   : defaultCorsOrigins
 
-// Compression — brotli preferred, gzip fallback. Must be first.
+process.stdout.write('📦 Registering compression...\n')
 fastify.register(compress, { global: true, encodings: ['br', 'gzip'] })
 
-// Redis cache pool
+process.stdout.write('📦 Registering Redis plugin...\n')
 fastify.register(redisPlugin)
 
-// Register plugins
+process.stdout.write('📦 Registering CORS...\n')
 fastify.register(cors, {
   origin: (origin, cb) => {
     // Allow non-browser clients and same-origin server-to-server requests.
@@ -164,9 +166,24 @@ fastify.register(jwt, {
 })
 
 fastify.register(authPlugin)
+process.stdout.write('📦 Registering Supabase/S3 plugins...\n')
 fastify.register(supabasePlugin)
 fastify.register(s3Plugin)
 
+process.stdout.write('📦 Registering health check routes...\n')
+// Register health check early so it's defined
+fastify.get('/health', async () => {
+  process.stdout.write('💓 Health check requested\n')
+  let redisStatus: 'connected' | 'unavailable' | 'disabled' = 'disabled'
+  if (fastify.redis) {
+    redisStatus = await fastify.redis.ping()
+      .then(() => 'connected' as const)
+      .catch(() => 'unavailable' as const)
+  }
+  return { status: 'ok', service: 'Viewora API', redis: redisStatus }
+})
+
+process.stdout.write('📦 Registering rate limit...\n')
 fastify.register(rateLimit, {
   max: 100,
   timeWindow: '1 minute',
@@ -322,7 +339,12 @@ fastify.get('/', async () => {
   }
 })
 
+// Health check moved up for earlier registration
+/*
 fastify.get('/health', async () => {
+  ...
+})
+*/
   // Redis is optional — the server operates without it (cache misses, no BullMQ).
   // Returning 503 for Redis down would cause Railway deploy healthchecks to fail
   // even when the API itself is healthy. Report Redis status informatively only.
@@ -349,6 +371,7 @@ fastify.get('/metrics', async (request, reply) => {
 })
 
 // Routes
+process.stdout.write('📦 Registering domain routes...\n')
 fastify.register(spaceRoutes, { prefix: '/spaces' })
 fastify.register(billingRoutes, { prefix: '/billing' })
 fastify.register(uploadsRoutes, { prefix: '/uploads' })
@@ -358,11 +381,11 @@ fastify.register(dashboardRoutes, { prefix: '/dashboard' })
 fastify.register(profileRoutes, { prefix: '/profile' })
 fastify.register(maintenanceRoutes, { prefix: '/maintenance' })
 fastify.register(adminRoutes, { prefix: '/admin' })
-// New routes (no prefix — mixed URL shapes: /spaces/:id/scenes, /scenes/:id, /hotspots/:id, etc.)
 fastify.register(scenesRoutes)
 fastify.register(hotspotsRoutes)
 fastify.register(publicRoutes)
 fastify.register(internalRoutes)
+process.stdout.write('✅ All plugins and routes registered\n')
 
 // Alias for /plans (used by frontend dashboard) to avoid 404
 fastify.get('/plans', async (request, reply) => {
@@ -515,3 +538,7 @@ const gracefulShutdown = async (signal: string) => {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+} catch (e) {
+  process.stdout.write('❌ CRITICAL EVALUATION ERROR: ' + (e instanceof Error ? e.stack : String(e)) + '\n')
+  process.exit(1)
+}
