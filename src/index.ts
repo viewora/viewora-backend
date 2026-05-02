@@ -1,5 +1,5 @@
 process.stdout.write('🚀 Node.js process started - evaluating src/index.ts\n')
-try {
+
 import Fastify, { FastifyError } from 'fastify'
 import cors from '@fastify/cors'
 import compress from '@fastify/compress'
@@ -58,7 +58,7 @@ const REQUIRED_ENV = [
 ]
 const missing = REQUIRED_ENV.filter(k => !process.env[k])
 if (missing.length) {
-  console.error(`Missing required environment variables: ${missing.join(', ')}`)
+  process.stdout.write(`❌ Missing required environment variables: ${missing.join(', ')}\n`)
   process.exit(1)
 }
 
@@ -165,13 +165,12 @@ fastify.register(jwt, {
   secret: process.env.SUPABASE_JWT_SECRET!
 })
 
+process.stdout.write('📦 Registering auth/supabase/s3 plugins...\n')
 fastify.register(authPlugin)
-process.stdout.write('📦 Registering Supabase/S3 plugins...\n')
 fastify.register(supabasePlugin)
 fastify.register(s3Plugin)
 
-process.stdout.write('📦 Registering health check routes...\n')
-// Register health check early so it's defined
+process.stdout.write('📦 Registering health check route...\n')
 fastify.get('/health', async () => {
   process.stdout.write('💓 Health check requested\n')
   let redisStatus: 'connected' | 'unavailable' | 'disabled' = 'disabled'
@@ -198,6 +197,7 @@ fastify.register(rateLimit, {
 
 // Initialize upload queue (only if REDIS_URL is available)
 if (process.env.REDIS_URL) {
+  process.stdout.write('📦 Initializing BullMQ upload queue...\n')
   const uploadQueue = createUploadQueue()
   // BullMQ emits 'error' for Redis connection failures. Without a listener
   // Node.js converts it to an uncaughtException which kills the process.
@@ -329,7 +329,7 @@ fastify.setErrorHandler(function (error: FastifyError, request, reply) {
   })
 })
 
-// Root & Health check
+// Root
 fastify.get('/', async () => {
   return { 
     message: 'Welcome to Viewora API', 
@@ -337,24 +337,6 @@ fastify.get('/', async () => {
     rebranded: true,
     version: '1.0.0'
   }
-})
-
-// Health check moved up for earlier registration
-/*
-fastify.get('/health', async () => {
-  ...
-})
-*/
-  // Redis is optional — the server operates without it (cache misses, no BullMQ).
-  // Returning 503 for Redis down would cause Railway deploy healthchecks to fail
-  // even when the API itself is healthy. Report Redis status informatively only.
-  let redisStatus: 'connected' | 'unavailable' | 'disabled' = 'disabled'
-  if (fastify.redis) {
-    redisStatus = await fastify.redis.ping()
-      .then(() => 'connected' as const)
-      .catch(() => 'unavailable' as const)
-  }
-  return { status: 'ok', service: 'Viewora API', redis: redisStatus }
 })
 
 // Prometheus metrics endpoint — restrict to internal/Railway health probes
@@ -405,140 +387,114 @@ fastify.setNotFoundHandler((request, reply) => {
   })
 })
 
-// Catch unhandled async rejections. Log + capture to Sentry but do NOT exit —
-// calling process.exit(1) here causes crash-restart loops on Railway whenever
-// a non-fatal rejection slips through (e.g. a Redis reconnect event).
+// Catch unhandled async rejections. Log + capture to Sentry but do NOT exit
 process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled promise rejection (non-fatal):', reason)
+  process.stdout.write(`⚠️ Unhandled promise rejection (non-fatal): ${reason}\n`)
   captureException(reason instanceof Error ? reason : new Error(String(reason)))
 })
 
 // Uncaught synchronous exceptions ARE fatal — log, capture, then exit.
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception (fatal):', err)
+  process.stdout.write(`❌ Uncaught exception (fatal): ${err.stack || err}\n`)
   captureException(err)
   process.exit(1)
 })
 
-// Detect unexpected fastify.close() calls (e.g. from a plugin or hook calling close() during startup)
+// Detect unexpected fastify.close() calls
 fastify.addHook('onClose', async (instance) => {
-  console.warn('⚠️  fastify.close() was called — server is shutting down. Stack trace:', new Error('onClose triggered').stack)
+  process.stdout.write('⚠️ fastify.close() was called - server is shutting down\n')
 })
 
 const start = async () => {
   // Startup timeout: if the process hasn't completed startup within 10 seconds, log a warning
-  // so we can tell whether the process is hanging or exiting before this point.
   const startupTimeoutId = setTimeout(() => {
-    console.warn('⚠️  Startup timeout: server has not completed startup within 10 seconds')
+    process.stdout.write('⚠️ Startup timeout: server has not completed startup within 10 seconds\n')
   }, 10_000)
 
   try {
-    console.log('🔄 start() called — beginning startup sequence')
+    process.stdout.write('🔄 start() called - beginning startup sequence\n')
 
     const port = parseInt(process.env.PORT || '3000')
     await fastify.listen({ port, host: '0.0.0.0' })
-    console.log(`✅ fastify.listen() completed — server is running on port ${port}`)
-    console.log(`🚀 Accessible at http://0.0.0.0:${port}`)
+    process.stdout.write(`✅ fastify.listen() completed - server is running on port ${port}\n`)
+    process.stdout.write(`🚀 Accessible at http://0.0.0.0:${port}\n`)
 
-    // Schedule cleanup tasks with setInterval.
-    // Daily task runs every 24h, orphan task runs every 7 days.
-    // Both fire once after a 2-minute warmup delay so the server is fully ready.
     const CLEANUP_INTERVAL_MS: Record<string, number> = {
       'cleanup-failed-media': 24 * 60 * 60 * 1000,
       'cleanup-orphan-media': 7 * 24 * 60 * 60 * 1000,
     }
 
-    // Lock TTL slightly under the repeat interval so the lock expires before the next run.
     const CLEANUP_LOCK_TTL_S: Record<string, number> = {
-      'cleanup-failed-media': 23 * 60 * 60,           // 23h — daily task
-      'cleanup-orphan-media': 6 * 24 * 60 * 60 + 23 * 60 * 60, // ~6d 23h — weekly task
+      'cleanup-failed-media': 23 * 60 * 60,
+      'cleanup-orphan-media': 6 * 24 * 60 * 60 + 23 * 60 * 60,
     }
 
     const cleanupIntervals: NodeJS.Timeout[] = []
 
-    console.log(`🔄 Scheduling cleanup tasks... (${cleanupTasks.length} tasks)`)
-    try {
-      for (const task of cleanupTasks) {
-        console.log(`  ⏳ Scheduling task: ${task.name}`)
-        const intervalMs = CLEANUP_INTERVAL_MS[task.name] ?? 24 * 60 * 60 * 1000
-        const lockTtlSeconds = CLEANUP_LOCK_TTL_S[task.name] ?? 82800
+    process.stdout.write(`🔄 Scheduling cleanup tasks... (${cleanupTasks.length} tasks)\n`)
+    for (const task of cleanupTasks) {
+      const intervalMs = CLEANUP_INTERVAL_MS[task.name] ?? 24 * 60 * 60 * 1000
+      const lockTtlSeconds = CLEANUP_LOCK_TTL_S[task.name] ?? 82800
 
-        // Initial run after 2-minute warmup
-        const warmup = setTimeout(() => {
-          fastify.log.info({ task: task.name }, 'Running initial cleanup task')
-          executeCleanupTask(fastify, task, lockTtlSeconds).catch((err) => {
-            fastify.log.error({ err, task: task.name }, 'Cleanup warmup threw unexpectedly')
-          })
-        }, 2 * 60 * 1000)
-        console.log(`  ✔ warmup setTimeout created for: ${task.name}`)
+      const warmup = setTimeout(() => {
+        fastify.log.info({ task: task.name }, 'Running initial cleanup task')
+        executeCleanupTask(fastify, task, lockTtlSeconds).catch((err) => {
+          fastify.log.error({ err, task: task.name }, 'Cleanup warmup threw unexpectedly')
+        })
+      }, 2 * 60 * 1000)
 
-        // Recurring run on interval
-        const recurring = setInterval(() => {
-          fastify.log.info({ task: task.name }, 'Running scheduled cleanup task')
-          executeCleanupTask(fastify, task, lockTtlSeconds).catch((err) => {
-            fastify.log.error({ err, task: task.name }, 'Cleanup interval threw unexpectedly')
-          })
-        }, intervalMs)
-        console.log(`  ✔ recurring setInterval created for: ${task.name} (every ${intervalMs}ms)`)
+      const recurring = setInterval(() => {
+        fastify.log.info({ task: task.name }, 'Running scheduled cleanup task')
+        executeCleanupTask(fastify, task, lockTtlSeconds).catch((err) => {
+          fastify.log.error({ err, task: task.name }, 'Cleanup interval threw unexpectedly')
+        })
+      }, intervalMs)
 
-        cleanupIntervals.push(warmup, recurring)
-        console.log(`  ✅ Task scheduled: ${task.name}`)
-      }
-    } catch (scheduleErr) {
-      console.error('❌ Error thrown during cleanup task scheduling:', scheduleErr)
-      throw scheduleErr
+      cleanupIntervals.push(warmup, recurring)
     }
 
     fastify.decorate('cleanupIntervals', cleanupIntervals)
-    fastify.log.info(`Scheduled ${cleanupTasks.length} cleanup tasks`)
-    console.log(`✅ Cleanup tasks scheduled (${cleanupTasks.length} tasks)`)
+    process.stdout.write(`✅ Cleanup tasks scheduled (${cleanupTasks.length} tasks)\n`)
 
     clearTimeout(startupTimeoutId)
-    console.log('✅ Startup complete')
+    process.stdout.write('✅ Startup complete\n')
   } catch (err) {
     clearTimeout(startupTimeoutId)
-    fastify.log.error(err)
+    process.stdout.write(`❌ Fatal start error: ${err instanceof Error ? err.stack : err}\n`)
     process.exit(1)
   }
 }
 
 start().catch((err) => {
-  console.error('Fatal startup error:', err)
+  process.stdout.write(`❌ Fatal startup error: ${err.stack || err}\n`)
   process.exit(1)
 })
 
 // Graceful shutdown
 const gracefulShutdown = async (signal: string) => {
-  console.log(`\n⏹️  Received ${signal}, shutting down gracefully...`)
+  process.stdout.write(`\n⏹️ Received ${signal}, shutting down gracefully...\n`)
 
   try {
-    // Clear cleanup intervals
     if (fastify.cleanupIntervals) {
       for (const interval of fastify.cleanupIntervals) {
         clearInterval(interval)
       }
-      console.log('✅ Cleanup intervals cleared')
+      process.stdout.write('✅ Cleanup intervals cleared\n')
     }
 
-    // Close upload queue
     if (fastify.uploadQueue) {
       await fastify.uploadQueue.close()
-      console.log('✅ Upload queue closed')
+      process.stdout.write('✅ Upload queue closed\n')
     }
 
-    // Close server
     await fastify.close()
-    console.log('✅ Server closed')
+    process.stdout.write('✅ Server closed\n')
     process.exit(0)
   } catch (error: any) {
-    console.error('Error during shutdown:', error?.message)
+    process.stdout.write(`❌ Error during shutdown: ${error?.message}\n`)
     process.exit(1)
   }
 }
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
-} catch (e) {
-  process.stdout.write('❌ CRITICAL EVALUATION ERROR: ' + (e instanceof Error ? e.stack : String(e)) + '\n')
-  process.exit(1)
-}
