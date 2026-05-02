@@ -415,9 +415,7 @@ const start = async () => {
     process.stdout.write('🔄 start() called - beginning startup sequence\n')
 
     const port = parseInt(process.env.PORT || '3000')
-    await fastify.listen({ port, host: '0.0.0.0' })
-    process.stdout.write(`✅ fastify.listen() completed - server is running on port ${port}\n`)
-    process.stdout.write(`🚀 Accessible at http://0.0.0.0:${port}\n`)
+
 
     const CLEANUP_INTERVAL_MS: Record<string, number> = {
       'cleanup-failed-media': 24 * 60 * 60 * 1000,
@@ -455,6 +453,10 @@ const start = async () => {
 
     fastify.decorate('cleanupIntervals', cleanupIntervals)
     process.stdout.write(`✅ Cleanup tasks scheduled (${cleanupTasks.length} tasks)\n`)
+
+    await fastify.listen({ port, host: '0.0.0.0' })
+    process.stdout.write(`✅ fastify.listen() completed - server is running on port ${port}\n`)
+    process.stdout.write(`🚀 Accessible at http://0.0.0.0:${port}\n`)
 
     clearTimeout(startupTimeoutId)
     process.stdout.write('✅ Startup complete\n')
