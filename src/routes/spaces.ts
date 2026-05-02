@@ -320,7 +320,10 @@ export default async function (fastify: FastifyInstance) {
       .select()
       .single()
 
-    if (error) throw error
+    if (error) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to update viewer settings' })
+    }
     return reply.send({ settings })
   })
 

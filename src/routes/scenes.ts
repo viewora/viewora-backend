@@ -41,7 +41,10 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     ])
 
     if (!space) return reply.code(404).send({ statusMessage: 'Space not found' })
-    if (error) throw error
+    if (error) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to fetch scenes' })
+    }
     return reply.send({ scenes: scenes ?? [] })
   })
 
