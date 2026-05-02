@@ -369,9 +369,11 @@ export default async function (fastify: FastifyInstance) {
         return reply.code(400).send({ statusMessage: 'Space must have at least one processed panorama image to be published.' })
       }
 
-      // 5. Slug Check
+      // 5. Slug Check — if missing, auto-generate one to unblock the user
       if (!body.slug && !currentSpace.slug) {
-        return reply.code(400).send({ statusMessage: 'A unique slug is required to publish.' })
+        updates.slug = `tour-${currentSpace.id.slice(0, 8)}`
+      } else if (body.slug) {
+        updates.slug = body.slug
       }
     }
 
