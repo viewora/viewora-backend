@@ -145,10 +145,11 @@ export async function processTileScene(
       }).eq('id', sceneId),
 
       // Update the media record so the 'Publish' button is unlocked
+      // We match by the path (storage_key) to avoid domain mismatch issues
       supabase.from('property_media').update({
         processing_status: 'complete',
         processed_at:      new Date().toISOString()
-      }).eq('public_url', rawImageUrl)
+      }).ilike('storage_key', `%${rawImageUrl.split('.software/')[1] || rawImageUrl.split('.dev/')[1]}`)
     ])
     console.log(`[TILE] All tiles ready for scene ${sceneId} (${cols}×${rows})`)
 
@@ -157,7 +158,7 @@ export async function processTileScene(
     console.error(`[TILE] STACK: ${err.stack}`);
     await Promise.all([
       supabase.from('scenes').update({ status: 'failed' }).eq('id', sceneId),
-      supabase.from('property_media').update({ processing_status: 'failed' }).eq('public_url', rawImageUrl)
+      supabase.from('property_media').update({ processing_status: 'failed' }).eq('storage_key', rawImageUrl.split('.software/')[1] || rawImageUrl.split('.dev/')[1])
     ])
     throw err
   } finally {
