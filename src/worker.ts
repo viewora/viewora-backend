@@ -64,7 +64,7 @@ async function processUploadJob(job: any) {
   // Route tile-scene jobs to the tile processor
   if (job.name === 'tile-scene') {
     const { sceneId, rawImageUrl, spaceId } = job.data
-    await processTileScene(fastify.s3, fastify.supabase, { sceneId, rawImageUrl, spaceId })
+    await processTileScene(fastify.s3, fastify.supabase, { sceneId, rawImageUrl, spaceId }, redis)
     return
   }
 

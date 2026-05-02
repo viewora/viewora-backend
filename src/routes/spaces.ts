@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { canCreateSpace, checkUserQuota } from '../utils/quotas.js'
 import { parseWithSchema } from '../utils/validation.js'
 import { sendTourPublishedEmail } from '../email/index.js'
+import { invalidateSpaceCache } from '../utils/cache.js'
 
 const uuidSchema = z.string().uuid()
 
@@ -204,6 +205,9 @@ export default async function (fastify: FastifyInstance) {
       property_type: undefined
     }
 
+    // Invalidate public cache
+    await invalidateSpaceCache(fastify, id)
+
     return reply.send(mappedSpace)
   })
 
@@ -368,19 +372,17 @@ export default async function (fastify: FastifyInstance) {
       if (!hasPanorama) {
         return reply.code(400).send({ statusMessage: 'Space must have at least one processed panorama image to be published.' })
       }
-
-      // 5. Slug Check — if missing, auto-generate one to unblock the user
-      if (!body.slug && !currentSpace.slug) {
-        updates.slug = `tour-${currentSpace.id.slice(0, 8)}`
-      } else if (body.slug) {
-        updates.slug = body.slug
-      }
     }
-
+    
     const updates: any = { is_published: isPublishing }
     if (isPublishing) {
       if (!currentSpace.published_at) updates.published_at = new Date().toISOString()
       if (body.slug) updates.slug = body.slug
+
+      // 5. Slug Check — if missing, auto-generate one to unblock the user
+      if (!body.slug && !currentSpace.slug) {
+        updates.slug = `tour-${currentSpace.id.slice(0, 8)}`
+      }
     } else {
       updates.published_at = null
     }
@@ -412,6 +414,9 @@ export default async function (fastify: FastifyInstance) {
         }).catch(err => fastify.log.error(err, 'Tour published email failed'))
       }
     }
+
+    // Invalidate public cache
+    await invalidateSpaceCache(fastify, id)
 
     return reply.send(space)
   })

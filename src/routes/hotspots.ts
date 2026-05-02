@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
+import { invalidateCacheBySceneId } from '../utils/cache.js'
 
 // ── Param schemas ─────────────────────────────────────────────
 const hotspotParamsSchema = z.object({ hotspotId: z.string().uuid() })
@@ -108,6 +109,10 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
       .select()
       .single()
     if (error) throw error
+    
+    // Invalidate public cache
+    await invalidateCacheBySceneId(fastify, params.sceneId)
+
     return reply.code(201).send({ hotspot })
   })
 
@@ -136,6 +141,10 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
       .select()
       .single()
     if (error) throw error
+
+    // Invalidate public cache
+    await invalidateCacheBySceneId(fastify, hotspot.scene_id)
+
     return reply.send({ hotspot: updated })
   })
 
@@ -157,6 +166,10 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
 
     const { error: deleteErr } = await fastify.supabase.from('hotspots').delete().eq('id', params.hotspotId)
     if (deleteErr) return reply.code(500).send({ statusMessage: 'Failed to delete hotspot' })
+    
+    // Invalidate public cache
+    await invalidateCacheBySceneId(fastify, hotspot.scene_id)
+
     return reply.code(204).send()
   })
 }

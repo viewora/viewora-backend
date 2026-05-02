@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
+import { invalidateCacheBySceneId, invalidateSpaceCache } from '../utils/cache.js'
 
 // ── Param schemas ─────────────────────────────────────────────
 const sceneParamsSchema = z.object({ sceneId: z.string().uuid() })
@@ -115,6 +116,9 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       })
     }
 
+    // Refresh the public cache — spaceId is already in scope, skip the extra scene→space lookup
+    await invalidateSpaceCache(fastify, params.spaceId)
+
     return reply.code(201).send({ scene })
   })
 
@@ -171,6 +175,9 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       .single()
 
     if (updateError) throw updateError
+
+    // Invalidate public cache only after confirmed success
+    await invalidateCacheBySceneId(fastify, params.sceneId)
     return reply.send({ scene: updated })
   })
 
@@ -195,6 +202,11 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       fastify.log.error(deleteError, 'Failed to delete scene')
       return reply.code(500).send({ statusMessage: 'Failed to delete scene from database' })
     }
+    // Invalidate public cache
+    if (scene?.space_id) {
+      await invalidateSpaceCache(fastify, scene.space_id)
+    }
+
     return reply.code(204).send()
   })
 }

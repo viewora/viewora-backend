@@ -15,6 +15,7 @@ export async function processTileScene(
   s3: S3Client,
   supabase: any,
   job: { sceneId: string; rawImageUrl: string; spaceId: string },
+  redis?: { del: (key: string) => Promise<any> } | null,
 ) {
   const { sceneId, rawImageUrl, spaceId } = job
   const tempDir       = path.join(TEMP_DIR, sceneId)
@@ -151,6 +152,14 @@ export async function processTileScene(
         processed_at:      new Date().toISOString()
       }).ilike('storage_key', `%${rawImageUrl.split('.software/')[1] || rawImageUrl.split('.dev/')[1]}`)
     ])
+    
+    // Invalidate the public cache so the viewer switches to tiled mode immediately
+    if (redis) {
+      const { data: prop } = await supabase.from('properties').select('slug').eq('id', spaceId).single()
+      if (prop?.slug) {
+        await redis.del(`tour:${prop.slug}`).catch(() => {})
+      }
+    }
     console.log(`[TILE] All tiles ready for scene ${sceneId} (${cols}×${rows})`)
 
   } catch (err: any) {
