@@ -23,7 +23,8 @@ export async function processTileScene(
   const thumbPath     = path.join(tempDir, 'thumbnail.jpg')
 
   const bucket  = process.env.R2_BUCKET_NAME!
-  const cdnBase = process.env.MEDIA_DOMAIN || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
+  // Ensure we use the custom domain for public URLs
+  const cdnBase = 'https://media.viewora.software'
 
   // SSRF guard — only allow fetches from our own domains
   const rawUrlHost  = new URL(rawImageUrl).hostname

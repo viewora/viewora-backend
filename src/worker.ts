@@ -163,7 +163,7 @@ const worker = createUploadWorker(processUploadJob)
 const metricsQueue = createUploadQueue()
 
 // Register daily subscription expiry sweep (idempotent — BullMQ deduplicates by jobId)
-await metricsQueue.add('expire-subscriptions', {}, {
+await metricsQueue.add('expire-subscriptions', {} as any, {
   repeat: { pattern: '5 0 * * *' }, // 00:05 UTC daily
   jobId: 'expire-subscriptions-cron',
 })
