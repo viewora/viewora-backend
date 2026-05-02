@@ -26,6 +26,7 @@ declare module 'fastify' {
   }
 
   interface FastifyRequest {
+    user?: any
     identity?: RequestIdentity
   }
 }

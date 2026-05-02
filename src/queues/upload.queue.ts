@@ -61,7 +61,7 @@ export function createRedisConnection() {
  * This is used by the API to enqueue jobs
  */
 export function createUploadQueue() {
-  return new Queue<ProcessMediaJob>(UPLOAD_QUEUE_NAME, {
+  return new Queue<any>(UPLOAD_QUEUE_NAME, {
     connection: redisOptions,
     defaultJobOptions: {
       attempts: 5,
@@ -92,7 +92,7 @@ export function createUploadQueueEvents() {
 export function createUploadWorker(processor: (job: any) => Promise<void>) {
   const concurrency = parseInt(process.env.WORKER_CONCURRENCY || '1', 10)
   
-  return new Worker<ProcessMediaJob>(UPLOAD_QUEUE_NAME, processor, {
+  return new Worker<any>(UPLOAD_QUEUE_NAME, processor, {
     connection: redisOptions,
     concurrency,
     lockDuration: 5 * 60 * 1000, // 5 min — covers worst-case 12K panorama tiling (~60s + upload headroom)
