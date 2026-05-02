@@ -41,7 +41,7 @@ const updateSettingsBodySchema = z.object({
 
 const publishBodySchema = z.object({
   publish: z.boolean(),
-  slug: z.string().trim().min(3).max(120).optional(),
+  slug: z.string().trim().min(3).max(120).nullable().optional(),
   lead_form_enabled: z.boolean().optional(),
   branding_enabled: z.boolean().optional(),
 })
