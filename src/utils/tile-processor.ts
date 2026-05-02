@@ -33,30 +33,36 @@ export async function processTileScene(
   }
 
   try {
-    console.log(`[TILE] Starting scene ${sceneId}`)
+    console.log(`[TILE] >>> STEP 1: Starting scene ${sceneId}`);
     await fs.mkdir(tempDir, { recursive: true })
 
     // 1. Download raw image (60s timeout)
     const dlController = new AbortController()
     const dlTimeout = setTimeout(() => dlController.abort(), 60_000)
     try {
+      console.log(`[TILE] >>> STEP 2: Downloading raw image from ${rawImageUrl}`);
       const res = await fetch(rawImageUrl, { signal: dlController.signal })
       if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`)
       await fs.writeFile(inputPath, Buffer.from(await res.arrayBuffer()))
+      console.log(`[TILE] >>> STEP 3: Download complete (${(await fs.stat(inputPath)).size} bytes)`);
     } finally {
       clearTimeout(dlTimeout)
     }
 
     // 2. Strip EXIF/GPS metadata (writes clean file, same quality)
+    console.log(`[TILE] >>> STEP 4: Stripping metadata...`);
     await sharp(inputPath)
       .jpeg({ quality: 95 })
       .toFile(cleanPath)
+    console.log(`[TILE] >>> STEP 5: Metadata stripped`);
 
     // 3. Thumbnail 2048×1024 — used as PSV baseUrl (visible during tile loading)
+    console.log(`[TILE] >>> STEP 6: Generating thumbnail...`);
     await sharp(cleanPath)
       .resize(2048, 1024, { fit: 'cover', withoutEnlargement: true })
       .jpeg({ quality: 85, progressive: true })
       .toFile(thumbPath)
+    console.log(`[TILE] >>> STEP 7: Thumbnail generated`);
 
     const thumbKey = `spaces/${spaceId}/scenes/${sceneId}/thumbnail.jpg`
     await s3.send(new PutObjectCommand({
@@ -129,6 +135,8 @@ export async function processTileScene(
     console.log(`[TILE] All tiles ready for scene ${sceneId} (${cols}×${rows})`)
 
   } catch (err: any) {
+    console.error(`[TILE] !!! CRITICAL ERROR on scene ${sceneId}: ${err.message}`);
+    console.error(`[TILE] STACK: ${err.stack}`);
     await supabase.from('scenes').update({ status: 'failed' }).eq('id', sceneId)
     throw err
   } finally {

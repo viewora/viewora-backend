@@ -176,6 +176,10 @@ queueEvents.on('error', (err) => console.error('BullMQ queueEvents error:', err)
 
 // Monitor queue events for better observability
 worker.on('failed', (job, err) => {
+  console.error(`[WORKER] !!! JOB FAILED: ${job?.id} (${job?.name})`);
+  console.error(`[WORKER] REASON: ${job?.failedReason}`);
+  if (err) console.error(`[WORKER] STACK: ${err.stack}`);
+  
   fastify.log.error(
     { 
       jobId: job?.id, 
