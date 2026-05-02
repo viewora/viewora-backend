@@ -108,7 +108,10 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
       .insert({ scene_id: params.sceneId, ...body })
       .select()
       .single()
-    if (error) throw error
+    if (error) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to create hotspot' })
+    }
     
     // Invalidate public cache
     await invalidateCacheBySceneId(fastify, params.sceneId)
@@ -140,7 +143,10 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
       .eq('id', params.hotspotId)
       .select()
       .single()
-    if (error) throw error
+    if (error) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to update hotspot' })
+    }
 
     // Invalidate public cache
     await invalidateCacheBySceneId(fastify, hotspot.scene_id)

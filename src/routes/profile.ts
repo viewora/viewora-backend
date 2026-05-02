@@ -24,7 +24,8 @@ export default async function (fastify: FastifyInstance) {
       if (error.code === 'PGRST116') {
         return reply.code(404).send({ statusMessage: 'Profile not found' })
       }
-      return reply.code(500).send({ statusMessage: error.message })
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to fetch profile' })
     }
 
     return reply.send(data)
@@ -48,7 +49,10 @@ export default async function (fastify: FastifyInstance) {
       .select('id, full_name, avatar_url, phone, created_at, updated_at')
       .single()
 
-    if (error) return reply.code(500).send({ statusMessage: error.message })
+    if (error) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to update profile' })
+    }
     return reply.send(data)
   })
 }

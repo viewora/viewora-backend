@@ -160,7 +160,8 @@ export default async function (fastify: FastifyInstance) {
     }
 
     // 3. Update usage counter (RPC defined in migration 013)
-    await fastify.supabase.rpc('increment_active_properties', { u_id: userId })
+    const { error: incrErr } = await fastify.supabase.rpc('increment_active_properties', { u_id: userId })
+    if (incrErr) fastify.log.error(incrErr, 'Failed to increment active_properties counter')
 
     return reply.code(201).send(mappedSpace)
   })
@@ -282,7 +283,8 @@ export default async function (fastify: FastifyInstance) {
     }
 
     // 4. Update Quotas
-    await fastify.supabase.rpc('decrement_active_properties', { u_id: userId })
+    const { error: decrErr } = await fastify.supabase.rpc('decrement_active_properties', { u_id: userId })
+    if (decrErr) fastify.log.error(decrErr, 'Failed to decrement active_properties counter')
 
     if (mediaItems && mediaItems.length > 0) {
       const totalSize = mediaItems.reduce((acc, item) => acc + Number(item.file_size_bytes || 0), 0)

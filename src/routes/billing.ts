@@ -71,14 +71,8 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(400).send({ statusMessage: 'Cannot initialize payment for free plan' })
     }
 
-    // 2. Get User Email
-    const { data: profile } = await fastify.supabase
-      .from('profiles')
-      .select('email')
-      .eq('id', userId)
-      .single()
-
-    const email = profile?.email
+    // 2. Get User Email — use JWT claim (always fresh, no extra DB round-trip)
+    const email = (request.user as any)?.email as string | undefined
 
     if (!email) {
       return reply.code(400).send({ statusMessage: 'User email not found' })
@@ -111,7 +105,8 @@ export default async function (fastify: FastifyInstance) {
           headers: {
             Authorization: `Bearer ${paystackSecret}`,
             'Content-Type': 'application/json'
-          }
+          },
+          timeout: 10_000,
         }
       )
 

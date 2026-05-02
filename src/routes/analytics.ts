@@ -102,6 +102,7 @@ export default async function (fastify: FastifyInstance) {
       .select('*, properties!inner(user_id, title)')
       .eq('properties.user_id', userId)
       .order('date', { ascending: false })
+      .limit(90)
 
     if (error) {
       fastify.log.error(error)

@@ -101,7 +101,10 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       orderIndex = await getNextOrderIndex()
     }
 
-    if (insertError) throw insertError
+    if (insertError) {
+      fastify.log.error(insertError)
+      return reply.code(500).send({ statusMessage: 'Failed to create scene' })
+    }
 
     // Enqueue tiling job on the existing uploadQueue
     if (fastify.uploadQueue) {
@@ -128,21 +131,12 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     const params = parseWithSchema(reply, sceneParamsSchema, (req as any).params)
     if (!params) return
 
-    // Verify ownership BEFORE loading scene data — avoids loading potentially large
-    // hotspot arrays for scenes the requester doesn't own.
-    const { data: ownerCheck } = await fastify.supabase
-      .from('scenes')
-      .select('id, properties!inner(user_id)')
-      .eq('id', params.sceneId)
-      .eq('properties.user_id', userId)
-      .single()
-
-    if (!ownerCheck) return reply.code(404).send({ statusMessage: 'Scene not found' })
-
+    // Single query — ownership and scene data in one round-trip
     const { data: scene } = await fastify.supabase
       .from('scenes')
-      .select('*, hotspots!scene_id(*)')
+      .select('*, hotspots!scene_id(*), properties!inner(user_id)')
       .eq('id', params.sceneId)
+      .eq('properties.user_id', userId)
       .single()
 
     if (!scene) return reply.code(404).send({ statusMessage: 'Scene not found' })
@@ -174,7 +168,10 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       .select()
       .single()
 
-    if (updateError) throw updateError
+    if (updateError) {
+      fastify.log.error(updateError)
+      return reply.code(500).send({ statusMessage: 'Failed to update scene' })
+    }
 
     // Invalidate public cache only after confirmed success
     await invalidateCacheBySceneId(fastify, params.sceneId)
