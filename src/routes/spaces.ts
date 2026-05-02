@@ -374,7 +374,7 @@ export default async function (fastify: FastifyInstance) {
       }
     }
     
-    const updates: any = { is_published: isPublishing }
+    const updates: any = { is_published: isPublishing, visibility: isPublishing ? 'public' : 'private' }
     if (isPublishing) {
       if (!currentSpace.published_at) updates.published_at = new Date().toISOString()
       if (body.slug) updates.slug = body.slug
