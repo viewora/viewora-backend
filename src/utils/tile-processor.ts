@@ -1,11 +1,15 @@
 import sharp from 'sharp'
+// Disable sharp cache to prevent OOM on large panoramas
+sharp.cache(false)
+// Limit sharp to 1 CPU thread to save memory overhead per tile
+sharp.concurrency(1)
 import path from 'path'
 import fs from 'fs/promises'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 
 const TILE_SIZE = 512
 const TEMP_DIR  = process.env.TEMP_DIR ?? '/tmp/viewora-tiles'
-const BATCH     = 20
+const BATCH     = 5
 
 export async function processTileScene(
   s3: S3Client,

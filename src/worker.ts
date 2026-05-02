@@ -175,14 +175,20 @@ metricsQueue.on('error', (err) => console.error('BullMQ metricsQueue error:', er
 queueEvents.on('error', (err) => console.error('BullMQ queueEvents error:', err))
 
 // Monitor queue events for better observability
-queueEvents.on('failed', (data: any) => {
-  const { jobId, failedReason } = data
-  fastify.log.error({ jobId, failedReason }, 'Job failed event from queue')
+worker.on('failed', (job, err) => {
+  fastify.log.error(
+    { 
+      jobId: job?.id, 
+      name: job?.name,
+      failedReason: job?.failedReason,
+      stack: err?.stack 
+    }, 
+    'Job failed with error'
+  )
 })
 
-queueEvents.on('completed', (data: any) => {
-  const { jobId } = data
-  fastify.log.info({ jobId }, 'Job completed event from queue')
+worker.on('completed', (job) => {
+  fastify.log.info({ jobId: job.id, name: job.name }, 'Job completed successfully')
 })
 
 queueEvents.on('stalled', (data: any) => {
