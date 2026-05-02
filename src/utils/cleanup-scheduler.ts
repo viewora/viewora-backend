@@ -41,7 +41,7 @@ export const failedMediaCleanupTask: CleanupTask = {
 
       const { data: failedMedia, error: queryErr } = await fastify.supabase
         .from('property_media')
-        .select('id, storage_key, file_size_bytes, property_id')
+        .select('id, storage_key, file_size_bytes, property_id, properties!inner(user_id)')
         .eq('processing_status', 'failed')
         .eq('marked_for_cleanup', true)
         .lt('marked_for_cleanup_at', sevenDaysAgo)
@@ -65,14 +65,11 @@ export const failedMediaCleanupTask: CleanupTask = {
 
       for (const media of failedMedia) {
         try {
-          const { data: property } = await fastify.supabase
-            .from('properties')
-            .select('user_id')
-            .eq('id', media.property_id)
-            .single()
+          const userId = (media.properties as any)?.user_id
 
           // Safety guard: skip cleanup if property ownership cannot be verified.
-          if (!property?.user_id) {
+          // !inner join already filters orphan media, but guard defensively.
+          if (!userId) {
             errorCount++
             recordCleanupFailure(failedMediaCleanupTask.name, 'safety')
             fastify.log.error({ mediaId: media.id }, 'Skipped cleanup: could not verify property ownership')
@@ -98,9 +95,9 @@ export const failedMediaCleanupTask: CleanupTask = {
           await fastify.supabase.from('property_media').delete().eq('id', media.id)
 
           // 3. Decrement storage counter
-          if (media.file_size_bytes && property?.user_id) {
+          if (media.file_size_bytes) {
             await fastify.supabase.rpc('decrement_storage_usage', {
-              u_id: property.user_id,
+              u_id: userId,
               bytes: media.file_size_bytes,
             })
             freedBytes += Number(media.file_size_bytes)

@@ -101,7 +101,7 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(413).send({ statusMessage: `File too large. Your plan allows up to ${mbLimit} MB per upload.` })
     }
 
-    const hasSpace = await checkStorageQuota(fastify, userId, Number(fileSize))
+    const hasSpace = await checkStorageQuota(fastify, userId, Number(fileSize), plan)
     if (!hasSpace) {
       return reply.code(403).send({ statusMessage: 'Storage limit reached. Please upgrade your plan.' })
     }

@@ -110,7 +110,12 @@ export default async function (fastify: FastifyInstance) {
         }
       )
 
-      return reply.send((response.data as any).data)
+      const paystackData = (response.data as any)
+      if (!paystackData?.status) {
+        fastify.log.error({ paystackData }, 'Paystack returned status: false')
+        return reply.code(502).send({ statusMessage: 'Payment provider returned an error' })
+      }
+      return reply.send(paystackData.data)
     } catch (err: any) {
       fastify.log.error(err.response?.data || err.message)
       return reply.code(500).send({ statusMessage: 'Failed to initialize payment' })

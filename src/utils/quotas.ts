@@ -89,16 +89,20 @@ export async function canCreateSpace(fastify: FastifyInstance, userId: string, q
   return currentCount < plan.max_active_spaces
 }
 
-export async function checkStorageQuota(fastify: FastifyInstance, userId: string, newFileSize: number): Promise<boolean> {
-  const { plan } = await checkUserQuota(fastify, userId)
+export async function checkStorageQuota(
+  fastify: FastifyInstance,
+  userId: string,
+  newFileSize: number,
+  existingPlan?: Record<string, any>,
+): Promise<boolean> {
+  const plan = existingPlan ?? (await checkUserQuota(fastify, userId)).plan
 
-  const { data: counter, error: counterError } = await fastify.supabase
+  const { data: counter } = await fastify.supabase
     .from('usage_counters')
     .select('storage_used_bytes')
     .eq('user_id', userId)
     .single()
 
-  // If counter is missing, assume 0 storage used.
   const currentUsage = Number(counter?.storage_used_bytes || 0)
   const maxBytes = Number(plan.max_storage_bytes || 0)
 

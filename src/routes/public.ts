@@ -98,20 +98,6 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       const cached = await fastify.redis.get(cacheKey).catch(() => null)
       if (cached) {
         const data = JSON.parse(cached)
-        const spaceId = data?.space?.id
-        if (spaceId) {
-          void Promise.resolve(
-            fastify.supabase.from('analytics_events').insert({
-              property_id: spaceId,
-              event_type: 'property_view',
-              source: 'direct',
-              user_agent: (req.headers['user-agent'] ?? '').slice(0, 512) || null,
-              referrer: (req.headers['referer'] ?? '').slice(0, 1024) || null,
-            })
-          ).catch((err: any) => {
-            fastify.log.warn({ err: err?.message }, 'Failed to record tour view event')
-          })
-        }
         reply.header('X-Cache', 'HIT')
         return reply.send({ tour: data })
       }
@@ -132,22 +118,6 @@ export default async function publicRoutes(fastify: FastifyInstance) {
     // Cache tour data for 60s — invalidated on next publish/update via TTL
     if (fastify.redis && data) {
       void fastify.redis.setEx(cacheKey, 60, JSON.stringify(data)).catch(() => {})
-    }
-
-    // Record a property_view analytics event (fire-and-forget, never blocks the response)
-    const spaceId = (data as any)?.space?.id
-    if (spaceId) {
-      void Promise.resolve(
-        fastify.supabase.from('analytics_events').insert({
-          property_id: spaceId,
-          event_type: 'property_view',
-          source: 'direct',
-          user_agent: (req.headers['user-agent'] ?? '').slice(0, 512) || null,
-          referrer: (req.headers['referer'] ?? '').slice(0, 1024) || null,
-        })
-      ).catch((err: any) => {
-        fastify.log.warn({ err: err?.message }, 'Failed to record tour view event')
-      })
     }
 
     reply.header('X-Cache', 'MISS')

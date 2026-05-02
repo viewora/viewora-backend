@@ -394,7 +394,7 @@ export default async function (fastify: FastifyInstance) {
       .update(updates)
       .eq('id', id)
       .eq('user_id', userId)
-      .select()
+      .select('id, title, slug, description, property_type, location_text, cover_image_url, has_360, has_gallery, is_published, published_at, visibility, lead_form_enabled, branding_enabled, created_at, updated_at')
       .single()
 
     if (error) {
