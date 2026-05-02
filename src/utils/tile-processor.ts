@@ -25,13 +25,17 @@ export async function processTileScene(
   const bucket  = process.env.R2_BUCKET_NAME!
   const cdnBase = process.env.MEDIA_DOMAIN || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
 
-  // SSRF guard — only allow fetches from our own CDN domain or R2 domain
-  const allowedHost = new URL(cdnBase).hostname
-  const r2Host      = `pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
+  // SSRF guard — only allow fetches from our own domains
   const rawUrlHost  = new URL(rawImageUrl).hostname
 
-  if (rawUrlHost !== allowedHost && rawUrlHost !== r2Host && !rawUrlHost.includes('cloudflare.com')) {
-    throw new Error(`SSRF rejected: rawImageUrl hostname '${rawUrlHost}' is not '${allowedHost}' or '${r2Host}'`)
+  const isAllowed = 
+    rawUrlHost === 'media.viewora.software' || 
+    rawUrlHost === 'viewora.software' ||
+    rawUrlHost.endsWith('.r2.dev') ||
+    rawUrlHost.endsWith('.cloudflare.com')
+
+  if (!isAllowed) {
+    throw new Error(`SSRF rejected: rawImageUrl hostname '${rawUrlHost}' is not an authorized Viewora or R2 domain.`)
   }
 
   try {
