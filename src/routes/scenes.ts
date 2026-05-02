@@ -190,7 +190,7 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     const { data: scene } = await fastify.supabase
       .from('scenes')
-      .select('id, properties!inner(user_id)')
+      .select('id, space_id, properties!inner(user_id)')
       .eq('id', params.sceneId)
       .eq('properties.user_id', userId)
       .single()
