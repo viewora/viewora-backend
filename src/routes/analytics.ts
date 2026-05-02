@@ -59,32 +59,32 @@ export default async function (fastify: FastifyInstance) {
     })
 
     if (error) {
-      // Fallback: manual upsert if RPC not yet deployed
+      // Fallback: manual increment if RPC not yet deployed.
+      // Optimistic-insert first to avoid a SELECT round-trip; on conflict (concurrent
+      // request already created the row) fall back to update.
       const sourceCol = SOURCE_COLUMN[source]
-      const { data: existing } = await fastify.supabase
+      const { error: insertErr } = await fastify.supabase
         .from('analytics_daily')
-        .select('id, total_views, direct_views, qr_views, embed_views')
-        .eq('property_id', spaceId)
-        .eq('date', today)
-        .single()
+        .insert({ property_id: spaceId, date: today, total_views: 1, [sourceCol]: 1 })
 
-      if (existing) {
-        await fastify.supabase
+      if (insertErr) {
+        // Row already exists — read latest counts then increment
+        const { data: existing } = await fastify.supabase
           .from('analytics_daily')
-          .update({
-            total_views: existing.total_views + 1,
-            [sourceCol]: (existing[sourceCol] ?? 0) + 1,
-          })
-          .eq('id', existing.id)
-      } else {
-        await fastify.supabase
-          .from('analytics_daily')
-          .insert({
-            property_id: spaceId,
-            date: today,
-            total_views: 1,
-            [sourceCol]: 1,
-          })
+          .select('id, total_views, direct_views, qr_views, embed_views')
+          .eq('property_id', spaceId)
+          .eq('date', today)
+          .single()
+
+        if (existing) {
+          await fastify.supabase
+            .from('analytics_daily')
+            .update({
+              total_views: (existing.total_views ?? 0) + 1,
+              [sourceCol]: (existing[sourceCol] ?? 0) + 1,
+            })
+            .eq('id', existing.id)
+        }
       }
     }
 

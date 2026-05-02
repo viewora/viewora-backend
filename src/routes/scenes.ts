@@ -61,30 +61,44 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     if (!space) return reply.code(404).send({ statusMessage: 'Space not found' })
 
-    // Auto-assign next order_index if not supplied
-    const { data: lastScene } = await fastify.supabase
-      .from('scenes')
-      .select('order_index')
-      .eq('space_id', params.spaceId)
-      .order('order_index', { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    // Auto-assign next order_index if not supplied.
+    // Fetch the current max and insert; if a concurrent create produces a duplicate
+    // order_index (23505 on the unique constraint), retry once with a fresh max.
+    const getNextOrderIndex = async () => {
+      const { data: last } = await fastify.supabase
+        .from('scenes')
+        .select('order_index')
+        .eq('space_id', params.spaceId)
+        .order('order_index', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      return (last?.order_index ?? -1) + 1
+    }
 
-    const orderIndex = body.order_index ?? ((lastScene?.order_index ?? -1) + 1)
+    let orderIndex = body.order_index ?? await getNextOrderIndex()
 
-    const { data: scene, error: insertError } = await fastify.supabase
-      .from('scenes')
-      .insert({
-        space_id: params.spaceId,
-        name: body.name,
-        order_index: orderIndex,
-        raw_image_url: body.raw_image_url,
-        initial_yaw: body.initial_yaw,
-        initial_pitch: body.initial_pitch,
-        status: 'pending',
-      })
-      .select()
-      .single()
+    let scene: any
+    let insertError: any
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await fastify.supabase
+        .from('scenes')
+        .insert({
+          space_id: params.spaceId,
+          name: body.name,
+          order_index: orderIndex,
+          raw_image_url: body.raw_image_url,
+          initial_yaw: body.initial_yaw,
+          initial_pitch: body.initial_pitch,
+          status: 'pending',
+        })
+        .select()
+        .single()
+      scene = result.data
+      insertError = result.error
+      if (!insertError || insertError.code !== '23505') break
+      // order_index collision — recalculate and retry
+      orderIndex = await getNextOrderIndex()
+    }
 
     if (insertError) throw insertError
 

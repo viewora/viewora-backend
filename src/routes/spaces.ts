@@ -145,6 +145,9 @@ export default async function (fastify: FastifyInstance) {
       .single()
 
     if (error) {
+      if (error.code === '23505') {
+        return reply.code(409).send({ statusMessage: 'This URL slug is already in use. Please choose another one.' })
+      }
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: 'Failed to create space' })
     }

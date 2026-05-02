@@ -15,6 +15,7 @@ import {
   recordJobStalled,
   updateQueueMetrics,
 } from './utils/metrics.js'
+import { expireStaleSubscriptions } from './utils/subscription-expiry.js'
 
 dotenv.config()
 
@@ -54,6 +55,12 @@ const queueEvents = createUploadQueueEvents()
 
 // Job processor function
 async function processUploadJob(job: any) {
+  if (job.name === 'expire-subscriptions') {
+    const expired = await expireStaleSubscriptions(fastify.supabase)
+    fastify.log.info({ expired }, 'Subscription expiry sweep complete')
+    return
+  }
+
   // Route tile-scene jobs to the tile processor
   if (job.name === 'tile-scene') {
     const { sceneId, rawImageUrl, spaceId } = job.data
@@ -154,6 +161,12 @@ const worker = createUploadWorker(processUploadJob)
 
 // Reuse a single queue instance for metric polling — never close it inside the interval
 const metricsQueue = createUploadQueue()
+
+// Register daily subscription expiry sweep (idempotent — BullMQ deduplicates by jobId)
+await metricsQueue.add('expire-subscriptions', {}, {
+  repeat: { pattern: '5 0 * * *' }, // 00:05 UTC daily
+  jobId: 'expire-subscriptions-cron',
+})
 
 // BullMQ emits 'error' for Redis connection issues; without a listener
 // Node.js converts them to uncaughtException which kills the process.
