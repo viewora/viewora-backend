@@ -146,6 +146,12 @@ const worker = createUploadWorker(processUploadJob)
 // Reuse a single queue instance for metric polling — never close it inside the interval
 const metricsQueue = createUploadQueue()
 
+// BullMQ emits 'error' for Redis connection issues; without a listener
+// Node.js converts them to uncaughtException which kills the process.
+worker.on('error', (err) => console.error('BullMQ worker error:', err))
+metricsQueue.on('error', (err) => console.error('BullMQ metricsQueue error:', err))
+queueEvents.on('error', (err) => console.error('BullMQ queueEvents error:', err))
+
 // Monitor queue events for better observability
 queueEvents.on('failed', (data: any) => {
   const { jobId, failedReason } = data

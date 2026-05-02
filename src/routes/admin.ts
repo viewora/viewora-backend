@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify'
+import { timingSafeEqual } from 'crypto'
 import { getCleanupDashboardState } from '../utils/metrics.js'
 
 export default async function (fastify: FastifyInstance) {
@@ -10,7 +11,16 @@ export default async function (fastify: FastifyInstance) {
     }
 
     const authHeader = request.headers.authorization
-    if (!authHeader || authHeader !== `Bearer ${adminSecret}`) {
+    const expected = `Bearer ${adminSecret}`
+    let authorized = false
+    try {
+      if (authHeader && authHeader.length === expected.length) {
+        authorized = timingSafeEqual(Buffer.from(authHeader), Buffer.from(expected))
+      }
+    } catch {
+      authorized = false
+    }
+    if (!authorized) {
       return reply.code(401).send({ statusMessage: 'Unauthorized' })
     }
   })

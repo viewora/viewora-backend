@@ -1,4 +1,11 @@
 import { FastifyInstance } from 'fastify'
+import { z } from 'zod'
+import { parseWithSchema } from '../utils/validation.js'
+
+const UpdateProfileBodySchema = z.object({
+  full_name: z.string().max(120).optional(),
+  phone: z.string().max(30).optional(),
+})
 
 export default async function (fastify: FastifyInstance) {
   fastify.addHook('preHandler', fastify.authenticate)
@@ -20,6 +27,28 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(500).send({ statusMessage: error.message })
     }
 
+    return reply.send(data)
+  })
+
+  fastify.patch('/', async (request, reply) => {
+    const user = request.user as any
+    const userId = user.sub
+
+    const body = parseWithSchema(reply, UpdateProfileBodySchema, request.body)
+    if (!body) return
+
+    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    if (body.full_name !== undefined) updates.full_name = body.full_name.trim() || null
+    if (body.phone !== undefined) updates.phone = body.phone.trim() || null
+
+    const { data, error } = await fastify.supabase
+      .from('profiles')
+      .update(updates)
+      .eq('id', userId)
+      .select('id, full_name, avatar_url, phone, created_at, updated_at')
+      .single()
+
+    if (error) return reply.code(500).send({ statusMessage: error.message })
     return reply.send(data)
   })
 }

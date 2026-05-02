@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify'
+import { timingSafeEqual } from 'crypto'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 
@@ -16,7 +17,15 @@ export default async function internalRoutes(fastify: FastifyInstance) {
   // Protected by WORKER_SECRET header — never exposed to users.
   fastify.post('/internal/tile-complete', async (req, reply) => {
     const workerSecret = (req.headers as any)['x-worker-secret']
-    if (!process.env.WORKER_SECRET || workerSecret !== process.env.WORKER_SECRET) {
+    let authorized = false
+    try {
+      if (process.env.WORKER_SECRET && typeof workerSecret === 'string' && workerSecret.length === process.env.WORKER_SECRET.length) {
+        authorized = timingSafeEqual(Buffer.from(workerSecret), Buffer.from(process.env.WORKER_SECRET))
+      }
+    } catch {
+      authorized = false
+    }
+    if (!authorized) {
       return reply.code(401).send({ statusMessage: 'Unauthorized' })
     }
 

@@ -201,11 +201,13 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(403).send({ statusMessage: 'Invalid object key ownership' })
     }
 
-    // Verify the object was actually uploaded to R2 before creating a DB record
+    // Verify the object was actually uploaded to R2 and capture actual size from storage
     const bucketName = process.env.R2_BUCKET_NAME
+    let verifiedFileSize: number | null = fileSize ? Number(fileSize) : null
     if (bucketName) {
       try {
-        await fastify.s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: objectKey }))
+        const headResult = await fastify.s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: objectKey }))
+        if (headResult.ContentLength) verifiedFileSize = headResult.ContentLength
       } catch (err: any) {
         if (err?.name === 'NotFound' || err?.$metadata?.httpStatusCode === 404) {
           return reply.code(400).send({ statusMessage: 'Upload not found in storage. Please upload the file before completing.' })
@@ -266,7 +268,7 @@ export default async function (fastify: FastifyInstance) {
         public_url: publicUrl,
         width: width || null,
         height: height || null,
-        file_size_bytes: fileSize || null,
+        file_size_bytes: verifiedFileSize || null,
         processing_status: 'pending'
       })
       .select()
@@ -291,11 +293,11 @@ export default async function (fastify: FastifyInstance) {
       })
       .eq('id', finalId)
 
-    request.log.info({ userId, mediaId: media.id, size: fileSize, spaceId: finalId }, 'Completed media metadata R2 sync securely')
+    request.log.info({ userId, mediaId: media.id, size: verifiedFileSize, spaceId: finalId }, 'Completed media metadata R2 sync securely')
 
-    // 4. Update storage counter via RPC
-    if (fileSize) {
-      await fastify.supabase.rpc('increment_storage_usage', { u_id: userId, bytes: Number(fileSize) })
+    // 4. Update storage counter via RPC (uses R2-verified size, not client-reported)
+    if (verifiedFileSize) {
+      await fastify.supabase.rpc('increment_storage_usage', { u_id: userId, bytes: verifiedFileSize })
     }
 
     if (finalId) {

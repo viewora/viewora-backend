@@ -182,6 +182,11 @@ fastify.register(rateLimit, {
 // Initialize upload queue (only if REDIS_URL is available)
 if (process.env.REDIS_URL) {
   const uploadQueue = createUploadQueue()
+  // BullMQ emits 'error' for Redis connection failures. Without a listener
+  // Node.js converts it to an uncaughtException which kills the process.
+  uploadQueue.on('error', (err) => {
+    fastify.log.error({ err }, 'BullMQ upload queue error')
+  })
   fastify.decorate('uploadQueue', uploadQueue)
 }
 
@@ -317,15 +322,17 @@ fastify.get('/', async () => {
   }
 })
 
-fastify.get('/health', async (request, reply) => {
+fastify.get('/health', async () => {
+  // Redis is optional — the server operates without it (cache misses, no BullMQ).
+  // Returning 503 for Redis down would cause Railway deploy healthchecks to fail
+  // even when the API itself is healthy. Report Redis status informatively only.
+  let redisStatus: 'connected' | 'unavailable' | 'disabled' = 'disabled'
   if (fastify.redis) {
-    try {
-      await fastify.redis.ping()
-    } catch {
-      return reply.code(503).send({ status: 'unhealthy', reason: 'redis' })
-    }
+    redisStatus = await fastify.redis.ping()
+      .then(() => 'connected' as const)
+      .catch(() => 'unavailable' as const)
   }
-  return { status: 'ok', service: 'Viewora API' }
+  return { status: 'ok', service: 'Viewora API', redis: redisStatus }
 })
 
 // Prometheus metrics endpoint — restrict to internal/Railway health probes
@@ -375,16 +382,18 @@ fastify.setNotFoundHandler((request, reply) => {
   })
 })
 
-// Catch unhandled async rejections that escape try/catch blocks
-// (e.g. fire-and-forget promises, BullMQ event emitters, plugin hooks)
-// Registered BEFORE start() so they are active during the entire startup sequence.
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled promise rejection:', reason)
-  process.exit(1)
+// Catch unhandled async rejections. Log + capture to Sentry but do NOT exit —
+// calling process.exit(1) here causes crash-restart loops on Railway whenever
+// a non-fatal rejection slips through (e.g. a Redis reconnect event).
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection (non-fatal):', reason)
+  captureException(reason instanceof Error ? reason : new Error(String(reason)))
 })
 
+// Uncaught synchronous exceptions ARE fatal — log, capture, then exit.
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err)
+  console.error('Uncaught exception (fatal):', err)
+  captureException(err)
   process.exit(1)
 })
 
@@ -432,16 +441,20 @@ const start = async () => {
         const lockTtlSeconds = CLEANUP_LOCK_TTL_S[task.name] ?? 82800
 
         // Initial run after 2-minute warmup
-        const warmup = setTimeout(async () => {
+        const warmup = setTimeout(() => {
           fastify.log.info({ task: task.name }, 'Running initial cleanup task')
-          await executeCleanupTask(fastify, task, lockTtlSeconds)
+          executeCleanupTask(fastify, task, lockTtlSeconds).catch((err) => {
+            fastify.log.error({ err, task: task.name }, 'Cleanup warmup threw unexpectedly')
+          })
         }, 2 * 60 * 1000)
         console.log(`  ✔ warmup setTimeout created for: ${task.name}`)
 
         // Recurring run on interval
-        const recurring = setInterval(async () => {
+        const recurring = setInterval(() => {
           fastify.log.info({ task: task.name }, 'Running scheduled cleanup task')
-          await executeCleanupTask(fastify, task, lockTtlSeconds)
+          executeCleanupTask(fastify, task, lockTtlSeconds).catch((err) => {
+            fastify.log.error({ err, task: task.name }, 'Cleanup interval threw unexpectedly')
+          })
         }, intervalMs)
         console.log(`  ✔ recurring setInterval created for: ${task.name} (every ${intervalMs}ms)`)
 

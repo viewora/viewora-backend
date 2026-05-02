@@ -379,7 +379,7 @@ export default async function (fastify: FastifyInstance) {
 
     const updates: any = { is_published: isPublishing }
     if (isPublishing) {
-      updates.published_at = new Date().toISOString()
+      if (!currentSpace.published_at) updates.published_at = new Date().toISOString()
       if (body.slug) updates.slug = body.slug
     } else {
       updates.published_at = null

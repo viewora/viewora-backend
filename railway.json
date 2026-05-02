@@ -5,7 +5,10 @@
     "buildCommand": "npm run build"
   },
   "deploy": {
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 30,
     "restartPolicyType": "NEVER",
+    "restartPolicyMaxRetries": 3,
     "drainingSeconds": 60,
     "overlapSeconds": 0,
     "sleepApplication": false

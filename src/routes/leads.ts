@@ -145,6 +145,28 @@ export default async function (fastify: FastifyInstance) {
     return reply.send({ data: leads, total: count ?? 0, page, limit })
   })
 
+  // AUTH ROUTE: Count leads created within the last N days
+  fastify.get('/count', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const user = request.user as any
+    const userId = user.sub
+    const query = request.query as { days?: string }
+    const days = Math.min(Math.max(Number(query.days) || 7, 1), 365)
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+
+    const { count, error } = await fastify.supabase
+      .from('leads')
+      .select('*, properties!inner(user_id)', { count: 'exact', head: true })
+      .eq('properties.user_id', userId)
+      .gte('created_at', since)
+
+    if (error) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to count leads' })
+    }
+
+    return reply.send({ count: count ?? 0, days })
+  })
+
   // AUTH ROUTE: Get leads for a specific space
   fastify.get('/space/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = request.user as any

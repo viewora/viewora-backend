@@ -6,6 +6,8 @@ import { parseWithSchema } from '../utils/validation.js'
 const hotspotParamsSchema = z.object({ hotspotId: z.string().uuid() })
 const sceneParamsSchema   = z.object({ sceneId:   z.string().uuid() })
 
+const safeUrl = z.string().url().refine(u => /^https?:\/\//i.test(u), { message: 'URL must use http or https' })
+
 const CreateHotspotBodySchema = z.object({
   type: z.enum(['info', 'scene_link', 'url', 'video', 'youtube']),
   yaw: z.number().min(-180).max(180),
@@ -14,8 +16,8 @@ const CreateHotspotBodySchema = z.object({
   target_scene_id: z.string().uuid().optional().nullable(),
   content: z.object({
     text: z.string().max(500).optional(),
-    image_url: z.string().url().optional(),
-    url: z.string().url().optional(),
+    image_url: safeUrl.optional(),
+    url: safeUrl.optional(),
     icon: z.string().max(40).optional(),
     scale: z.number().min(0.1).max(5).optional(),
     hoverScale: z.number().min(1).max(5).optional(),
@@ -40,8 +42,8 @@ const UpdateHotspotBodySchema = z.object({
   target_scene_id: z.string().uuid().optional().nullable(),
   content: z.object({
     text: z.string().max(500).optional(),
-    image_url: z.string().url().optional(),
-    url: z.string().url().optional(),
+    image_url: safeUrl.optional(),
+    url: safeUrl.optional(),
     icon: z.string().max(40).optional(),
     scale: z.number().min(0.1).max(5).optional(),
     hoverScale: z.number().min(1).max(5).optional(),
