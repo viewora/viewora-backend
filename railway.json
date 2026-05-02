@@ -6,9 +6,8 @@
   },
   "deploy": {
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 30,
+    "healthcheckTimeout": 300,
     "restartPolicyType": "NEVER",
-    "restartPolicyMaxRetries": 3,
     "drainingSeconds": 60,
     "overlapSeconds": 0,
     "sleepApplication": false
