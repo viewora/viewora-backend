@@ -45,15 +45,8 @@ export async function scheduleMediaProcessing(
   const uploadQueue = (fastify as any).uploadQueue
 
   if (!uploadQueue) {
-    fastify.log.error({ mediaId }, 'Upload queue not available, falling back to direct processing')
-    // Fallback for development: process synchronously
-    try {
-      await updateUploadStatus(fastify, mediaId, 'processing')
-      await updateUploadStatus(fastify, mediaId, 'complete')
-    } catch (error: any) {
-      fastify.log.error({ mediaId, error: error?.message }, 'Fallback processing failed')
-      await updateUploadStatus(fastify, mediaId, 'failed', error?.message)
-    }
+    fastify.log.error({ mediaId }, 'uploadQueue not initialized — cannot process media')
+    await updateUploadStatus(fastify, mediaId, 'failed', 'Queue unavailable — retry later')
     return
   }
 

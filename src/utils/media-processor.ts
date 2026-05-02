@@ -3,11 +3,10 @@ import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import sharp from 'sharp'
 import { updateUploadStatus } from './uploads.js'
 
-const MAX_WIDTH_PX = 12288
+const MAX_WIDTH_PX  = 12288
 const MAX_HEIGHT_PX = 6144
 
 async function streamToBuffer(body: unknown): Promise<Buffer> {
-  // AWS SDK v3 Body is a Readable stream in Node.js
   const readable = body as NodeJS.ReadableStream
   const chunks: Buffer[] = []
   for await (const chunk of readable) {
@@ -34,47 +33,61 @@ export async function processMedia(
     )
     if (!getResult.Body) throw new Error(`Empty R2 body for key: ${objectKey}`)
 
-    const contentType = getResult.ContentType || 'image/jpeg'
     const originalBuffer = await streamToBuffer(getResult.Body)
 
-    // 2. Process with sharp:
-    //    - Strip ALL EXIF/XMP/IPTC metadata (removes GPS coordinates, device info, timestamps)
-    //    - Read dimensions for DB record
-    const image = sharp(originalBuffer, { failOn: 'none' })
+    // 2. Read metadata — sharp strips all EXIF by default on output
+    const image    = sharp(originalBuffer, { failOn: 'none' })
     const metadata = await image.metadata()
+    const width    = metadata.width  ?? 0
+    const height   = metadata.height ?? 0
+    const fmt      = metadata.format ?? 'jpeg'
 
-    const width = metadata.width ?? 0
-    const height = metadata.height ?? 0
-
+    // Reject oversized images to prevent OOM
     if (width > MAX_WIDTH_PX || height > MAX_HEIGHT_PX) {
-      fastify.log.warn({ mediaId, width, height }, 'Image exceeds dimension limits — continuing anyway')
+      await updateUploadStatus(
+        fastify, mediaId, 'failed',
+        `Image too large: ${width}×${height}. Max allowed: ${MAX_WIDTH_PX}×${MAX_HEIGHT_PX}`,
+      )
+      return
     }
 
-    // sharp strips all EXIF/GPS/device metadata by default — calling .toBuffer() without
-    // .withMetadata() is sufficient and is the correct sharp v0.33+ API.
-    // Explicitly set quality to 100 to avoid default compression (usually 80).
-    const cleanBuffer = await image
-      .jpeg({ quality: 100, progressive: true, chromaSubsampling: '4:4:4' })
-      .toBuffer()
+    // 3. Re-encode stripping EXIF, preserving original format at sane quality
+    let cleanBuffer: Buffer
+    let outContentType: string
 
-    // 3. Re-upload stripped version back to R2 (same key, same CDN URL)
+    if (fmt === 'png') {
+      cleanBuffer    = await image.png().toBuffer()
+      outContentType = 'image/png'
+    } else if (fmt === 'webp') {
+      cleanBuffer    = await image.webp({ quality: 85 }).toBuffer()
+      outContentType = 'image/webp'
+    } else {
+      // jpeg or anything else — output as progressive JPEG
+      cleanBuffer    = await image.jpeg({ quality: 92, progressive: true }).toBuffer()
+      outContentType = 'image/jpeg'
+    }
+
+    // 4. Re-upload stripped version back to R2 (same key, same CDN URL)
     await fastify.s3.send(
       new PutObjectCommand({
         Bucket: bucketName,
         Key: objectKey,
         Body: cleanBuffer,
-        ContentType: contentType,
+        ContentType: outContentType,
         CacheControl: 'public, max-age=31536000, immutable',
       })
     )
 
-    // 4. Persist confirmed dimensions to the media record
+    // 5. Persist confirmed dimensions to the media record
     await fastify.supabase
       .from('property_media')
       .update({ width: width || null, height: height || null })
       .eq('id', mediaId)
 
-    fastify.log.info({ mediaId, width, height, originalBytes: originalBuffer.length, cleanBytes: cleanBuffer.length }, 'EXIF stripped and re-uploaded')
+    fastify.log.info(
+      { mediaId, width, height, fmt, originalBytes: originalBuffer.length, cleanBytes: cleanBuffer.length },
+      'EXIF stripped and re-uploaded',
+    )
     await updateUploadStatus(fastify, mediaId, 'complete')
   } catch (error: any) {
     fastify.log.error({ mediaId, objectKey, error: error?.message }, 'Media processing failed')

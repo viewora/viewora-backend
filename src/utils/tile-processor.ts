@@ -1,21 +1,11 @@
 import sharp from 'sharp'
 import path from 'path'
 import fs from 'fs/promises'
-import { createReadStream } from 'fs'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 
 const TILE_SIZE = 512
 const TEMP_DIR  = process.env.TEMP_DIR ?? '/tmp/viewora-tiles'
-
-async function walk(dir: string): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true })
-  const files: string[] = []
-  for (const e of entries) {
-    const full = path.join(dir, e.name)
-    files.push(...(e.isDirectory() ? await walk(full) : [full]))
-  }
-  return files
-}
+const BATCH     = 20
 
 export async function processTileScene(
   s3: S3Client,
@@ -23,19 +13,26 @@ export async function processTileScene(
   job: { sceneId: string; rawImageUrl: string; spaceId: string },
 ) {
   const { sceneId, rawImageUrl, spaceId } = job
-  const tempDir    = path.join(TEMP_DIR, sceneId)
-  const inputPath  = path.join(tempDir, 'input.jpg')
-  const tilesDir   = path.join(tempDir, 'tiles')
+  const tempDir       = path.join(TEMP_DIR, sceneId)
+  const inputPath     = path.join(tempDir, 'input.jpg')
+  const cleanPath     = path.join(tempDir, 'input.clean.jpg')
+  const thumbPath     = path.join(tempDir, 'thumbnail.jpg')
 
-  // Use the same env var names as the rest of the codebase
   const bucket  = process.env.R2_BUCKET_NAME!
   const cdnBase = process.env.MEDIA_DOMAIN || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
 
+  // SSRF guard — only allow fetches from our own CDN domain
+  const allowedHost = new URL(cdnBase).hostname
+  const rawUrlHost  = new URL(rawImageUrl).hostname
+  if (rawUrlHost !== allowedHost) {
+    throw new Error(`SSRF rejected: rawImageUrl hostname '${rawUrlHost}' is not '${allowedHost}'`)
+  }
+
   try {
-    console.log(`[TILE PROCESSOR] Starting tile generation for scene: ${sceneId}... This usually takes ~60 seconds.`)
+    console.log(`[TILE] Starting scene ${sceneId}`)
     await fs.mkdir(tempDir, { recursive: true })
 
-    // 1. Download raw image from R2 CDN (60s timeout — large panoramas can be slow)
+    // 1. Download raw image (60s timeout)
     const dlController = new AbortController()
     const dlTimeout = setTimeout(() => dlController.abort(), 60_000)
     try {
@@ -46,11 +43,15 @@ export async function processTileScene(
       clearTimeout(dlTimeout)
     }
 
-    // 2. Generate and upload thumbnail FIRST so the UI feels instantaneous (takes ~0.5s)
-    const thumbPath = path.join(tempDir, 'thumbnail.jpg')
+    // 2. Strip EXIF/GPS metadata (writes clean file, same quality)
     await sharp(inputPath)
-      .resize(400, 200, { fit: 'cover' })
-      .jpeg({ quality: 80 })
+      .jpeg({ quality: 95 })
+      .toFile(cleanPath)
+
+    // 3. Thumbnail 2048×1024 — used as PSV baseUrl (visible during tile loading)
+    await sharp(cleanPath)
+      .resize(2048, 1024, { fit: 'cover', withoutEnlargement: true })
+      .jpeg({ quality: 85, progressive: true })
       .toFile(thumbPath)
 
     const thumbKey = `spaces/${spaceId}/scenes/${sceneId}/thumbnail.jpg`
@@ -62,57 +63,71 @@ export async function processTileScene(
       CacheControl: 'public, max-age=86400',
     }))
 
-    // Mark scene as ready immediately with the thumbnail so the user isn't blocked
+    // Mark scene ready immediately with thumbnail so editor isn't blocked
     await supabase.from('scenes').update({
       status: 'ready',
       thumbnail_url: `${cdnBase}/${thumbKey}`,
     }).eq('id', sceneId)
-    console.log(`[TILE PROCESSOR] Thumbnail generated and scene marked ready: ${sceneId}`)
+    console.log(`[TILE] Thumbnail ready for scene ${sceneId}`)
 
-    // 3. Generate DZI tiles (512px, no overlap, deep-zoom format) in the background
-    // This takes ~60 seconds for a 12K image.
-    await sharp(inputPath)
-      .jpeg({ quality: 95, progressive: true, chromaSubsampling: '4:4:4' })
-      .tile({ size: TILE_SIZE, overlap: 0, layout: 'dz', container: 'fs' })
-      .toFile(tilesDir)
+    // 4. Read dimensions once, then build PSV grid tile jobs
+    const meta = await sharp(cleanPath).metadata()
+    const imgW = meta.width  ?? 12288
+    const imgH = meta.height ?? 6144
+    const cols = Math.ceil(imgW / TILE_SIZE)
+    const rows = Math.ceil(imgH / TILE_SIZE)
 
-    const dziFile      = tilesDir + '.dzi'
-    const tileFilesDir = tilesDir + '_files'
+    // Load image once — each job clones to avoid re-reading the file
+    const image = sharp(cleanPath)
 
-    // 4. Upload DZI manifest
-    const dziKey = `spaces/${spaceId}/scenes/${sceneId}/tiles.dzi`
-    await s3.send(new PutObjectCommand({
-      Bucket: bucket,
-      Key: dziKey,
-      Body: await fs.readFile(dziFile),
-      ContentType: 'application/xml',
-      CacheControl: 'public, max-age=31536000, immutable',
-    }))
+    const tileJobs: Array<() => Promise<void>> = []
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const left = col * TILE_SIZE
+        const top  = row * TILE_SIZE
+        const w    = Math.min(TILE_SIZE, imgW - left)
+        const h    = Math.min(TILE_SIZE, imgH - top)
+        const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles/${col}_${row}.webp`
 
-    // 5. Upload all tile image files
-    for (const filePath of await walk(tileFilesDir)) {
-      const relPath = path.relative(tileFilesDir, filePath)
-      await s3.send(new PutObjectCommand({
-        Bucket: bucket,
-        Key: `spaces/${spaceId}/scenes/${sceneId}/tiles_files/${relPath}`,
-        Body: createReadStream(filePath),
-        ContentType: 'image/jpeg',
-        CacheControl: 'public, max-age=31536000, immutable',
-      }))
+        tileJobs.push(async () => {
+          const buf = await image
+            .clone()
+            .extract({ left, top, width: w, height: h })
+            .webp({ quality: 82 })
+            .toBuffer()
+          await s3.send(new PutObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            Body: buf,
+            ContentType: 'image/webp',
+            CacheControl: 'public, max-age=31536000, immutable',
+          }))
+        })
+      }
     }
 
-    // 6. Finally, update the manifest URL
+    // 5. Upload tiles in parallel batches of BATCH
+    console.log(`[TILE] Uploading ${tileJobs.length} tiles (${cols}×${rows}) for scene ${sceneId}`)
+    for (let i = 0; i < tileJobs.length; i += BATCH) {
+      await Promise.all(tileJobs.slice(i, i + BATCH).map(fn => fn()))
+    }
+
+    // 6. Mark tiles_ready = true only after ALL tiles are uploaded
+    const tileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles`
     await supabase.from('scenes').update({
-      tile_manifest_url: `${cdnBase}/${dziKey}`,
+      tile_manifest_url: tileBase,
+      width:       imgW,
+      height:      imgH,
+      tile_cols:   cols,
+      tile_rows:   rows,
+      tiles_ready: true,
     }).eq('id', sceneId)
-    console.log(`[TILE PROCESSOR] Successfully generated and uploaded tiles for scene: ${sceneId}`)
+    console.log(`[TILE] All tiles ready for scene ${sceneId} (${cols}×${rows})`)
 
   } catch (err: any) {
-    // Mark as failed so the UI can show a retry option
     await supabase.from('scenes').update({ status: 'failed' }).eq('id', sceneId)
-    throw err // Re-throw so BullMQ handles retries
+    throw err
   } finally {
-    // Always clean up temp files
     await fs.rm(tempDir, { recursive: true, force: true })
   }
 }
