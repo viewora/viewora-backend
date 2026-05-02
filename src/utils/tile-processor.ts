@@ -131,20 +131,34 @@ export async function processTileScene(
 
     // 6. Mark tiles_ready = true only after ALL tiles are uploaded
     const tileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles`
-    await supabase.from('scenes').update({
-      tile_manifest_url: tileBase,
-      width:       imgW,
-      height:      imgH,
-      tile_cols:   cols,
-      tile_rows:   rows,
-      tiles_ready: true,
-    }).eq('id', sceneId)
+    // 6. Update BOTH tables to unlock publishing
+    await Promise.all([
+      // Update the scene itself
+      supabase.from('scenes').update({
+        tile_manifest_url: tileBase,
+        width:       imgW,
+        height:      imgH,
+        tile_cols:   cols,
+        tile_rows:   rows,
+        tiles_ready: true,
+        status:      'ready'
+      }).eq('id', sceneId),
+
+      // Update the media record so the 'Publish' button is unlocked
+      supabase.from('property_media').update({
+        processing_status: 'complete',
+        processed_at:      new Date().toISOString()
+      }).eq('public_url', rawImageUrl)
+    ])
     console.log(`[TILE] All tiles ready for scene ${sceneId} (${cols}×${rows})`)
 
   } catch (err: any) {
     console.error(`[TILE] !!! CRITICAL ERROR on scene ${sceneId}: ${err.message}`);
     console.error(`[TILE] STACK: ${err.stack}`);
-    await supabase.from('scenes').update({ status: 'failed' }).eq('id', sceneId)
+    await Promise.all([
+      supabase.from('scenes').update({ status: 'failed' }).eq('id', sceneId),
+      supabase.from('property_media').update({ processing_status: 'failed' }).eq('public_url', rawImageUrl)
+    ])
     throw err
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true })
