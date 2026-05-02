@@ -195,6 +195,10 @@ fastify.register(rateLimit, {
   allowList: (request: any) => request.url === '/health' || request.url === '/',
 })
 
+// Pre-declare cleanupIntervals BEFORE listen() — Fastify 5 forbids decorators after start.
+// The array is populated in start() after fastify.listen() completes.
+fastify.decorate('cleanupIntervals', [] as NodeJS.Timeout[])
+
 // Initialize upload queue (only if REDIS_URL is available)
 if (process.env.REDIS_URL) {
   process.stdout.write('📦 Initializing BullMQ upload queue...\n')
@@ -451,7 +455,7 @@ const start = async () => {
       cleanupIntervals.push(warmup, recurring)
     }
 
-    fastify.decorate('cleanupIntervals', cleanupIntervals)
+    cleanupIntervals.forEach(t => fastify.cleanupIntervals!.push(t))
     process.stdout.write(`✅ Cleanup tasks scheduled (${cleanupTasks.length} tasks)\n`)
 
     await fastify.listen({ port, host: '0.0.0.0' })
