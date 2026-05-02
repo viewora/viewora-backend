@@ -114,9 +114,10 @@ export default fp(async (fastify: FastifyInstance) => {
         }
       }
 
-      // Cache the verified identity for 55s (tokens valid for 60s of inactivity)
+      // Cache the verified identity for 15s — short enough that subscription cancellations
+      // propagate quickly without hammering Supabase on every request
       if (fastify.redis && request.user && request.identity) {
-        void fastify.redis.setEx(cacheKey, 55, JSON.stringify({
+        void fastify.redis.setEx(cacheKey, 15, JSON.stringify({
           user: request.user,
           identity: request.identity,
         })).catch(() => {})

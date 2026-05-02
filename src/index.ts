@@ -3,7 +3,6 @@ process.stdout.write('🚀 Node.js process started - evaluating src/index.ts\n')
 import Fastify, { FastifyError } from 'fastify'
 import cors from '@fastify/cors'
 import compress from '@fastify/compress'
-import jwt from '@fastify/jwt'
 import dotenv from 'dotenv'
 import rawBody from 'fastify-raw-body'
 import rateLimit from '@fastify/rate-limit'
@@ -157,12 +156,6 @@ fastify.register(rawBody, {
   global: false,
   encoding: 'utf8',
   runFirst: true
-})
-
-// Supabase uses JWT for auth. We verify it using the Supabase JWT secret.
-// IMPORTANT: Supabase JWTs always have aud: "authenticated"
-fastify.register(jwt, {
-  secret: process.env.SUPABASE_JWT_SECRET!
 })
 
 process.stdout.write('📦 Registering auth/supabase/s3 plugins...\n')

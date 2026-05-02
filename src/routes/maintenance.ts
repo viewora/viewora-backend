@@ -1,17 +1,9 @@
 import { FastifyInstance } from 'fastify'
-import { z } from 'zod'
-import { parseWithSchema } from '../utils/validation.js'
-
-const maintenanceQuerySchema = z.object({
-  key: z.string().min(1),
-})
 
 export default async function (fastify: FastifyInstance) {
   fastify.get('/sync-limits', async (request, reply) => {
-    // Basic protection — key must be set in env and must match
-    const query = parseWithSchema(reply, maintenanceQuerySchema, request.query)
-    if (!query) return
-    const { key } = query
+    // Key is passed in x-maintenance-key header (never in URL — would appear in server logs)
+    const key = (request.headers['x-maintenance-key'] as string | undefined) ?? ''
     const expectedKey = process.env.MAINTENANCE_KEY
     if (!expectedKey || key !== expectedKey) {
       return reply.code(403).send({ error: 'Unauthorized' })

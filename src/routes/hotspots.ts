@@ -155,7 +155,8 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
     const scene = await verifySceneOwnership(hotspot.scene_id, userId)
     if (!scene) return reply.code(403).send({ statusMessage: 'Forbidden' })
 
-    await fastify.supabase.from('hotspots').delete().eq('id', params.hotspotId)
+    const { error: deleteErr } = await fastify.supabase.from('hotspots').delete().eq('id', params.hotspotId)
+    if (deleteErr) return reply.code(500).send({ statusMessage: 'Failed to delete hotspot' })
     return reply.code(204).send()
   })
 }

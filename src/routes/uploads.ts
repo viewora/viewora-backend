@@ -163,7 +163,7 @@ export default async function (fastify: FastifyInstance) {
     })
 
     try {
-      const signedUrl = await getSignedUrl(fastify.s3, command, { expiresIn: 3600 })
+      const signedUrl = await getSignedUrl(fastify.s3, command, { expiresIn: 900 })
       const customDomain = process.env.MEDIA_DOMAIN || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
       const publicUrl = `${customDomain}/${objectKey}`
 

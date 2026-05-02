@@ -179,7 +179,7 @@ queueEvents.on('stalled', (data: any) => {
 })
 
 // Periodic queue health update — reuses single metricsQueue connection
-setInterval(async () => {
+const metricsInterval = setInterval(async () => {
   try {
     const [waitingCount, activeCount, failedJobs] = await Promise.all([
       metricsQueue.count(),
@@ -197,6 +197,7 @@ const shutdown = async (signal: string) => {
   fastify.log.info(`Received ${signal}, shutting down gracefully...`)
 
   try {
+    clearInterval(metricsInterval)
     await worker.close()
     await queueEvents.close()
     await metricsQueue.close()
