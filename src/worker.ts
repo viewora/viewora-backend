@@ -45,10 +45,12 @@ fastify.get('/', async () => {
   return { service: 'Viewora Worker', status: 'online' }
 })
 
-// Create Redis client for cleanup
+// Create Redis client for cache invalidation (tile-processor uses this to bust the tour cache)
 const redis = createClient({
   url: process.env.REDIS_URL,
 })
+redis.on('error', (err) => console.error('Redis client error:', err))
+await redis.connect()
 
 // Create queue events listener
 const queueEvents = createUploadQueueEvents()
@@ -224,7 +226,7 @@ const shutdown = async (signal: string) => {
     await worker.close()
     await queueEvents.close()
     await metricsQueue.close()
-    await redis.quit()
+    if (redis.isReady) await redis.quit()
     await fastify.close()
     fastify.log.info('Worker shutdown complete')
     process.exit(0)
