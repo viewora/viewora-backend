@@ -82,10 +82,18 @@ export async function processTileScene(
     }))
 
     // Mark scene ready immediately with thumbnail so editor isn't blocked
+    const thumbUrl = `${cdnBase}/${thumbKey}`
     await supabase.from('scenes').update({
       status: 'ready',
-      thumbnail_url: `${cdnBase}/${thumbKey}`,
+      thumbnail_url: thumbUrl,
     }).eq('id', sceneId)
+
+    // Auto-set tour cover image and 360 flag if missing
+    await supabase.from('properties')
+      .update({ cover_image_url: thumbUrl, has_360: true })
+      .eq('id', spaceId)
+      .or('cover_image_url.is.null,cover_image_url.eq.""')
+
     console.log(`[TILE] Thumbnail ready for scene ${sceneId}`)
 
     // 4. Read dimensions once, then build PSV grid tile jobs
