@@ -48,6 +48,11 @@ export default async function publicRoutes(fastify: FastifyInstance) {
           status,
           initial_yaw,
           initial_pitch,
+          tile_cols,
+          tile_rows,
+          tiles_ready,
+          width,
+          height,
           hotspots (
             *
           )
