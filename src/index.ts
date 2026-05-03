@@ -171,8 +171,7 @@ fastify.get('/health', async () => {
   }
   const dbStatus = await fastify.supabase
     .from('properties').select('id').limit(1)
-    .then(() => 'connected' as const)
-    .catch(() => 'unavailable' as const)
+    .then(() => 'connected' as const, () => 'unavailable' as const)
   return { status: 'ok', service: 'Viewora API', redis: redisStatus, db: dbStatus }
 })
 
