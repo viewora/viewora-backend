@@ -165,9 +165,12 @@ export async function processTileScene(
   } catch (err: any) {
     console.error(`[TILE] !!! CRITICAL ERROR on scene ${sceneId}: ${err.message}`);
     console.error(`[TILE] STACK: ${err.stack}`);
+    const storageKey = new URL(rawImageUrl).pathname.replace(/^\//, '')
     await Promise.all([
       supabase.from('scenes').update({ status: 'failed' }).eq('id', sceneId),
-      supabase.from('property_media').update({ processing_status: 'failed' }).eq('storage_key', rawImageUrl.split('.software/')[1] || rawImageUrl.split('.dev/')[1])
+      storageKey
+        ? supabase.from('property_media').update({ processing_status: 'failed' }).eq('storage_key', storageKey)
+        : Promise.resolve(),
     ])
     throw err
   } finally {
