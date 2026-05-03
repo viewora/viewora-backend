@@ -96,6 +96,7 @@ export function createUploadWorker(processor: (job: any) => Promise<void>) {
     connection: redisOptions,
     concurrency,
     lockDuration: 5 * 60 * 1000, // 5 min — covers worst-case 12K panorama tiling (~60s + upload headroom)
+    stalledInterval: 15 * 1000,  // check for stalled jobs every 15s after lock expiry
     maxStalledCount: 2,
   })
 }

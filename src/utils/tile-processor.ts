@@ -113,13 +113,25 @@ export async function processTileScene(
             .extract({ left, top, width: w, height: h })
             .webp({ quality: 82 })
             .toBuffer()
-          await s3.send(new PutObjectCommand({
-            Bucket: bucket,
-            Key: key,
-            Body: buf,
-            ContentType: 'image/webp',
-            CacheControl: 'public, max-age=31536000, immutable',
-          }))
+          // Retry up to 3 times with exponential backoff so a single R2 blip
+          // doesn't force a full re-tile of all 72+ tiles.
+          let lastErr: unknown
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              await s3.send(new PutObjectCommand({
+                Bucket: bucket,
+                Key: key,
+                Body: buf,
+                ContentType: 'image/webp',
+                CacheControl: 'public, max-age=31536000, immutable',
+              }))
+              return
+            } catch (err) {
+              lastErr = err
+              if (attempt < 2) await new Promise(r => setTimeout(r, 500 * 2 ** attempt))
+            }
+          }
+          throw lastErr
         })
       }
     }

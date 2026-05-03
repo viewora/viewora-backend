@@ -169,7 +169,11 @@ fastify.get('/health', async () => {
       .then(() => 'connected' as const)
       .catch(() => 'unavailable' as const)
   }
-  return { status: 'ok', service: 'Viewora API', redis: redisStatus }
+  const dbStatus = await fastify.supabase
+    .from('properties').select('id').limit(1)
+    .then(() => 'connected' as const)
+    .catch(() => 'unavailable' as const)
+  return { status: 'ok', service: 'Viewora API', redis: redisStatus, db: dbStatus }
 })
 
 process.stdout.write('📦 Registering rate limit...\n')

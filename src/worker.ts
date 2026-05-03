@@ -1,4 +1,6 @@
 import dotenv from 'dotenv'
+import fs from 'fs/promises'
+import path from 'path'
 import { createUploadWorker, createUploadQueue, createUploadQueueEvents, type ProcessMediaJob } from './queues/upload.queue.js'
 import { createClient } from 'redis'
 import Fastify from 'fastify'
@@ -16,8 +18,10 @@ import {
   updateQueueMetrics,
 } from './utils/metrics.js'
 import { expireStaleSubscriptions } from './utils/subscription-expiry.js'
+import { initSentry } from './utils/sentry.js'
 
 dotenv.config()
+void initSentry()
 
 // Validate required environment variables
 const REQUIRED_ENV = [
@@ -51,6 +55,24 @@ const redis = createClient({
 })
 redis.on('error', (err) => console.error('Redis client error:', err))
 await redis.connect()
+
+// Sweep orphaned /tmp/viewora-tiles/ dirs left by hard kills (SIGKILL, OOM).
+// Only removes dirs older than 2 hours so any in-flight job on another instance is safe.
+const TEMP_BASE = process.env.TEMP_DIR ?? '/tmp/viewora-tiles'
+try {
+  const entries = await fs.readdir(TEMP_BASE).catch(() => [] as string[])
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000
+  for (const entry of entries) {
+    const full = path.join(TEMP_BASE, entry)
+    const stat = await fs.stat(full).catch(() => null)
+    if (stat && stat.mtimeMs < cutoff) {
+      await fs.rm(full, { recursive: true, force: true }).catch(() => {})
+      console.log(`[WORKER] Cleaned orphaned tmp dir: ${full}`)
+    }
+  }
+} catch {
+  // non-fatal — best effort cleanup
+}
 
 // Create queue events listener
 const queueEvents = createUploadQueueEvents()
