@@ -192,8 +192,23 @@ export default async function (fastify: FastifyInstance) {
         return
       }
 
-      // Idempotency: skip if this transaction reference was already applied
+      // Idempotency: Redis-first dedup with 3-day TTL covers the full Paystack replay window.
+      // DB fallback handles cold-start (Redis empty after restart) and cases where a user
+      // renews and overwrites provider_reference — the old reference would then escape the
+      // DB check but is still blocked by the Redis key until it expires.
       if (reference) {
+        const redisKey = `webhook:ref:${reference}`
+        if (fastify.redis) {
+          const seen = await fastify.redis.get(redisKey).catch(() => null)
+          if (seen) {
+            fastify.log.info({ reference }, 'Webhook skipped — reference in Redis replay cache')
+            return
+          }
+          // Write first so a concurrent replay is also blocked
+          await fastify.redis.set(redisKey, '1', { EX: 259200 }).catch(() => {}) // 3 days
+        }
+
+        // DB fallback: catches replays that arrive before Redis is populated (e.g. first boot)
         const { data: existing } = await fastify.supabase
           .from('subscriptions')
           .select('id')
@@ -201,7 +216,7 @@ export default async function (fastify: FastifyInstance) {
           .eq('provider_reference', reference)
           .maybeSingle()
         if (existing) {
-          fastify.log.info({ reference }, 'Webhook skipped — reference already processed')
+          fastify.log.info({ reference }, 'Webhook skipped — reference already in subscriptions table')
           return
         }
       }

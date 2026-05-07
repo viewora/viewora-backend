@@ -167,6 +167,28 @@ export default async function (fastify: FastifyInstance) {
       const customDomain = process.env.MEDIA_DOMAIN || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
       const publicUrl = `${customDomain}/${objectKey}`
 
+      // Track the pending upload so the orphan sweep can delete R2 objects
+      // that were uploaded but never completed via /uploads/complete.
+      // The /complete handler finds this row by storage_key and updates it.
+      if (!isBrandingUpload && finalId) {
+        let dbMediaType = mediaType
+        if (mediaType === 'gallery') dbMediaType = 'gallery_image' as typeof mediaType
+        if (mediaType === 'thumb')   dbMediaType = 'thumbnail'    as typeof mediaType
+        await fastify.supabase
+          .from('property_media')
+          .insert({
+            property_id: finalId,
+            media_type: dbMediaType,
+            storage_key: objectKey,
+            public_url: publicUrl,
+            file_size_bytes: fileSize,
+            processing_status: 'pending_upload',
+          })
+          .then(({ error }) => {
+            if (error) fastify.log.warn({ error: error.message, objectKey }, 'Could not insert pending_upload placeholder')
+          })
+      }
+
       request.log.info({ userId, fileSize, type: mediaType, spaceId: finalId }, 'Generated secure R2 signed upload URL')
       return reply.send({
         signedUrl,
@@ -228,7 +250,7 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(403).send({ statusMessage: 'Unauthorized' })
     }
 
-    // 2. Idempotency: if this objectKey is already registered for the same space, return it.
+    // 2. Idempotency: find existing row by storage_key (may be a pending_upload placeholder or a completed record).
     const { data: existingMedia } = await fastify.supabase
       .from('property_media')
       .select('*')
@@ -240,25 +262,47 @@ export default async function (fastify: FastifyInstance) {
       if (existingMedia.processing_status === 'failed') {
         await updateUploadStatus(fastify, existingMedia.id, 'pending')
         if (finalId) {
-          scheduleMediaProcessing(
-            fastify,
-            existingMedia.id,
-            finalId,
-            userId,
-            existingMedia.storage_key
-          )
+          scheduleMediaProcessing(fastify, existingMedia.id, finalId, userId, existingMedia.storage_key)
         }
+      } else if (existingMedia.processing_status === 'pending_upload') {
+        // Promote the placeholder written during presign to a real pending-processing record
+        let dbMediaType = mediaType
+        if (mediaType === 'gallery') dbMediaType = 'gallery_image'
+        if (mediaType === 'thumb')   dbMediaType = 'thumbnail'
+        const { data: promoted, error: promoteErr } = await fastify.supabase
+          .from('property_media')
+          .update({
+            media_type: dbMediaType,
+            public_url: publicUrl,
+            width: width || null,
+            height: height || null,
+            file_size_bytes: verifiedFileSize || null,
+            processing_status: 'pending',
+          })
+          .eq('id', existingMedia.id)
+          .select()
+          .single()
+        if (promoteErr || !promoted) {
+          fastify.log.error(promoteErr)
+          return reply.code(500).send({ statusMessage: 'Failed to save media record' })
+        }
+        request.log.info({ userId, mediaId: promoted.id, objectKey }, 'Promoted pending_upload placeholder to pending')
+        if (verifiedFileSize) {
+          await fastify.supabase.rpc('increment_storage_usage', { u_id: userId, bytes: verifiedFileSize })
+        }
+        if (finalId) scheduleMediaProcessing(fastify, promoted.id, finalId, userId, objectKey)
+        return reply.send(promoted)
       }
 
       request.log.info({ userId, mediaId: existingMedia.id, objectKey }, 'Upload completion idempotent hit')
       return reply.send(existingMedia)
     }
 
-    // 3. Insert record
+    // 3. No prior record (e.g. branding uploads that skip the placeholder) — insert directly
     let dbMediaType = mediaType
     if (mediaType === 'gallery') dbMediaType = 'gallery_image'
     if (mediaType === 'thumb')   dbMediaType = 'thumbnail'
-    
+
     const { data: media, error: mediaErr } = await fastify.supabase
       .from('property_media')
       .insert({
@@ -381,10 +425,13 @@ export default async function (fastify: FastifyInstance) {
     }
 
     if (media.media_type === 'panorama') {
-      await fastify.supabase
+      const { error: settingsErr } = await fastify.supabase
         .from('property_360_settings')
         .delete()
         .eq('property_id', media.property_id)
+      if (settingsErr) {
+        fastify.log.warn({ error: settingsErr.message, propertyId: media.property_id }, '360 settings cleanup failed after panorama delete')
+      }
     }
 
     const { data: remainingMedia } = await fastify.supabase

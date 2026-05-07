@@ -225,9 +225,78 @@ export async function executeCleanupTask(
 }
 
 /**
+ * Sweep R2 objects that were presigned but never completed (/uploads/complete never called).
+ * These rows have processing_status = 'pending_upload' and are older than 2 hours.
+ * Runs every 6 hours.
+ */
+export const stalePendingUploadCleanupTask: CleanupTask = {
+  name: 'cleanup-stale-pending-uploads',
+  schedule: '0 */6 * * *', // every 6 hours
+  execute: async (fastify: FastifyInstance) => {
+    fastify.log.info('Starting cleanup: stale pending_upload rows')
+
+    try {
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+
+      const { data: staleRows, error: queryErr } = await fastify.supabase
+        .from('property_media')
+        .select('id, storage_key, file_size_bytes, properties!inner(user_id)')
+        .eq('processing_status', 'pending_upload')
+        .lt('created_at', twoHoursAgo)
+
+      if (queryErr) {
+        recordCleanupFailure(stalePendingUploadCleanupTask.name, 'query')
+        fastify.log.error({ error: queryErr }, 'Failed to query stale pending_upload rows')
+        return
+      }
+
+      if (!staleRows || staleRows.length === 0) {
+        fastify.log.info('No stale pending_upload rows to clean up')
+        return
+      }
+
+      fastify.log.info({ count: staleRows.length }, 'Found stale pending_upload rows')
+
+      let deletedCount = 0
+
+      for (const row of staleRows) {
+        try {
+          // Delete the R2 object (the file was uploaded but the user never completed the flow)
+          if (row.storage_key && process.env.R2_BUCKET_NAME) {
+            try {
+              const { DeleteObjectCommand } = await import('@aws-sdk/client-s3')
+              await (fastify as any).s3.send(new DeleteObjectCommand({
+                Bucket: process.env.R2_BUCKET_NAME,
+                Key: row.storage_key,
+              }))
+            } catch (r2Err: any) {
+              fastify.log.warn({ id: row.id, error: r2Err?.message }, 'R2 delete failed for stale pending_upload')
+            }
+          }
+
+          // Delete the placeholder DB row
+          await fastify.supabase.from('property_media').delete().eq('id', row.id)
+          deletedCount++
+        } catch (err: any) {
+          recordCleanupFailure(stalePendingUploadCleanupTask.name, 'item')
+          fastify.log.error({ id: row.id, error: err?.message }, 'Failed to clean stale pending_upload row')
+        }
+      }
+
+      recordCleanupDeletedItems(stalePendingUploadCleanupTask.name, deletedCount)
+      fastify.log.info({ deletedCount, total: staleRows.length }, 'Stale pending_upload cleanup complete')
+    } catch (err: any) {
+      recordCleanupFailure(stalePendingUploadCleanupTask.name, 'task')
+      fastify.log.error({ error: err?.message }, 'Stale pending_upload cleanup task failed')
+    }
+  },
+}
+
+/**
  * All cleanup tasks
  */
 export const cleanupTasks: CleanupTask[] = [
   failedMediaCleanupTask,
   orphanMediaCleanupTask,
+  stalePendingUploadCleanupTask,
 ]
