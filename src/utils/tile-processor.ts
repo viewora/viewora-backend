@@ -100,6 +100,24 @@ export async function processTileScene(
     const meta = await sharp(cleanPath).metadata()
     const imgW = meta.width  ?? 12288
     const imgH = meta.height ?? 6144
+
+    // Reject images that are too small to produce a usable 360° sphere.
+    // A 2:1 equirectangular under 2000px wide renders as a blurry blur at any
+    // zoom level. Fail early with a clear status rather than silently uploading
+    // a 2×1 grid that looks broken in the viewer.
+    const MIN_WIDTH = 2000
+    if (imgW < MIN_WIDTH) {
+      console.warn(`[TILE] Scene ${sceneId} rejected: source image is ${imgW}×${imgH}px (minimum width ${MIN_WIDTH}px for a usable 360° panorama)`)
+      const storageKey = new URL(rawImageUrl).pathname.replace(/^\//, '')
+      await Promise.all([
+        supabase.from('scenes').update({ status: 'failed' }).eq('id', sceneId),
+        storageKey
+          ? supabase.from('property_media').update({ processing_status: 'failed' }).eq('storage_key', storageKey)
+          : Promise.resolve(),
+      ])
+      return
+    }
+
     const cols = Math.ceil(imgW / TILE_SIZE)
     const rows = Math.ceil(imgH / TILE_SIZE)
 
