@@ -3,12 +3,12 @@ import dotenv from 'dotenv'
 dotenv.config()
 
 async function clear() {
-  const slug = 'tour-761b44a5'
+  const slug = 'tour-7b8c14db'
   const cacheKey = `tour:${slug}`
   console.log(`🧹 Clearing Redis cache for: ${cacheKey}`)
   
   if (!process.env.REDIS_URL) {
-    console.error('REDIS_URL missing')
+    console.error('❌ REDIS_URL missing')
     return
   }
 
