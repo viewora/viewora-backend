@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { sanitizeLeadPhone, sanitizeLeadText } from '../utils/sanitize.js'
 import { sendLeadNotification } from '../email/index.js'
+import { trackServer } from '../utils/analytics.js'
 
 const leadBodySchema = z.object({
   spaceId: z.string().uuid().optional(),
@@ -101,6 +102,8 @@ export default async function (fastify: FastifyInstance) {
           .single()
 
         if (!prop?.user_id || !prop?.slug) return
+
+        trackServer(prop.user_id, 'lead_received', { space_id: finalId, source: source || 'direct' })
 
         const { data: ownerData, error: ownerErr } = await fastify.supabase.auth.admin.getUserById(prop.user_id)
         if (ownerErr || !ownerData?.user?.email) return

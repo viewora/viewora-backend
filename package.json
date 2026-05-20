@@ -24,6 +24,7 @@
     "@fastify/cors": "^11.2.0",
     "@fastify/jwt": "^10.0.0",
     "@fastify/rate-limit": "^10.3.0",
+    "@sentry/node": "^8",
     "@supabase/supabase-js": "^2.99.2",
     "@types/sharp": "^0.31.1",
     "axios": "^1.13.6",
@@ -31,12 +32,12 @@
     "dotenv": "^17.3.1",
     "fastify": "^5.8.2",
     "fastify-raw-body": "^5.0.0",
+    "posthog-node": "^5.34.7",
     "prom-client": "^15.1.0",
     "redis": "^4.7.0",
     "resend": "^6.11.0",
     "sharp": "^0.34.5",
-    "zod": "^4.3.6",
-    "@sentry/node": "^8"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/axios": "^0.9.36",

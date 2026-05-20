@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import axios from 'axios'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
+import { trackServer } from '../utils/analytics.js'
 
 const initializeBillingBodySchema = z.object({
   planId: z.string().uuid(),
@@ -251,6 +252,9 @@ export default async function (fastify: FastifyInstance) {
           },
           { onConflict: 'user_id' }
         )
+
+      trackServer(userId, 'plan_upgraded', { plan_id: planId, billing_cycle: billingCycle })
+
     } else if (eventType === 'subscription.disable' || eventType === 'invoice.payment_failed') {
       if (!userId) { fastify.log.error({ event: eventType }, 'Webhook missing user_id for disable event'); return }
       const { data: sub } = await fastify.supabase
