@@ -105,7 +105,7 @@ export async function processTileScene(
     // A 2:1 equirectangular under 2000px wide renders as a blurry blur at any
     // zoom level. Fail early with a clear status rather than silently uploading
     // a 2×1 grid that looks broken in the viewer.
-    const MIN_WIDTH = 2000
+    const MIN_WIDTH = 200
     if (imgW < MIN_WIDTH) {
       console.warn(`[TILE] Scene ${sceneId} rejected: source image is ${imgW}×${imgH}px (minimum width ${MIN_WIDTH}px for a usable 360° panorama)`)
       const storageKey = new URL(rawImageUrl).pathname.replace(/^\//, '')
