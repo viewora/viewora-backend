@@ -1,6 +1,9 @@
 import { Resend } from 'resend'
 
 const FROM = 'Viewora <hello@viewora.software>'
+const APP_URL = 'https://app.viewora.software'
+const TIKTOK_URL = 'https://www.tiktok.com/@viewora.software?_r=1&_t=ZS-96X8wZykXbN'
+const INSTAGRAM_URL = 'https://www.instagram.com/vieworasoftware/'
 
 function escapeHtml(str: string): string {
   return str
@@ -18,6 +21,407 @@ if (process.env.RESEND_API_KEY) {
   console.warn('[email] RESEND_API_KEY not set — email notifications disabled')
 }
 
+export function isEmailEnabled(): boolean {
+  return resend !== null
+}
+
+// Shared header + footer wrapper used by every email
+function emailShell(content: string): string {
+  return `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #1a1a1a;">
+
+      <div style="background: #0a0a0b; padding: 24px 32px; border-radius: 12px 12px 0 0; text-align: center;">
+        <table cellpadding="0" cellspacing="0" style="margin: 0 auto;">
+          <tr>
+            <td style="vertical-align: middle; padding-right: 10px;">
+              <img src="https://viewora.software/logo-email.png" alt="" width="75" height="60"
+                   style="display: block; border-radius: 4px;" />
+            </td>
+            <td style="vertical-align: middle;">
+              <span style="color: #ffffff; font-size: 22px; font-weight: bold; letter-spacing: -0.5px;">Viewora</span>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="padding: 32px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
+        ${content}
+
+        <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
+
+        <p style="color: #9ca3af; font-size: 12px; margin: 0 0 16px 0; text-align: center;">
+          Viewora — 360° Virtual Tours for Real Estate and Business.
+        </p>
+
+        <div style="text-align: center;">
+          <a href="${TIKTOK_URL}" target="_blank"
+             style="display: inline-block; margin: 0 4px; text-decoration: none;">
+            <img src="https://viewora.software/icon-tiktok.png" alt="TikTok"
+                 width="24" height="24" style="display: inline-block;" />
+          </a>
+          <a href="${INSTAGRAM_URL}" target="_blank"
+             style="display: inline-block; margin: 0 4px; text-decoration: none;">
+            <img src="https://viewora.software/icon-instagram.png" alt="Instagram"
+                 width="24" height="24" style="display: inline-block;" />
+          </a>
+        </div>
+      </div>
+
+    </div>
+  `
+}
+
+function ctaButton(href: string, text: string, bgColor = '#0a0a0b'): string {
+  return `
+    <a href="${href}"
+       style="display: inline-block; background: ${bgColor}; color: #ffffff; padding: 14px 28px;
+              border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 15px;
+              margin-bottom: 24px;">
+      ${text}
+    </a>
+  `
+}
+
+function greet(name?: string | null): string {
+  const first = name ? escapeHtml(name.trim().split(' ')[0]) : null
+  return first ? `Hi ${first},` : 'Hello,'
+}
+
+// ─── HIGH PRIORITY ───────────────────────────────────────────────────────────
+
+// Fired from: billing.ts → charge.success webhook, after subscription upsert
+export async function sendSubscriptionActivatedEmail(params: {
+  ownerEmail: string
+  name?: string | null
+  planName: string
+  billingCycle: string
+}): Promise<void> {
+  if (!resend) return
+  const { ownerEmail, name, planName, billingCycle } = params
+  const safePlan = escapeHtml(planName)
+  const cycleLabel = billingCycle === 'yearly' ? 'year' : 'month'
+
+  await resend.emails.send({
+    from: FROM,
+    to: ownerEmail,
+    subject: `Your ${safePlan} plan is now active`,
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">${greet(name)}</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        Your <strong>${safePlan}</strong> plan is active — billed per ${cycleLabel}.
+        You now have full access to all features included in your plan.
+      </p>
+
+      <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 20px; margin: 24px 0;">
+        <p style="margin: 0 0 10px 0; font-weight: bold; color: #15803d; font-size: 14px;">What's included:</p>
+        <ul style="margin: 0; padding-left: 20px; color: #4b5563; font-size: 14px; line-height: 2;">
+          <li>Unlimited 360° panorama uploads</li>
+          <li>Custom hotspots and branding</li>
+          <li>Lead capture on every tour</li>
+          <li>Priority support</li>
+        </ul>
+      </div>
+
+      ${ctaButton(`${APP_URL}/app/create`, 'Create a tour now →')}
+
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        Manage your subscription from your
+        <a href="${APP_URL}/app/billing" style="color: #0066cc;">billing page</a>.
+      </p>
+    `),
+  })
+}
+
+// Fired from: billing.ts → charge.success webhook, alongside subscription activated
+export async function sendPaymentReceiptEmail(params: {
+  ownerEmail: string
+  name?: string | null
+  planName: string
+  billingCycle: string
+  amountKES: number
+  reference: string
+  paidAt: Date
+}): Promise<void> {
+  if (!resend) return
+  const { ownerEmail, name, planName, billingCycle, amountKES, reference, paidAt } = params
+  const safePlan = escapeHtml(planName)
+  const safeRef = escapeHtml(reference)
+  const formattedAmount = `KES ${amountKES.toLocaleString('en-KE')}`
+  const formattedDate = paidAt.toLocaleDateString('en-KE', { dateStyle: 'long' })
+  const cycleLabel = billingCycle === 'yearly' ? 'Annual' : 'Monthly'
+
+  await resend.emails.send({
+    from: FROM,
+    to: ownerEmail,
+    subject: `Payment receipt — ${safePlan} ${cycleLabel}`,
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">${greet(name)}</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        Thank you — we've received your payment. Here's your receipt.
+      </p>
+
+      <div style="background: #f9fafb; border-radius: 8px; padding: 20px; margin: 24px 0;">
+        <table cellpadding="0" cellspacing="0" style="width: 100%;">
+          <tr>
+            <td style="padding: 8px 0; color: #6b7280; font-size: 14px;">Plan</td>
+            <td style="padding: 8px 0; font-weight: bold; font-size: 14px; text-align: right;">
+              ${safePlan} (${cycleLabel})
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; color: #6b7280; font-size: 14px; border-top: 1px solid #e5e7eb;">Amount paid</td>
+            <td style="padding: 8px 0; font-weight: bold; font-size: 14px; text-align: right; border-top: 1px solid #e5e7eb;">
+              ${formattedAmount}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; color: #6b7280; font-size: 14px; border-top: 1px solid #e5e7eb;">Date</td>
+            <td style="padding: 8px 0; font-size: 14px; text-align: right; border-top: 1px solid #e5e7eb;">
+              ${formattedDate}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; color: #6b7280; font-size: 14px; border-top: 1px solid #e5e7eb;">Reference</td>
+            <td style="padding: 8px 0; font-size: 13px; text-align: right; border-top: 1px solid #e5e7eb; color: #9ca3af;">
+              ${safeRef}
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      ${ctaButton(`${APP_URL}/app/billing`, 'View billing history →')}
+
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        Questions about this charge? Reply to this email or write to
+        <a href="mailto:hello@viewora.software" style="color: #0066cc;">hello@viewora.software</a>.
+      </p>
+    `),
+  })
+}
+
+// Fired from: billing.ts → subscription.disable / invoice.payment_failed webhook
+export async function sendSubscriptionExpiredEmail(params: {
+  ownerEmail: string
+  name?: string | null
+}): Promise<void> {
+  if (!resend) return
+  const { ownerEmail, name } = params
+
+  await resend.emails.send({
+    from: FROM,
+    to: ownerEmail,
+    subject: 'Your Viewora subscription has expired',
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">${greet(name)}</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        Your Viewora subscription has expired. Your tours are still live for clients, but you've been moved to free plan limits.
+      </p>
+
+      <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 20px; margin: 24px 0;">
+        <p style="margin: 0 0 10px 0; font-weight: bold; color: #dc2626; font-size: 14px;">What this means:</p>
+        <ul style="margin: 0; padding-left: 20px; color: #4b5563; font-size: 14px; line-height: 2;">
+          <li>New tour creation is paused until you resubscribe</li>
+          <li>Published tours remain live for your clients</li>
+          <li>Lead capture continues on existing tours</li>
+        </ul>
+      </div>
+
+      ${ctaButton(`${APP_URL}/app/billing`, 'Resubscribe now →')}
+
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        Questions? Reply to this email — we're happy to help.
+      </p>
+    `),
+  })
+}
+
+// ─── MEDIUM PRIORITY ─────────────────────────────────────────────────────────
+
+// Fired from: cron job — users who signed up 7 days ago with no published tours
+export async function sendNoPublishNudgeEmail(params: {
+  ownerEmail: string
+  name?: string | null
+}): Promise<void> {
+  if (!resend) return
+  const { ownerEmail, name } = params
+
+  await resend.emails.send({
+    from: FROM,
+    to: ownerEmail,
+    subject: 'Your first tour is just a few clicks away',
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">${greet(name)}</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        You created your Viewora account a week ago — great first step! We noticed you haven't published your first tour yet.
+      </p>
+      <p style="color: #4b5563; line-height: 1.6;">
+        It takes less than 5 minutes to upload your panoramas and go live. Your clients can start exploring properties from anywhere.
+      </p>
+
+      <div style="background: #f9fafb; border-radius: 8px; padding: 20px; margin: 24px 0;">
+        <p style="margin: 0 0 12px 0; font-weight: bold; font-size: 14px;">Publish your first tour in 3 steps:</p>
+        <ol style="margin: 0; padding-left: 20px; color: #4b5563; font-size: 14px; line-height: 2;">
+          <li>Upload one or more 360° panorama photos</li>
+          <li>Add hotspots to guide viewers through the space</li>
+          <li>Hit publish and share the link with clients</li>
+        </ol>
+      </div>
+
+      ${ctaButton(`${APP_URL}/app/create`, 'Publish my first tour →')}
+
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        Need help getting started? Reply to this email — we'll walk you through it.
+      </p>
+    `),
+  })
+}
+
+// Fired from: cron job — subscriptions expiring in 7 days
+export async function sendPlanExpiryReminderEmail(params: {
+  ownerEmail: string
+  name?: string | null
+  planName: string
+  expiresAt: Date
+  daysLeft: number
+}): Promise<void> {
+  if (!resend) return
+  const { ownerEmail, name, planName, expiresAt, daysLeft } = params
+  const safePlan = escapeHtml(planName)
+  const formattedDate = expiresAt.toLocaleDateString('en-KE', { dateStyle: 'long' })
+  const plural = daysLeft !== 1 ? 's' : ''
+
+  await resend.emails.send({
+    from: FROM,
+    to: ownerEmail,
+    subject: `Your ${safePlan} plan expires in ${daysLeft} day${plural}`,
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">${greet(name)}</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        Your <strong>${safePlan}</strong> plan expires on <strong>${formattedDate}</strong> —
+        that's ${daysLeft} day${plural} from now.
+      </p>
+      <p style="color: #4b5563; line-height: 1.6;">
+        Renew now to keep all your tours active and continue capturing leads without interruption.
+      </p>
+
+      <div style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 16px; margin: 24px 0;">
+        <p style="margin: 0; color: #92400e; font-size: 14px;">
+          After expiry, new tour creation will be paused until you renew.
+        </p>
+      </div>
+
+      ${ctaButton(`${APP_URL}/app/billing`, 'Renew my plan →')}
+
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        Questions about your plan? Reply to this email.
+      </p>
+    `),
+  })
+}
+
+// ─── LOW PRIORITY ─────────────────────────────────────────────────────────────
+
+// Fired from: cron job — every Monday, aggregates leads from past 7 days per user
+export async function sendWeeklyLeadDigestEmail(params: {
+  ownerEmail: string
+  name?: string | null
+  leads: Array<{ leadName: string; leadEmail: string; spaceName: string }>
+  periodStart: Date
+  periodEnd: Date
+}): Promise<void> {
+  if (!resend) return
+  const { ownerEmail, name, leads, periodStart, periodEnd } = params
+  if (leads.length === 0) return
+
+  const dateRange = `${periodStart.toLocaleDateString('en-KE', { dateStyle: 'medium' })} – ${periodEnd.toLocaleDateString('en-KE', { dateStyle: 'medium' })}`
+  const plural = leads.length !== 1 ? 's' : ''
+
+  const leadRows = leads.map(l => `
+    <tr>
+      <td style="padding: 10px 0; border-top: 1px solid #e5e7eb; font-size: 14px;">${escapeHtml(l.leadName)}</td>
+      <td style="padding: 10px 0; border-top: 1px solid #e5e7eb; font-size: 14px;">
+        <a href="mailto:${escapeHtml(l.leadEmail)}" style="color: #0066cc;">${escapeHtml(l.leadEmail)}</a>
+      </td>
+      <td style="padding: 10px 0; border-top: 1px solid #e5e7eb; font-size: 13px; color: #6b7280;">
+        ${escapeHtml(l.spaceName)}
+      </td>
+    </tr>
+  `).join('')
+
+  await resend.emails.send({
+    from: FROM,
+    to: ownerEmail,
+    subject: `Your weekly digest — ${leads.length} lead${plural} this week`,
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">${greet(name)}</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        Here's a summary of the <strong>${leads.length} lead${plural}</strong> you received between ${dateRange}.
+      </p>
+
+      <table cellpadding="0" cellspacing="0" style="width: 100%; margin: 24px 0;">
+        <thead>
+          <tr>
+            <th style="padding: 0 0 8px 0; text-align: left; font-size: 12px; color: #9ca3af;
+                       text-transform: uppercase; letter-spacing: 0.05em;">Name</th>
+            <th style="padding: 0 0 8px 0; text-align: left; font-size: 12px; color: #9ca3af;
+                       text-transform: uppercase; letter-spacing: 0.05em;">Email</th>
+            <th style="padding: 0 0 8px 0; text-align: left; font-size: 12px; color: #9ca3af;
+                       text-transform: uppercase; letter-spacing: 0.05em;">Tour</th>
+          </tr>
+        </thead>
+        <tbody>${leadRows}</tbody>
+      </table>
+
+      ${ctaButton(`${APP_URL}/app/spaces`, 'View all leads →', '#0066cc')}
+
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        This digest is sent every week. Full contact details are in your dashboard.
+      </p>
+    `),
+  })
+}
+
+// ─── EXISTING EMAILS (updated to use shared shell) ───────────────────────────
+
+export async function sendWelcomeEmail(params: {
+  ownerEmail: string
+  name?: string | null
+}): Promise<void> {
+  if (!resend) {
+    console.warn('[email] sendWelcomeEmail: skipped — RESEND_API_KEY not set')
+    return
+  }
+  const { ownerEmail, name } = params
+
+  await resend.emails.send({
+    from: FROM,
+    to: ownerEmail,
+    subject: 'Welcome to Viewora — your first tour is one upload away',
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">${greet(name)}</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        Your Viewora account is ready. You can now create interactive 360° virtual tours and share them with clients in minutes.
+      </p>
+
+      <div style="background: #f9fafb; border-radius: 8px; padding: 20px; margin: 24px 0;">
+        <p style="margin: 0 0 12px 0; font-weight: bold; font-size: 14px;">Here's how to get started:</p>
+        <ol style="margin: 0; padding-left: 20px; color: #4b5563; font-size: 14px; line-height: 2;">
+          <li>Upload your 360° panorama photos</li>
+          <li>Add hotspots to highlight key features</li>
+          <li>Publish and share the link with your clients</li>
+        </ol>
+      </div>
+
+      ${ctaButton(`${APP_URL}/app/create`, 'Create your first tour →')}
+
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        Need help? Reply to this email or visit our
+        <a href="https://viewora.software/faq" style="color: #0066cc;">FAQ page</a>.
+      </p>
+    `),
+  })
+}
+
 export async function sendLeadNotification(params: {
   ownerEmail: string
   spaceName: string
@@ -26,7 +430,6 @@ export async function sendLeadNotification(params: {
 }): Promise<void> {
   if (!resend) return
   const { ownerEmail, spaceName, spaceSlug, lead } = params
-
   const safeName = escapeHtml(lead.name)
   const safeEmail = escapeHtml(lead.email)
   const safePhone = lead.phone ? escapeHtml(lead.phone) : null
@@ -38,117 +441,29 @@ export async function sendLeadNotification(params: {
     from: FROM,
     to: ownerEmail,
     subject: `New lead from your tour: ${safeSpaceName}`,
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #1a1a1a;">You have a new lead!</h2>
-        <p>Someone viewed your tour <strong>${safeSpaceName}</strong> and left their details.</p>
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">You have a new lead!</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        Someone viewed your tour <strong>${safeSpaceName}</strong> and left their details.
+      </p>
 
-        <div style="background: #f5f5f5; padding: 16px; border-radius: 8px; margin: 16px 0;">
-          <p style="margin: 4px 0;"><strong>Name:</strong> ${safeName}</p>
-          <p style="margin: 4px 0;"><strong>Email:</strong> <a href="mailto:${safeEmail}">${safeEmail}</a></p>
-          ${safePhone ? `<p style="margin: 4px 0;"><strong>Phone:</strong> ${safePhone}</p>` : ''}
-          ${safeMessage ? `<p style="margin: 4px 0;"><strong>Message:</strong> ${safeMessage}</p>` : ''}
-        </div>
+      <div style="background: #f9fafb; border-radius: 8px; padding: 20px; margin: 24px 0;">
+        <p style="margin: 4px 0; font-size: 14px;"><strong>Name:</strong> ${safeName}</p>
+        <p style="margin: 4px 0; font-size: 14px;"><strong>Email:</strong>
+          <a href="mailto:${safeEmail}" style="color: #0066cc;">${safeEmail}</a></p>
+        ${safePhone ? `<p style="margin: 4px 0; font-size: 14px;"><strong>Phone:</strong> ${safePhone}</p>` : ''}
+        ${safeMessage ? `<p style="margin: 4px 0; font-size: 14px;"><strong>Message:</strong> ${safeMessage}</p>` : ''}
+      </div>
 
-        <a href="https://app.viewora.software/app/spaces"
-           style="background: #0066cc; color: white; padding: 12px 24px;
-                  border-radius: 6px; text-decoration: none; display: inline-block;">
-          View all leads
-        </a>
+      ${ctaButton(`${APP_URL}/app/spaces`, 'View all leads →', '#0066cc')}
 
-        <p style="color: #888; font-size: 12px; margin-top: 32px;">
-          This notification was sent because you have an active tour at
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        This lead came from your tour at
+        <a href="https://viewora.software/p/${safeSpaceSlug}" style="color: #0066cc;">
           viewora.software/p/${safeSpaceSlug}
-        </p>
-      </div>
-    `,
-  })
-}
-
-export function isEmailEnabled(): boolean {
-  return resend !== null
-}
-
-export async function sendWelcomeEmail(params: {
-  ownerEmail: string
-  name?: string | null
-}): Promise<void> {
-  if (!resend) {
-    console.warn('[email] sendWelcomeEmail: skipped — RESEND_API_KEY not set')
-    return
-  }
-  const { ownerEmail, name } = params
-  const firstName = name ? escapeHtml(name.trim().split(' ')[0]) : null
-  const greeting = firstName ? `Hi ${firstName},` : 'Welcome to Viewora!'
-
-  await resend.emails.send({
-    from: FROM,
-    to: ownerEmail,
-    subject: 'Welcome to Viewora — your first tour is one upload away',
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #1a1a1a;">
-        <div style="background: #0a0a0b; padding: 24px 32px; border-radius: 12px 12px 0 0; text-align: center;">
-          <table cellpadding="0" cellspacing="0" style="margin: 0 auto;">
-            <tr>
-              <td style="vertical-align: middle; padding-right: 10px;">
-                <img src="https://viewora.software/logo-email.png" alt="" width="75" height="60"
-                     style="display: block; border-radius: 4px;" />
-              </td>
-              <td style="vertical-align: middle;">
-                <span style="color: #ffffff; font-size: 22px; font-weight: bold; letter-spacing: -0.5px;">Viewora</span>
-              </td>
-            </tr>
-          </table>
-        </div>
-
-        <div style="padding: 32px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
-          <h2 style="font-size: 20px; margin-top: 0;">${greeting}</h2>
-          <p style="color: #4b5563; line-height: 1.6;">
-            Your Viewora account is ready. You can now create interactive 360° virtual tours and share them with clients in minutes.
-          </p>
-
-          <div style="background: #f9fafb; border-radius: 8px; padding: 20px; margin: 24px 0;">
-            <p style="margin: 0 0 12px 0; font-weight: bold; font-size: 14px;">Here's how to get started:</p>
-            <ol style="margin: 0; padding-left: 20px; color: #4b5563; font-size: 14px; line-height: 2;">
-              <li>Upload your 360° panorama photos</li>
-              <li>Add hotspots to highlight key features</li>
-              <li>Publish and share the link with your clients</li>
-            </ol>
-          </div>
-
-          <a href="https://app.viewora.software/app/create"
-             style="display: inline-block; background: #0a0a0b; color: #ffffff; padding: 14px 28px;
-                    border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 15px; margin-bottom: 24px;">
-            Create your first tour →
-          </a>
-
-          <p style="color: #6b7280; font-size: 13px; margin-bottom: 4px;">
-            Need help? Reply to this email or visit our
-            <a href="https://viewora.software/faq" style="color: #0066cc;">FAQ page</a>.
-          </p>
-
-          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
-
-          <p style="color: #9ca3af; font-size: 12px; margin: 0 0 16px 0;">
-            You're receiving this because you created a Viewora account.
-            <br/>Viewora — 360° Virtual Tours for Real Estate and Business.
-          </p>
-
-          <div style="text-align: center;">
-            <a href="https://www.tiktok.com/@viewora.software?_r=1&_t=ZS-96X8wZykXbN" target="_blank"
-               style="display: inline-block; margin: 0 4px; text-decoration: none;">
-              <img src="https://viewora.software/icon-tiktok.png" alt="TikTok"
-                   width="24" height="24" style="display: block;" />
-            </a>
-            <a href="https://www.instagram.com/vieworasoftware/" target="_blank"
-               style="display: inline-block; margin: 0 4px; text-decoration: none;">
-              <img src="https://viewora.software/icon-instagram.png" alt="Instagram"
-                   width="24" height="24" style="display: block;" />
-            </a>
-          </div>
-        </div>
-      </div>
-    `,
+        </a>
+      </p>
+    `),
   })
 }
 
@@ -167,24 +482,28 @@ export async function sendTourPublishedEmail(params: {
     from: FROM,
     to: ownerEmail,
     subject: `Your tour "${safeSpaceName}" is live!`,
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #1a1a1a;">Your tour is live!</h2>
-        <p>Your virtual tour <strong>${safeSpaceName}</strong> is now published and ready to share.</p>
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">Your tour is live!</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        Your virtual tour <strong>${safeSpaceName}</strong> is now published and ready to share with clients.
+      </p>
 
-        <div style="background: #f0f8ff; padding: 16px; border-radius: 8px; margin: 16px 0;">
-          <p style="margin: 4px 0; font-size: 14px; color: #555;">Tour link:</p>
-          <a href="${tourUrl}" style="color: #0066cc; word-break: break-all;">${tourUrl}</a>
-        </div>
-
-        <p>Share this link on WhatsApp, Facebook, or embed it in your listings.</p>
-
-        <a href="https://wa.me/?text=Check%20out%20this%20virtual%20tour:%20${encodeURIComponent(tourUrl)}"
-           style="background: #25D366; color: white; padding: 12px 24px;
-                  border-radius: 6px; text-decoration: none; display: inline-block;">
-          Share on WhatsApp
-        </a>
+      <div style="background: #f9fafb; border-radius: 8px; padding: 16px; margin: 24px 0;">
+        <p style="margin: 0 0 6px 0; font-size: 13px; color: #6b7280;">Your tour link:</p>
+        <a href="${tourUrl}" style="color: #0066cc; word-break: break-all; font-size: 15px;">${tourUrl}</a>
       </div>
-    `,
+
+      ${ctaButton(tourUrl, 'View your tour →')}
+
+      <p style="color: #4b5563; font-size: 14px; margin-bottom: 8px;">
+        Share it on WhatsApp to start getting leads:
+      </p>
+
+      ${ctaButton(
+        `https://wa.me/?text=Check%20out%20this%20virtual%20tour:%20${encodeURIComponent(tourUrl)}`,
+        'Share on WhatsApp →',
+        '#25D366'
+      )}
+    `),
   })
 }

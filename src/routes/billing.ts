@@ -4,6 +4,11 @@ import axios from 'axios'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { trackServer } from '../utils/analytics.js'
+import {
+  sendSubscriptionActivatedEmail,
+  sendPaymentReceiptEmail,
+  sendSubscriptionExpiredEmail,
+} from '../email/index.js'
 
 const initializeBillingBodySchema = z.object({
   planId: z.string().uuid(),
@@ -255,6 +260,26 @@ export default async function (fastify: FastifyInstance) {
 
       trackServer(userId, 'plan_upgraded', { plan_id: planId, billing_cycle: billingCycle })
 
+      // Send subscription activated + payment receipt emails
+      const customerEmail: string | undefined = body.data?.customer?.email
+      const customerName: string | null = body.data?.customer?.first_name || null
+      const amountKES = Math.floor((body.data?.amount || 0) / 100)
+
+      if (customerEmail) {
+        const { data: plan } = await fastify.supabase
+          .from('plans').select('name').eq('id', planId).single()
+        const planName: string = (plan as any)?.name || 'Premium'
+
+        void sendSubscriptionActivatedEmail({
+          ownerEmail: customerEmail, name: customerName, planName, billingCycle,
+        }).catch((err: any) => fastify.log.error(err, 'Failed to send subscription activated email'))
+
+        void sendPaymentReceiptEmail({
+          ownerEmail: customerEmail, name: customerName, planName, billingCycle,
+          amountKES, reference: reference || '', paidAt: new Date(),
+        }).catch((err: any) => fastify.log.error(err, 'Failed to send payment receipt email'))
+      }
+
     } else if (eventType === 'subscription.disable' || eventType === 'invoice.payment_failed') {
       if (!userId) { fastify.log.error({ event: eventType }, 'Webhook missing user_id for disable event'); return }
       const { data: sub } = await fastify.supabase
@@ -272,6 +297,17 @@ export default async function (fastify: FastifyInstance) {
         // Invalidate billing cache so the next request reflects the new status immediately
         if (fastify.redis) {
           await fastify.redis.del(`billing:status:${userId}`).catch(() => {})
+        }
+
+        // Send subscription expired email
+        const { data: authUser } = await fastify.supabase.auth.admin.getUserById(userId)
+        const userEmail = (authUser as any)?.user?.email as string | undefined
+        const userName = (authUser as any)?.user?.user_metadata?.full_name
+          || (authUser as any)?.user?.user_metadata?.name
+          || null
+        if (userEmail) {
+          void sendSubscriptionExpiredEmail({ ownerEmail: userEmail, name: userName })
+            .catch((err: any) => fastify.log.error(err, 'Failed to send subscription expired email'))
         }
       }
     }
