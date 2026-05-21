@@ -8,6 +8,7 @@ import {
   sendSubscriptionActivatedEmail,
   sendPaymentReceiptEmail,
   sendSubscriptionExpiredEmail,
+  sendPaymentFailedEmail,
 } from '../email/index.js'
 
 const initializeBillingBodySchema = z.object({
@@ -306,8 +307,13 @@ export default async function (fastify: FastifyInstance) {
           || (authUser as any)?.user?.user_metadata?.name
           || null
         if (userEmail) {
-          void sendSubscriptionExpiredEmail({ ownerEmail: userEmail, name: userName })
-            .catch((err: any) => fastify.log.error(err, 'Failed to send subscription expired email'))
+          if (eventType === 'invoice.payment_failed') {
+            void sendPaymentFailedEmail({ ownerEmail: userEmail, name: userName })
+              .catch((err: any) => fastify.log.error(err, 'Failed to send payment failed email'))
+          } else {
+            void sendSubscriptionExpiredEmail({ ownerEmail: userEmail, name: userName })
+              .catch((err: any) => fastify.log.error(err, 'Failed to send subscription expired email'))
+          }
         }
       }
     }

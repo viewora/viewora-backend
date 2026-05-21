@@ -87,7 +87,175 @@ function greet(name?: string | null): string {
   return first ? `Hi ${first},` : 'Hello,'
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`
+  if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(0)} MB`
+  return `${(bytes / 1e3).toFixed(0)} KB`
+}
+
 // ─── HIGH PRIORITY ───────────────────────────────────────────────────────────
+
+// Fired from: billing.ts → invoice.payment_failed webhook
+export async function sendPaymentFailedEmail(params: {
+  ownerEmail: string
+  name?: string | null
+}): Promise<void> {
+  if (!resend) return
+  const { ownerEmail, name } = params
+
+  await resend.emails.send({
+    from: FROM,
+    to: ownerEmail,
+    subject: 'Action required — your Viewora payment failed',
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">${greet(name)}</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        We were unable to process your latest Viewora payment. Your subscription is still active for now, but access will be restricted if payment isn't completed soon.
+      </p>
+
+      <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin: 24px 0;">
+        <p style="margin: 0; color: #dc2626; font-size: 14px; font-weight: bold;">
+          What to do: update your payment method or retry the charge from your billing page.
+        </p>
+      </div>
+
+      ${ctaButton(`${APP_URL}/app/billing`, 'Update payment method →', '#dc2626')}
+
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        If you believe this is a mistake or need help, reply to this email and we'll sort it out.
+      </p>
+    `),
+  })
+}
+
+// Fired from: cron/limit-warning — users at ≥80% of their plan's tour or storage quota
+export async function sendLimitWarningEmail(params: {
+  ownerEmail: string
+  name?: string | null
+  planName: string
+  toursUsed: number
+  toursMax: number
+  storageUsedBytes: number
+  storageMaxBytes: number
+}): Promise<void> {
+  if (!resend) return
+  const { ownerEmail, name, planName, toursUsed, toursMax, storageUsedBytes, storageMaxBytes } = params
+
+  const tourPct = toursMax > 0 ? Math.round((toursUsed / toursMax) * 100) : 0
+  const storagePct = storageMaxBytes > 0 ? Math.round((storageUsedBytes / storageMaxBytes) * 100) : 0
+  const toursWarning = tourPct >= 80
+  const storageWarning = storagePct >= 80
+  const safePlan = escapeHtml(planName)
+
+  const warningBlocks = []
+  if (toursWarning) {
+    warningBlocks.push(`
+      <div style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 16px; margin-bottom: 12px;">
+        <p style="margin: 0 0 6px 0; font-weight: bold; color: #92400e; font-size: 14px;">Tours: ${tourPct}% used</p>
+        <p style="margin: 0; color: #4b5563; font-size: 14px;">
+          ${toursUsed} of ${toursMax} active tours used on your ${safePlan} plan.
+        </p>
+      </div>
+    `)
+  }
+  if (storageWarning) {
+    warningBlocks.push(`
+      <div style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 16px; margin-bottom: 12px;">
+        <p style="margin: 0 0 6px 0; font-weight: bold; color: #92400e; font-size: 14px;">Storage: ${storagePct}% used</p>
+        <p style="margin: 0; color: #4b5563; font-size: 14px;">
+          ${formatBytes(storageUsedBytes)} of ${formatBytes(storageMaxBytes)} used on your ${safePlan} plan.
+        </p>
+      </div>
+    `)
+  }
+
+  await resend.emails.send({
+    from: FROM,
+    to: ownerEmail,
+    subject: `You're approaching your ${safePlan} plan limits`,
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">${greet(name)}</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        You're getting close to the limits on your <strong>${safePlan}</strong> plan. Upgrade now to keep creating tours without interruption.
+      </p>
+
+      ${warningBlocks.join('')}
+
+      ${ctaButton(`${APP_URL}/app/billing`, 'Upgrade my plan →')}
+
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        Questions about your plan? Reply to this email.
+      </p>
+    `),
+  })
+}
+
+// Fired from: cron/monthly-report — 1st of each month, previous month's performance
+export async function sendMonthlyReportEmail(params: {
+  ownerEmail: string
+  name?: string | null
+  monthLabel: string
+  totalViews: number
+  totalLeads: number
+  topTours: Array<{ name: string; views: number; leads: number }>
+}): Promise<void> {
+  if (!resend) return
+  const { ownerEmail, name, monthLabel, totalViews, totalLeads, topTours } = params
+
+  const tourRows = topTours.slice(0, 5).map(t => `
+    <tr>
+      <td style="padding: 10px 0; border-top: 1px solid #e5e7eb; font-size: 14px;">${escapeHtml(t.name)}</td>
+      <td style="padding: 10px 0; border-top: 1px solid #e5e7eb; font-size: 14px; text-align: right;">${t.views.toLocaleString()}</td>
+      <td style="padding: 10px 0; border-top: 1px solid #e5e7eb; font-size: 14px; text-align: right;">${t.leads}</td>
+    </tr>
+  `).join('')
+
+  await resend.emails.send({
+    from: FROM,
+    to: ownerEmail,
+    subject: `Your Viewora report for ${monthLabel}`,
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">${greet(name)}</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        Here's how your tours performed in <strong>${monthLabel}</strong>.
+      </p>
+
+      <table cellpadding="0" cellspacing="0" style="width: 100%; margin: 24px 0;">
+        <tr>
+          <td style="width: 50%; padding: 20px; background: #f9fafb; border-radius: 8px; text-align: center;">
+            <div style="font-size: 36px; font-weight: bold; color: #0a0a0b;">${totalViews.toLocaleString()}</div>
+            <div style="font-size: 13px; color: #6b7280; margin-top: 4px;">Total Views</div>
+          </td>
+          <td style="width: 8px;"></td>
+          <td style="width: 50%; padding: 20px; background: #f9fafb; border-radius: 8px; text-align: center;">
+            <div style="font-size: 36px; font-weight: bold; color: #0a0a0b;">${totalLeads}</div>
+            <div style="font-size: 13px; color: #6b7280; margin-top: 4px;">Total Leads</div>
+          </td>
+        </tr>
+      </table>
+
+      ${topTours.length > 0 ? `
+        <p style="font-weight: bold; font-size: 14px; margin-bottom: 0;">Top tours this month:</p>
+        <table cellpadding="0" cellspacing="0" style="width: 100%; margin: 0 0 24px 0;">
+          <thead>
+            <tr>
+              <th style="padding: 8px 0; text-align: left; font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em;">Tour</th>
+              <th style="padding: 8px 0; text-align: right; font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em;">Views</th>
+              <th style="padding: 8px 0; text-align: right; font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em;">Leads</th>
+            </tr>
+          </thead>
+          <tbody>${tourRows}</tbody>
+        </table>
+      ` : ''}
+
+      ${ctaButton(`${APP_URL}/app/spaces`, 'View full analytics →', '#0066cc')}
+
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        This report covers ${monthLabel}. Detailed stats are always available in your dashboard.
+      </p>
+    `),
+  })
+}
 
 // Fired from: billing.ts → charge.success webhook, after subscription upsert
 export async function sendSubscriptionActivatedEmail(params: {

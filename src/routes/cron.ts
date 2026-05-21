@@ -4,6 +4,8 @@ import {
   sendNoPublishNudgeEmail,
   sendPlanExpiryReminderEmail,
   sendWeeklyLeadDigestEmail,
+  sendLimitWarningEmail,
+  sendMonthlyReportEmail,
 } from '../email/index.js'
 
 function verifyCronSecret(secret: string | string[] | undefined): boolean {
@@ -196,6 +198,166 @@ export default async function cronRoutes(fastify: FastifyInstance) {
     }
 
     fastify.log.info({ sent }, 'cron/weekly-digest: complete')
+    return reply.send({ sent })
+  })
+
+  // POST /cron/limit-warning
+  // Schedule: daily at 10:00 UTC
+  // Warns users who are at ≥80% of their plan's tour or storage quota
+  fastify.post('/cron/limit-warning', async (req, reply) => {
+    if (!verifyCronSecret(req.headers['x-cron-secret'])) {
+      return reply.code(401).send({ statusMessage: 'Unauthorized' })
+    }
+
+    // Fetch all usage counters joined with subscriptions + plans
+    const { data: rows, error } = await fastify.supabase
+      .from('usage_counters')
+      .select('user_id, active_properties_count, storage_used_bytes, subscriptions!inner(plan_id, status, plans!inner(name, max_active_properties, max_storage_bytes))')
+      .in('subscriptions.status', ['active', 'trialing'])
+
+    if (error) {
+      fastify.log.error(error, 'cron/limit-warning: failed to query usage')
+      return reply.code(500).send({ statusMessage: 'Query failed' })
+    }
+
+    if (!rows?.length) return reply.send({ sent: 0 })
+
+    let sent = 0
+    for (const row of rows) {
+      try {
+        const sub = (row as any).subscriptions
+        const plan = sub?.plans
+        if (!plan) continue
+
+        const toursUsed: number = row.active_properties_count || 0
+        const toursMax: number = plan.max_active_properties || 0
+        const storageUsed: number = Number(row.storage_used_bytes || 0)
+        const storageMax: number = Number(plan.max_storage_bytes || 0)
+
+        const tourPct = toursMax > 0 ? (toursUsed / toursMax) : 0
+        const storagePct = storageMax > 0 ? (storageUsed / storageMax) : 0
+
+        if (tourPct < 0.8 && storagePct < 0.8) continue
+
+        // Throttle: skip if warned in the last 7 days
+        const warnKey = `limit_warn:${row.user_id}`
+        if (fastify.redis) {
+          const recent = await fastify.redis.get(warnKey).catch(() => null)
+          if (recent) continue
+        }
+
+        const { data: authUser } = await fastify.supabase.auth.admin.getUserById(row.user_id)
+        const email = (authUser as any)?.user?.email as string | undefined
+        const name = (authUser as any)?.user?.user_metadata?.full_name || null
+        if (!email) continue
+
+        await sendLimitWarningEmail({
+          ownerEmail: email, name,
+          planName: plan.name,
+          toursUsed, toursMax,
+          storageUsedBytes: storageUsed, storageMaxBytes: storageMax,
+        })
+
+        if (fastify.redis) {
+          await fastify.redis.set(warnKey, '1', { EX: 60 * 60 * 24 * 7 }).catch(() => {})
+        }
+        sent++
+      } catch (err) {
+        fastify.log.error(err, `cron/limit-warning: failed for user ${row.user_id}`)
+      }
+    }
+
+    fastify.log.info({ sent }, 'cron/limit-warning: complete')
+    return reply.send({ sent })
+  })
+
+  // POST /cron/monthly-report
+  // Schedule: 1st of each month at 08:00 UTC — `0 8 1 * *`
+  // Sends each user their previous month's views + leads summary
+  fastify.post('/cron/monthly-report', async (req, reply) => {
+    if (!verifyCronSecret(req.headers['x-cron-secret'])) {
+      return reply.code(401).send({ statusMessage: 'Unauthorized' })
+    }
+
+    // Previous calendar month
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    const monthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59)
+    const monthLabel = monthStart.toLocaleDateString('en-KE', { month: 'long', year: 'numeric' })
+
+    // Pull analytics_daily for the month, with property owner info
+    const { data: analyticsRows, error: analyticsErr } = await fastify.supabase
+      .from('analytics_daily')
+      .select('property_id, total_views, properties!inner(user_id, title)')
+      .gte('date', monthStart.toISOString().split('T')[0])
+      .lte('date', monthEnd.toISOString().split('T')[0])
+
+    if (analyticsErr) {
+      fastify.log.error(analyticsErr, 'cron/monthly-report: analytics query failed')
+      return reply.code(500).send({ statusMessage: 'Query failed' })
+    }
+
+    // Pull leads for the month
+    const { data: leadRows, error: leadsErr } = await fastify.supabase
+      .from('leads')
+      .select('property_id, properties!inner(user_id)')
+      .gte('created_at', monthStart.toISOString())
+      .lte('created_at', monthEnd.toISOString())
+
+    if (leadsErr) {
+      fastify.log.error(leadsErr, 'cron/monthly-report: leads query failed')
+      return reply.code(500).send({ statusMessage: 'Query failed' })
+    }
+
+    if (!analyticsRows?.length && !leadRows?.length) {
+      fastify.log.info('cron/monthly-report: no activity this month')
+      return reply.send({ sent: 0 })
+    }
+
+    // Aggregate by user → by property
+    type TourAgg = { name: string; views: number; leads: number }
+    const byUser = new Map<string, Map<string, TourAgg>>()
+
+    for (const row of analyticsRows || []) {
+      const prop = (row as any).properties
+      if (!prop?.user_id) continue
+      if (!byUser.has(prop.user_id)) byUser.set(prop.user_id, new Map())
+      const tourMap = byUser.get(prop.user_id)!
+      const existing = tourMap.get(row.property_id) || { name: prop.title || 'Unnamed tour', views: 0, leads: 0 }
+      existing.views += row.total_views || 0
+      tourMap.set(row.property_id, existing)
+    }
+
+    for (const row of leadRows || []) {
+      const prop = (row as any).properties
+      if (!prop?.user_id) continue
+      if (!byUser.has(prop.user_id)) byUser.set(prop.user_id, new Map())
+      const tourMap = byUser.get(prop.user_id)!
+      const existing = tourMap.get(row.property_id) || { name: 'Unnamed tour', views: 0, leads: 0 }
+      existing.leads += 1
+      tourMap.set(row.property_id, existing)
+    }
+
+    let sent = 0
+    for (const [userId, tourMap] of byUser) {
+      try {
+        const { data: authUser } = await fastify.supabase.auth.admin.getUserById(userId)
+        const email = (authUser as any)?.user?.email as string | undefined
+        const name = (authUser as any)?.user?.user_metadata?.full_name || null
+        if (!email) continue
+
+        const tours = Array.from(tourMap.values()).sort((a, b) => b.views - a.views)
+        const totalViews = tours.reduce((s, t) => s + t.views, 0)
+        const totalLeads = tours.reduce((s, t) => s + t.leads, 0)
+
+        await sendMonthlyReportEmail({ ownerEmail: email, name, monthLabel, totalViews, totalLeads, topTours: tours })
+        sent++
+      } catch (err) {
+        fastify.log.error(err, `cron/monthly-report: failed for user ${userId}`)
+      }
+    }
+
+    fastify.log.info({ sent, monthLabel }, 'cron/monthly-report: complete')
     return reply.send({ sent })
   })
 }
