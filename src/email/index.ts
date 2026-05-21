@@ -137,12 +137,12 @@ export async function sendWelcomeEmail(params: {
           <div style="text-align: center;">
             <a href="https://www.tiktok.com/@viewora.software?_r=1&_t=ZS-96X8wZykXbN" target="_blank"
                style="display: inline-block; margin: 0 4px; text-decoration: none;">
-              <img src="https://cdn.simpleicons.org/tiktok/ffffff" alt="TikTok"
+              <img src="https://viewora.software/icon-tiktok.png" alt="TikTok"
                    width="24" height="24" style="display: block;" />
             </a>
             <a href="https://www.instagram.com/vieworasoftware/" target="_blank"
                style="display: inline-block; margin: 0 4px; text-decoration: none;">
-              <img src="https://cdn.simpleicons.org/instagram/ffffff" alt="Instagram"
+              <img src="https://viewora.software/icon-instagram.png" alt="Instagram"
                    width="24" height="24" style="display: block;" />
             </a>
           </div>
