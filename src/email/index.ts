@@ -91,7 +91,7 @@ export async function sendWelcomeEmail(params: {
           <table cellpadding="0" cellspacing="0" style="margin: 0 auto;">
             <tr>
               <td style="vertical-align: middle; padding-right: 10px;">
-                <img src="https://viewora.software/logo-email.png" alt="" width="32" height="32"
+                <img src="https://viewora.software/logo-email.png" alt="" width="75" height="60"
                      style="display: block; border-radius: 4px;" />
               </td>
               <td style="vertical-align: middle;">
