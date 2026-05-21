@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
-import { sendWelcomeEmail } from '../email/index.js'
+import { sendWelcomeEmail, isEmailEnabled } from '../email/index.js'
 
 const UpdateProfileBodySchema = z.object({
   full_name: z.string().max(120).optional(),
@@ -38,15 +38,18 @@ export default async function (fastify: FastifyInstance) {
 
     fastify.log.info({ userId }, 'welcome: endpoint hit')
 
-    // Idempotency: only send once per user, even if called multiple times
+    // Idempotency: only send once per user, even if called multiple times.
+    // Skip the key if email is not configured — allows a retry once RESEND_API_KEY is set.
     const redisKey = `welcome_sent:${userId}`
-    if (fastify.redis) {
+    if (fastify.redis && isEmailEnabled()) {
       const already = await fastify.redis.get(redisKey).catch(() => null)
       if (already) {
         fastify.log.info({ userId }, 'welcome: already sent, skipping')
         return reply.code(200).send({ sent: false })
       }
       await fastify.redis.set(redisKey, '1', { EX: 60 * 60 * 24 * 365 }).catch(() => {})
+    } else if (!isEmailEnabled()) {
+      fastify.log.warn({ userId }, 'welcome: RESEND_API_KEY not set, skipping idempotency key')
     } else {
       fastify.log.warn({ userId }, 'welcome: redis unavailable, idempotency skipped')
     }

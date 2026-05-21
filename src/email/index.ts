@@ -65,6 +65,10 @@ export async function sendLeadNotification(params: {
   })
 }
 
+export function isEmailEnabled(): boolean {
+  return resend !== null
+}
+
 export async function sendWelcomeEmail(params: {
   ownerEmail: string
   name?: string | null
