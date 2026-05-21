@@ -87,10 +87,18 @@ export async function sendWelcomeEmail(params: {
     subject: 'Welcome to Viewora — your first tour is one upload away',
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #1a1a1a;">
-        <div style="background: #0a0a0b; padding: 28px 32px; border-radius: 12px 12px 0 0; text-align: center;">
-          <img src="https://viewora.software/logo-email.png" alt="Viewora" width="48" height="48"
-               style="display: inline-block; margin-bottom: 10px; border-radius: 4px;" />
-          <div style="color: #ffffff; font-size: 22px; font-weight: bold; letter-spacing: -0.5px;">Viewora</div>
+        <div style="background: #0a0a0b; padding: 24px 32px; border-radius: 12px 12px 0 0; text-align: center;">
+          <table cellpadding="0" cellspacing="0" style="margin: 0 auto;">
+            <tr>
+              <td style="vertical-align: middle; padding-right: 10px;">
+                <img src="https://viewora.software/logo-email.png" alt="" width="32" height="32"
+                     style="display: block; border-radius: 4px;" />
+              </td>
+              <td style="vertical-align: middle;">
+                <span style="color: #ffffff; font-size: 22px; font-weight: bold; letter-spacing: -0.5px;">Viewora</span>
+              </td>
+            </tr>
+          </table>
         </div>
 
         <div style="padding: 32px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
@@ -127,14 +135,16 @@ export async function sendWelcomeEmail(params: {
           </p>
 
           <div style="text-align: center;">
-            <a href="https://www.tiktok.com/@viewora.software" target="_blank"
-               style="display: inline-block; margin: 0 6px; background: #000000; color: #ffffff;
-                      font-size: 12px; font-weight: bold; padding: 6px 14px; border-radius: 6px;
-                      text-decoration: none; letter-spacing: 0.3px;">TikTok</a>
+            <a href="https://www.tiktok.com/@viewora.software?_r=1&_t=ZS-96X8wZykXbN" target="_blank"
+               style="display: inline-block; margin: 0 4px; text-decoration: none;">
+              <img src="https://cdn.simpleicons.org/tiktok/ffffff" alt="TikTok"
+                   width="24" height="24" style="display: block;" />
+            </a>
             <a href="https://www.instagram.com/vieworasoftware/" target="_blank"
-               style="display: inline-block; margin: 0 6px; background: #E1306C; color: #ffffff;
-                      font-size: 12px; font-weight: bold; padding: 6px 14px; border-radius: 6px;
-                      text-decoration: none; letter-spacing: 0.3px;">Instagram</a>
+               style="display: inline-block; margin: 0 4px; text-decoration: none;">
+              <img src="https://cdn.simpleicons.org/instagram/ffffff" alt="Instagram"
+                   width="24" height="24" style="display: block;" />
+            </a>
           </div>
         </div>
       </div>
