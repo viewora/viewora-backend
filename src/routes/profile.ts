@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
+import { sendWelcomeEmail } from '../email/index.js'
 
 const UpdateProfileBodySchema = z.object({
   full_name: z.string().max(120).optional(),
@@ -29,6 +30,43 @@ export default async function (fastify: FastifyInstance) {
     }
 
     return reply.send(data)
+  })
+
+  fastify.post('/welcome', async (request, reply) => {
+    const user = request.user as any
+    const userId = user.sub
+
+    fastify.log.info({ userId }, 'welcome: endpoint hit')
+
+    // Idempotency: only send once per user, even if called multiple times
+    const redisKey = `welcome_sent:${userId}`
+    if (fastify.redis) {
+      const already = await fastify.redis.get(redisKey).catch(() => null)
+      if (already) {
+        fastify.log.info({ userId }, 'welcome: already sent, skipping')
+        return reply.code(200).send({ sent: false })
+      }
+      await fastify.redis.set(redisKey, '1', { EX: 60 * 60 * 24 * 365 }).catch(() => {})
+    } else {
+      fastify.log.warn({ userId }, 'welcome: redis unavailable, idempotency skipped')
+    }
+
+    const email = (request.user as any)?.email as string | undefined
+    const name = (request.user as any)?.user_metadata?.full_name
+      || (request.user as any)?.user_metadata?.name
+      || null
+
+    if (!email) {
+      fastify.log.warn({ userId }, 'welcome: no email on user token')
+      return reply.code(400).send({ statusMessage: 'Email not found' })
+    }
+
+    fastify.log.info({ userId, email }, 'welcome: sending email')
+    void sendWelcomeEmail({ ownerEmail: email, name }).catch((err) => {
+      fastify.log.error(err, 'welcome: failed to send email')
+    })
+
+    return reply.code(200).send({ sent: true })
   })
 
   fastify.patch('/', async (request, reply) => {
