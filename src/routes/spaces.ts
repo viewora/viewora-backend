@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify'
-import { DeleteObjectsCommand } from '@aws-sdk/client-s3'
+import { DeleteObjectsCommand, PutObjectCommand } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { z } from 'zod'
 import { canCreateSpace, checkUserQuota } from '../utils/quotas.js'
 import { parseWithSchema } from '../utils/validation.js'
@@ -27,6 +28,11 @@ const updateSpaceBodySchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   cover_image_url: z.string().url().max(2048).nullable().optional(),
   location_text: z.string().max(200).nullable().optional(),
+  location_lat: z.number().min(-90).max(90).nullable().optional(),
+  location_lng: z.number().min(-180).max(180).nullable().optional(),
+  logo_url: z.string().url().max(2048).nullable().optional(),
+  phone: z.string().max(50).nullable().optional(),
+  email: z.string().email().max(255).nullable().optional(),
   slug: slugSchema.nullable().optional(),
   space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'other']).optional(),
   lead_form_enabled: z.boolean().optional(),
@@ -60,7 +66,7 @@ export default async function (fastify: FastifyInstance) {
 
     const { data, error, count } = await fastify.supabase
       .from('properties')
-      .select('id, title, slug, description, property_type, location_text, cover_image_url, has_360, has_gallery, is_published, visibility, lead_form_enabled, branding_enabled, created_at, updated_at', { count: 'exact' })
+      .select('id, title, slug, description, property_type, location_text, location_lat, location_lng, logo_url, phone, email, cover_image_url, has_360, has_gallery, is_published, visibility, lead_form_enabled, branding_enabled, created_at, updated_at', { count: 'exact' })
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
       .range(from, to)
@@ -89,8 +95,8 @@ export default async function (fastify: FastifyInstance) {
     const { data, error } = await fastify.supabase
       .from('properties')
       .select(`
-        id, title, slug, description, property_type, location_text,
-        cover_image_url, has_360, has_gallery, is_published, published_at,
+        id, title, slug, description, property_type, location_text, location_lat, location_lng,
+        logo_url, phone, email, cover_image_url, has_360, has_gallery, is_published, published_at,
         visibility, lead_form_enabled, branding_enabled, created_at, updated_at,
         property_media (id, media_type, storage_key, public_url, width, height, file_size_bytes, sort_order, is_primary, processing_status, processed_at, processing_error, created_at, updated_at),
         property_360_settings (id, panorama_media_id, hfov_default, pitch_default, yaw_default, auto_rotate_enabled, hotspots_json)
@@ -181,9 +187,12 @@ export default async function (fastify: FastifyInstance) {
     if (body.description !== undefined) updates.description = body.description
     if (body.cover_image_url !== undefined) updates.cover_image_url = body.cover_image_url
     if (body.location_text !== undefined) updates.location_text = body.location_text
-    
+    if (body.location_lat !== undefined) updates.location_lat = body.location_lat
+    if (body.location_lng !== undefined) updates.location_lng = body.location_lng
+    if (body.logo_url !== undefined) updates.logo_url = body.logo_url
+    if (body.phone !== undefined) updates.phone = body.phone
+    if (body.email !== undefined) updates.email = body.email
     if (body.space_type !== undefined) updates.property_type = body.space_type
-
     if (body.lead_form_enabled !== undefined) updates.lead_form_enabled = body.lead_form_enabled
     if (body.branding_enabled !== undefined) updates.branding_enabled = body.branding_enabled
     if (body.slug !== undefined) updates.slug = body.slug
@@ -296,6 +305,55 @@ export default async function (fastify: FastifyInstance) {
     return reply.code(204).send()
   })
 
+  // LOGO upload — returns a presigned PUT URL; client PUTs the file, then PATCHes /spaces/:id with logo_url
+  fastify.post('/:id/logo-url', { preHandler: fastify.authenticate }, async (request, reply) => {
+    const user = request.user as any
+    const userId = user.sub
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const { id } = params
+
+    const logoUploadBodySchema = z.object({
+      fileName: z.string().trim().min(1).max(255),
+      contentType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']),
+    })
+    const body = parseWithSchema(reply, logoUploadBodySchema, request.body)
+    if (!body) return
+
+    const { data: space } = await fastify.supabase
+      .from('properties')
+      .select('id')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single()
+
+    if (!space) return reply.code(404).send({ statusMessage: 'Space not found' })
+
+    const bucketName = process.env.R2_BUCKET_NAME
+    if (!bucketName) return reply.code(500).send({ statusMessage: 'Storage configuration error' })
+
+    const rawExt = (body.fileName.split('.').pop() ?? '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+    const fileExt = rawExt || 'jpg'
+    const objectKey = `spaces/${id}/logo/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${fileExt}`
+
+    const command = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: objectKey,
+      ContentType: body.contentType,
+      CacheControl: 'public, max-age=31536000, immutable',
+    })
+
+    try {
+      const uploadUrl = await getSignedUrl(fastify.s3, command, { expiresIn: 900 })
+      const customDomain = process.env.MEDIA_DOMAIN || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
+      const publicUrl = `${customDomain}/${objectKey}`
+      return reply.send({ uploadUrl, publicUrl })
+    } catch (err) {
+      fastify.log.error(err)
+      return reply.code(500).send({ statusMessage: 'Failed to generate upload URL' })
+    }
+  })
+
   // UPDATE viewer settings (property_360_settings)
   fastify.patch('/:id/settings', { preHandler: fastify.authenticate }, async (request, reply) => {
     const user = request.user as any
@@ -397,7 +455,7 @@ export default async function (fastify: FastifyInstance) {
       .update(updates)
       .eq('id', id)
       .eq('user_id', userId)
-      .select('id, title, slug, description, property_type, location_text, cover_image_url, has_360, has_gallery, is_published, published_at, visibility, lead_form_enabled, branding_enabled, created_at, updated_at')
+      .select('id, title, slug, description, property_type, location_text, location_lat, location_lng, logo_url, phone, email, cover_image_url, has_360, has_gallery, is_published, published_at, visibility, lead_form_enabled, branding_enabled, created_at, updated_at')
       .single()
 
     if (error) {
