@@ -87,8 +87,10 @@ export async function sendWelcomeEmail(params: {
     subject: 'Welcome to Viewora — your first tour is one upload away',
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #1a1a1a;">
-        <div style="background: #0a0a0b; padding: 32px; border-radius: 12px 12px 0 0; text-align: center;">
-          <h1 style="color: #ffffff; font-size: 24px; margin: 0; letter-spacing: -0.5px;">Viewora</h1>
+        <div style="background: #0a0a0b; padding: 28px 32px; border-radius: 12px 12px 0 0; text-align: center;">
+          <img src="https://viewora.software/logo-email.png" alt="Viewora" width="48" height="48"
+               style="display: inline-block; margin-bottom: 10px; border-radius: 4px;" />
+          <div style="color: #ffffff; font-size: 22px; font-weight: bold; letter-spacing: -0.5px;">Viewora</div>
         </div>
 
         <div style="padding: 32px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
@@ -119,10 +121,21 @@ export async function sendWelcomeEmail(params: {
 
           <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
 
-          <p style="color: #9ca3af; font-size: 12px; margin: 0;">
+          <p style="color: #9ca3af; font-size: 12px; margin: 0 0 16px 0;">
             You're receiving this because you created a Viewora account.
             <br/>Viewora — 360° Virtual Tours for Real Estate and Business.
           </p>
+
+          <div style="text-align: center;">
+            <a href="https://www.tiktok.com/@viewora.software" target="_blank"
+               style="display: inline-block; margin: 0 6px; background: #000000; color: #ffffff;
+                      font-size: 12px; font-weight: bold; padding: 6px 14px; border-radius: 6px;
+                      text-decoration: none; letter-spacing: 0.3px;">TikTok</a>
+            <a href="https://www.instagram.com/vieworasoftware/" target="_blank"
+               style="display: inline-block; margin: 0 6px; background: #E1306C; color: #ffffff;
+                      font-size: 12px; font-weight: bold; padding: 6px 14px; border-radius: 6px;
+                      text-decoration: none; letter-spacing: 0.3px;">Instagram</a>
+          </div>
         </div>
       </div>
     `,
