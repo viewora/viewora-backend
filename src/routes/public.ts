@@ -130,9 +130,9 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       delete (data as any).space.property_type;
     }
 
-    // Cache tour data for 60s — invalidated on next publish/update via TTL
+    // Cache tour data for 300s (5m) — invalidated on next publish/update via TTL
     if (fastify.redis && data) {
-      void fastify.redis.setEx(cacheKey, 60, JSON.stringify(data)).catch(() => {})
+      void fastify.redis.setEx(cacheKey, 300, JSON.stringify(data)).catch(() => {})
     }
 
     reply.header('X-Cache', 'MISS')
