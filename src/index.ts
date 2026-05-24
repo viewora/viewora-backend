@@ -30,11 +30,14 @@ import { createUploadQueue } from './queues/upload.queue.js'
 import type { Queue } from 'bullmq'
 import { getMetrics } from './utils/metrics.js'
 import { cleanupTasks, executeCleanupTask } from './utils/cleanup-scheduler.js'
-import { initSentry, captureException } from './utils/sentry.js'
+import { initSentry } from './utils/sentry.js'
+import { initMonitoring, captureException as captureMonitoringException } from './utils/monitoring.js'
 
 dotenv.config()
 // initSentry is async (dynamic ESM import) — fire-and-forget; errors are caught internally
 void initSentry()
+// initMonitoring initializes PostHog (if configured)
+void initMonitoring()
 
 // Extend FastifyInstance with uploadQueue decorator
 declare module 'fastify' {
@@ -201,6 +204,7 @@ if (process.env.REDIS_URL) {
   // Node.js converts it to an uncaughtException which kills the process.
   uploadQueue.on('error', (err) => {
     fastify.log.error({ err }, 'BullMQ upload queue error')
+    try { captureMonitoringException(err, { component: 'uploadQueue' }) } catch { /* noop */ }
   })
   fastify.decorate('uploadQueue', uploadQueue)
 }
@@ -308,9 +312,9 @@ fastify.setErrorHandler(function (error: FastifyError, request, reply) {
 
   const statusCode = error.statusCode || 500
 
-  // Report unhandled 5xx errors to Sentry
+  // Report unhandled 5xx errors to monitoring (Sentry + PostHog)
   if (statusCode >= 500) {
-    captureException(error, { requestId: request.id, url: request.url, method: request.method })
+    try { captureMonitoringException(error, { requestId: request.id, url: request.url, method: request.method }) } catch { /* noop */ }
   }
 
   const code = statusCode === 429
@@ -388,13 +392,13 @@ fastify.setNotFoundHandler((request, reply) => {
 // Catch unhandled async rejections. Log + capture to Sentry but do NOT exit
 process.on('unhandledRejection', (reason) => {
   process.stdout.write(`⚠️ Unhandled promise rejection (non-fatal): ${reason}\n`)
-  captureException(reason instanceof Error ? reason : new Error(String(reason)))
+  try { captureMonitoringException(reason instanceof Error ? reason : new Error(String(reason)), { fatal: false }) } catch { /* noop */ }
 })
 
 // Uncaught synchronous exceptions ARE fatal — log, capture, then exit.
 process.on('uncaughtException', (err) => {
   process.stdout.write(`❌ Uncaught exception (fatal): ${err.stack || err}\n`)
-  captureException(err)
+  try { captureMonitoringException(err, { fatal: true }) } catch { /* noop */ }
   process.exit(1)
 })
 
