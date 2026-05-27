@@ -192,6 +192,10 @@ export default async function (fastify: FastifyInstance) {
     if (body.logo_url !== undefined) updates.logo_url = body.logo_url
     if (body.phone !== undefined) updates.phone = body.phone
     if (body.email !== undefined) updates.email = body.email
+    if (body.cta_enabled !== undefined) updates.cta_enabled = body.cta_enabled
+    if (body.cta_button_text !== undefined) updates.cta_button_text = body.cta_button_text
+    if (body.cta_action !== undefined) updates.cta_action = body.cta_action
+    if (body.cta_destination !== undefined) updates.cta_destination = body.cta_destination
     if (body.space_type !== undefined) updates.property_type = body.space_type
     if (body.lead_form_enabled !== undefined) updates.lead_form_enabled = body.lead_form_enabled
     if (body.branding_enabled !== undefined) updates.branding_enabled = body.branding_enabled
