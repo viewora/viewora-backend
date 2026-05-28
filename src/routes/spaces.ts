@@ -175,6 +175,11 @@ export default async function (fastify: FastifyInstance) {
     const { error: incrErr } = await fastify.supabase.rpc('increment_active_properties', { u_id: userId })
     if (incrErr) fastify.log.error(incrErr, 'Failed to increment active_properties counter')
 
+    // Bust billing cache so frontend sees the updated usage count immediately
+    if (fastify.redis) {
+      await fastify.redis.del(`billing:status:${userId}`).catch(() => {})
+    }
+
     return reply.code(201).send(mappedSpace)
   })
 
@@ -311,6 +316,11 @@ export default async function (fastify: FastifyInstance) {
       if (totalSize > 0) {
         await fastify.supabase.rpc('decrement_storage_usage', { u_id: userId, bytes: totalSize })
       }
+    }
+
+    // Bust billing cache so frontend sees the updated usage count immediately
+    if (fastify.redis) {
+      await fastify.redis.del(`billing:status:${userId}`).catch(() => {})
     }
 
     return reply.code(204).send()
