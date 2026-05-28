@@ -182,7 +182,8 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
   })
 
   // ── DELETE SCENE ──────────────────────────────────────────
-  // Hotspots are deleted automatically via CASCADE
+  // CASCADE removes: (1) hotspots inside the scene, (2) nav arrows in OTHER scenes
+  // that pointed to this scene (via hotspots_target_scene_id_fkey ON DELETE CASCADE).
   fastify.delete('/scenes/:sceneId', { preHandler: [fastify.authenticate] }, async (req, reply) => {
     const userId = (req.user as any).sub
     const params = parseWithSchema(reply, sceneParamsSchema, (req as any).params)
@@ -197,16 +198,108 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     if (!scene) return reply.code(404).send({ statusMessage: 'Scene not found' })
 
+    // Count cross-scene nav arrows that will be removed by the CASCADE before deleting
+    const { count: removedLinks } = await fastify.supabase
+      .from('hotspots')
+      .select('id', { count: 'exact', head: true })
+      .eq('target_scene_id', params.sceneId)
+
     const { error: deleteError } = await fastify.supabase.from('scenes').delete().eq('id', params.sceneId)
     if (deleteError) {
       fastify.log.error(deleteError, 'Failed to delete scene')
       return reply.code(500).send({ statusMessage: 'Failed to delete scene from database' })
     }
-    // Invalidate public cache
-    if (scene?.space_id) {
-      await invalidateSpaceCache(fastify, scene.space_id)
+
+    // Resequence order_index for remaining scenes in the space so there are no gaps
+    const { data: remaining } = await fastify.supabase
+      .from('scenes')
+      .select('id, order_index')
+      .eq('space_id', scene.space_id)
+      .order('order_index', { ascending: true })
+
+    if (remaining?.length) {
+      await Promise.all(
+        remaining.map((s, i) =>
+          s.order_index !== i
+            ? fastify.supabase.from('scenes').update({ order_index: i }).eq('id', s.id)
+            : Promise.resolve()
+        )
+      )
     }
 
-    return reply.code(204).send()
+    if (scene?.space_id) await invalidateSpaceCache(fastify, scene.space_id)
+
+    return reply.send({ removedLinks: removedLinks ?? 0 })
+  })
+
+  // ── REPAIR SPACE ──────────────────────────────────────────
+  // Cleans up leftover inconsistencies without requiring a full re-upload:
+  //   • orphaned scene_link hotspots (target_scene_id IS NULL — legacy SET NULL artifacts)
+  //   • gaps in order_index after bulk deletions
+  //   • scenes stuck in pending/processing for >15 minutes (tile worker crash)
+  fastify.post('/spaces/:spaceId/repair', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, spaceParamsSchema, (req as any).params)
+    if (!params) return
+
+    const { data: space } = await fastify.supabase
+      .from('properties')
+      .select('id')
+      .eq('id', params.spaceId)
+      .eq('user_id', userId)
+      .single()
+    if (!space) return reply.code(404).send({ statusMessage: 'Space not found.' })
+
+    // Fetch all scene IDs for this space
+    const { data: sceneRows } = await fastify.supabase
+      .from('scenes')
+      .select('id, order_index, status, updated_at')
+      .eq('space_id', params.spaceId)
+      .order('order_index', { ascending: true })
+
+    const sceneIds = (sceneRows ?? []).map(s => s.id)
+    let orphansRemoved = 0
+    let reordered = 0
+    let stuckReset = 0
+
+    if (sceneIds.length) {
+      // 1. Remove orphaned scene_link hotspots (target_scene_id IS NULL)
+      const { count } = await fastify.supabase
+        .from('hotspots')
+        .delete({ count: 'exact' })
+        .in('scene_id', sceneIds)
+        .eq('type', 'scene_link')
+        .is('target_scene_id', null)
+      orphansRemoved = count ?? 0
+
+      // 2. Normalize order_index (fill gaps left by deletions)
+      await Promise.all(
+        (sceneRows ?? []).map((s, i) =>
+          s.order_index !== i
+            ? fastify.supabase.from('scenes').update({ order_index: i }).eq('id', s.id).then(() => { reordered++ })
+            : Promise.resolve()
+        )
+      )
+
+      // 3. Reset scenes stuck in pending/processing for >15 minutes
+      const stuckCutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString()
+      const stuck = (sceneRows ?? []).filter(
+        s => (s.status === 'pending' || s.status === 'processing') && s.updated_at < stuckCutoff
+      )
+      if (stuck.length) {
+        await fastify.supabase
+          .from('scenes')
+          .update({ status: 'failed' })
+          .in('id', stuck.map(s => s.id))
+        stuckReset = stuck.length
+      }
+    }
+
+    if (orphansRemoved || reordered || stuckReset) {
+      await invalidateSpaceCache(fastify, params.spaceId)
+    }
+
+    fastify.log.info({ spaceId: params.spaceId, orphansRemoved, reordered, stuckReset }, '[repair] complete')
+    return reply.send({ orphansRemoved, reordered, stuckReset })
   })
 }
