@@ -16,6 +16,20 @@ function nextPowerOfTwo(n: number): number {
   return Math.pow(2, Math.ceil(Math.log2(n)))
 }
 
+// Pull DateTimeOriginal from raw EXIF bytes without an external parser.
+// Camera EXIF embeds dates as ASCII "YYYY:MM:DD HH:MM:SS" — a regex scan is
+// reliable enough for all major 360 cameras (Insta360, GoPro, Ricoh Theta).
+function parseExifCaptureDate(exifBuf: Buffer): Date | null {
+  try {
+    const str = exifBuf.toString('binary')
+    const match = str.match(/(\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2})/)
+    if (!match) return null
+    const [datePart, timePart] = match[1].split(' ')
+    const d = new Date(`${datePart.replace(/:/g, '-')}T${timePart}Z`)
+    return isNaN(d.getTime()) ? null : d
+  } catch { return null }
+}
+
 export async function processTileScene(
   s3: S3Client,
   supabase: any,
@@ -62,7 +76,12 @@ export async function processTileScene(
       clearTimeout(dlTimeout)
     }
 
-    // 2. Strip EXIF/GPS metadata (writes clean file, same quality)
+    // 2. Read EXIF capture date BEFORE stripping (it's gone afterwards)
+    const rawMeta = await sharp(inputPath).metadata()
+    const capturedAt = rawMeta.exif ? parseExifCaptureDate(rawMeta.exif) : null
+    if (capturedAt) console.log(`[TILE] Capture date from EXIF: ${capturedAt.toISOString()}`)
+
+    // 3. Strip EXIF/GPS metadata (writes clean file, same quality)
     console.log(`[TILE] >>> STEP 4: Stripping metadata...`);
     await sharp(inputPath)
       .jpeg({ quality: 95 })
@@ -91,6 +110,7 @@ export async function processTileScene(
     await supabase.from('scenes').update({
       status: 'ready',
       thumbnail_url: thumbUrl,
+      ...(capturedAt ? { captured_at: capturedAt.toISOString() } : {}),
     }).eq('id', sceneId)
 
     // Auto-set tour cover image and 360 flag if missing
