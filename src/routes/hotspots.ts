@@ -137,6 +137,15 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
     const scene = await verifySceneOwnership(hotspot.scene_id, userId)
     if (!scene) return reply.code(403).send({ statusMessage: 'Forbidden' })
 
+    // Mirror the CREATE check: if target_scene_id is being set, verify it's in the same space
+    if (body.type === 'scene_link' && body.target_scene_id) {
+      const { data: targetScene } = await fastify.supabase
+        .from('scenes').select('space_id').eq('id', body.target_scene_id).single()
+      if (!targetScene || targetScene.space_id !== scene.space_id) {
+        return reply.code(400).send({ statusMessage: 'Target scene must be in the same space' })
+      }
+    }
+
     const { data: updated, error } = await fastify.supabase
       .from('hotspots')
       .update(body)

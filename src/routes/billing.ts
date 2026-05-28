@@ -261,6 +261,12 @@ export default async function (fastify: FastifyInstance) {
 
       trackServer(userId, 'plan_upgraded', { plan_id: planId, billing_cycle: billingCycle })
 
+      // Bust the per-user billing cache so the next request reflects active status immediately.
+      // Without this, the user sees "inactive" for up to 5 minutes after a successful payment.
+      if (fastify.redis) {
+        await fastify.redis.del(`billing:status:${userId}`).catch(() => {})
+      }
+
       // Send subscription activated + payment receipt emails
       const customerEmail: string | undefined = body.data?.customer?.email
       const customerName: string | null = body.data?.customer?.first_name || null

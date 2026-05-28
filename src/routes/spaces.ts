@@ -101,7 +101,9 @@ export default async function (fastify: FastifyInstance) {
       .select(`
         id, title, slug, description, property_type, location_text, location_lat, location_lng,
         logo_url, phone, email, cover_image_url, has_360, has_gallery, is_published, published_at,
-        visibility, lead_form_enabled, branding_enabled, created_at, updated_at,
+        visibility, lead_form_enabled, branding_enabled,
+        cta_enabled, cta_button_text, cta_action, cta_destination,
+        created_at, updated_at,
         property_media (id, media_type, storage_key, public_url, width, height, file_size_bytes, sort_order, is_primary, processing_status, processed_at, processing_error, created_at, updated_at),
         property_360_settings (id, panorama_media_id, hfov_default, pitch_default, yaw_default, auto_rotate_enabled, hotspots_json)
       `)
@@ -214,6 +216,7 @@ export default async function (fastify: FastifyInstance) {
       .single()
 
     if (error) {
+      if (error.code === 'PGRST116') return reply.code(404).send({ statusMessage: 'Space not found' })
       return reply.code(500).send({ statusMessage: 'Failed to update space' })
     }
 
