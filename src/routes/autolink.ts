@@ -80,7 +80,12 @@ function oppositeYaw(yaw: number): number {
 }
 
 export default async function (fastify: FastifyInstance) {
-  fastify.post('/spaces/:spaceId/auto-link', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.post('/spaces/:spaceId/auto-link', {
+    preHandler: [fastify.authenticate],
+    config: {
+      rateLimit: { max: 3, timeWindow: '1 minute' },
+    },
+  }, async (req, reply) => {
     const userId = (req.user as any).sub
     const params = parseWithSchema(reply, spaceParamsSchema, (req as any).params)
     if (!params) return
@@ -115,6 +120,19 @@ export default async function (fastify: FastifyInstance) {
     if (scenes.length < 2) {
       return reply.code(400).send({ statusMessage: 'You need at least 2 ready scenes to auto-link.' })
     }
+
+    // Fetch existing scene_link hotspots so we don't suggest duplicates
+    const sceneIds = scenes.map(s => s.id)
+    const { data: existingLinks } = await fastify.supabase
+      .from('hotspots')
+      .select('scene_id, target_scene_id')
+      .in('scene_id', sceneIds)
+      .eq('type', 'scene_link')
+    const linkedPairs = new Set<string>(
+      (existingLinks ?? [])
+        .filter((h: any) => h.target_scene_id)
+        .map((h: any) => `${h.scene_id}:${h.target_scene_id}`),
+    )
 
     // Analyse each scene sequentially to avoid Anthropic rate limits
     const analyses: Array<{ sceneId: string } & SceneAnalysis> = []
@@ -155,24 +173,28 @@ export default async function (fastify: FastifyInstance) {
       // Forward: A → B — use first detected doorway in A, or default to 0°
       const doorAB = analysisA?.doorways?.[0]
       const yawAB = doorAB ? Math.round((doorAB.position_pct / 100 - 0.5) * 360) : 0
-      suggestions.push({
-        fromSceneId: a.id, fromSceneName: a.name,
-        toSceneId: b.id,   toSceneName: b.name,
-        yaw: yawAB, pitch: DEFAULT_PITCH,
-        label: labelB,
-        doorwayDescription: doorAB?.leads_to || `Leads to ${labelB}`,
-      })
+      if (!linkedPairs.has(`${a.id}:${b.id}`)) {
+        suggestions.push({
+          fromSceneId: a.id, fromSceneName: a.name,
+          toSceneId: b.id,   toSceneName: b.name,
+          yaw: yawAB, pitch: DEFAULT_PITCH,
+          label: labelB,
+          doorwayDescription: doorAB?.leads_to || `Leads to ${labelB}`,
+        })
+      }
 
       // Back: B → A — use first detected doorway in B, or flip the forward yaw
       const doorBA = analysisB?.doorways?.[0]
       const yawBA = doorBA ? Math.round((doorBA.position_pct / 100 - 0.5) * 360) : oppositeYaw(yawAB)
-      suggestions.push({
-        fromSceneId: b.id, fromSceneName: b.name,
-        toSceneId: a.id,   toSceneName: a.name,
-        yaw: yawBA, pitch: DEFAULT_PITCH,
-        label: labelA,
-        doorwayDescription: doorBA?.leads_to || `Back to ${labelA}`,
-      })
+      if (!linkedPairs.has(`${b.id}:${a.id}`)) {
+        suggestions.push({
+          fromSceneId: b.id, fromSceneName: b.name,
+          toSceneId: a.id,   toSceneName: a.name,
+          yaw: yawBA, pitch: DEFAULT_PITCH,
+          label: labelA,
+          doorwayDescription: doorBA?.leads_to || `Back to ${labelA}`,
+        })
+      }
     }
 
     // Suggest renaming scenes that still have default "Scene N" names

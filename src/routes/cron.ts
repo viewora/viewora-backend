@@ -56,10 +56,10 @@ export default async function cronRoutes(fastify: FastifyInstance) {
 
     // Find which of those users have at least one published space
     const { data: publishedSpaces } = await fastify.supabase
-      .from('spaces')
+      .from('properties')
       .select('user_id')
       .in('user_id', userIds)
-      .eq('status', 'published')
+      .eq('is_published', true)
 
     const publishedUserIds = new Set((publishedSpaces || []).map(s => s.user_id))
     const unpublishedProfiles = profiles.filter(p => !publishedUserIds.has(p.id))
@@ -155,7 +155,7 @@ export default async function cronRoutes(fastify: FastifyInstance) {
     // Fetch leads with their space's owner info
     const { data: leads, error } = await fastify.supabase
       .from('leads')
-      .select('name, email, spaces(user_id, name)')
+      .select('name, email, properties!property_id(user_id, title)')
       .gte('created_at', periodStart.toISOString())
       .lte('created_at', periodEnd.toISOString())
 
@@ -172,13 +172,13 @@ export default async function cronRoutes(fastify: FastifyInstance) {
     // Group leads by space owner
     const byOwner = new Map<string, Array<{ leadName: string; leadEmail: string; spaceName: string }>>()
     for (const lead of leads) {
-      const space = (lead as any).spaces
+      const space = (lead as any).properties
       if (!space?.user_id) continue
       if (!byOwner.has(space.user_id)) byOwner.set(space.user_id, [])
       byOwner.get(space.user_id)!.push({
         leadName: lead.name,
         leadEmail: lead.email,
-        spaceName: space.name || 'Unnamed tour',
+        spaceName: space.title || 'Unnamed tour',
       })
     }
 

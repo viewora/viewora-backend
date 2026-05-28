@@ -37,6 +37,10 @@ const updateSpaceBodySchema = z.object({
   space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'other']).optional(),
   lead_form_enabled: z.boolean().optional(),
   branding_enabled: z.boolean().optional(),
+  cta_enabled: z.boolean().optional(),
+  cta_button_text: z.string().max(80).nullable().optional(),
+  cta_action: z.enum(['link', 'email', 'phone']).nullable().optional(),
+  cta_destination: z.string().max(2048).nullable().optional(),
 })
 
 const updateSettingsBodySchema = z.object({
