@@ -11,6 +11,11 @@ const TILE_SIZE = 512
 const TEMP_DIR  = process.env.TEMP_DIR ?? '/tmp/viewora-tiles'
 const BATCH     = 5
 
+function nextPowerOfTwo(n: number): number {
+  if (n <= 1) return 1
+  return Math.pow(2, Math.ceil(Math.log2(n)))
+}
+
 export async function processTileScene(
   s3: S3Client,
   supabase: any,
@@ -118,8 +123,13 @@ export async function processTileScene(
       return
     }
 
-    const cols = Math.ceil(imgW / TILE_SIZE)
-    const rows = Math.ceil(imgH / TILE_SIZE)
+    // PSV EquirectangularTilesAdapter requires cols and rows to be powers of 2.
+    // We snap up to the next power of 2, then compute even tile dimensions so
+    // every tile fits the grid without fractional pixels.
+    const cols  = nextPowerOfTwo(Math.ceil(imgW / TILE_SIZE))
+    const rows  = nextPowerOfTwo(Math.ceil(imgH / TILE_SIZE))
+    const tileW = Math.ceil(imgW / cols)
+    const tileH = Math.ceil(imgH / rows)
 
     // Load image once — each job clones to avoid re-reading the file
     const image = sharp(cleanPath)
@@ -127,10 +137,10 @@ export async function processTileScene(
     const tileJobs: Array<() => Promise<void>> = []
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
-        const left = col * TILE_SIZE
-        const top  = row * TILE_SIZE
-        const w    = Math.min(TILE_SIZE, imgW - left)
-        const h    = Math.min(TILE_SIZE, imgH - top)
+        const left = col * tileW
+        const top  = row * tileH
+        const w    = Math.min(tileW, imgW - left)
+        const h    = Math.min(tileH, imgH - top)
         const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles/${col}_${row}.webp`
 
         tileJobs.push(async () => {
@@ -163,7 +173,7 @@ export async function processTileScene(
     }
 
     // 5. Upload tiles in parallel batches of BATCH
-    console.log(`[TILE] Uploading ${tileJobs.length} tiles (${cols}×${rows}) for scene ${sceneId}`)
+    console.log(`[TILE] Uploading ${tileJobs.length} tiles (${cols}×${rows} grid, ${tileW}×${tileH}px each) for scene ${sceneId}`)
     for (let i = 0; i < tileJobs.length; i += BATCH) {
       await Promise.all(tileJobs.slice(i, i + BATCH).map(fn => fn()))
     }

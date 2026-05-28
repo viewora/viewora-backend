@@ -13,14 +13,14 @@ export default async function (fastify: FastifyInstance) {
       console.log('🔄 Maintenance: Updating plan upload limits...')
       const { data, error } = await fastify.supabase
         .from('plans')
-        .update({ max_upload_bytes: 15728640 }) // 15MB
-        .lt('max_upload_bytes', 15728640)
+        .update({ max_upload_bytes: 209715200 }) // 200MB
+        .lt('max_upload_bytes', 209715200)
 
       if (error) {
         throw error
       }
 
-      return reply.send({ success: true, message: 'Plan limits synchronized to 15MB' })
+      return reply.send({ success: true, message: 'Plan limits synchronized to 200MB' })
     } catch (err: any) {
       return reply.code(500).send({ success: false, error: err.message })
     }

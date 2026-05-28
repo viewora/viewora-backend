@@ -97,7 +97,7 @@ export default async function (fastify: FastifyInstance) {
 
     // Per-file size limit
     if (!checkFileSizeLimit(plan, Number(fileSize))) {
-      const mbLimit = Math.round(Number(plan.max_upload_bytes || 15728640) / 1048576)
+      const mbLimit = Math.round(Number(plan.max_upload_bytes || 262144000) / 1048576)
       return reply.code(413).send({ statusMessage: `File too large. Your plan allows up to ${mbLimit} MB per upload.` })
     }
 
