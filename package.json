@@ -8,7 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "worker": "tsx src/worker.ts",
-    "worker:prod": "node --max-old-space-size=512 dist/worker.js",
+    "worker:prod": "node --max-old-space-size=768 dist/worker.js",
     "test": "tsx --test src/tests/**/*.test.ts"
   },
   "keywords": [],

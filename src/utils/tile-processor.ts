@@ -7,9 +7,11 @@ import path from 'path'
 import fs from 'fs/promises'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 
-const TILE_SIZE = 512
-const TEMP_DIR  = process.env.TEMP_DIR ?? '/tmp/viewora-tiles'
-const BATCH     = 5
+const TILE_SIZE  = 512
+const TEMP_DIR   = process.env.TEMP_DIR ?? '/tmp/viewora-tiles'
+const BATCH      = 10
+const MAX_WIDTH  = 12288
+const MAX_HEIGHT = 6144
 
 function nextPowerOfTwo(n: number): number {
   if (n <= 1) return 1
@@ -65,7 +67,7 @@ export async function processTileScene(
 
     // 1. Download raw image (60s timeout)
     const dlController = new AbortController()
-    const dlTimeout = setTimeout(() => dlController.abort(), 60_000)
+    const dlTimeout = setTimeout(() => dlController.abort(), 120_000)
     try {
       console.log(`[TILE] >>> STEP 2: Downloading raw image from ${rawImageUrl}`);
       const res = await fetch(rawImageUrl, { signal: dlController.signal })
@@ -133,6 +135,18 @@ export async function processTileScene(
     const MIN_WIDTH = 200
     if (imgW < MIN_WIDTH) {
       console.warn(`[TILE] Scene ${sceneId} rejected: source image is ${imgW}×${imgH}px (minimum width ${MIN_WIDTH}px for a usable 360° panorama)`)
+      const storageKey = new URL(rawImageUrl).pathname.replace(/^\//, '')
+      await Promise.all([
+        supabase.from('scenes').update({ status: 'failed' }).eq('id', sceneId),
+        storageKey
+          ? supabase.from('property_media').update({ processing_status: 'failed' }).eq('storage_key', storageKey)
+          : Promise.resolve(),
+      ])
+      return
+    }
+
+    if (imgW > MAX_WIDTH || imgH > MAX_HEIGHT) {
+      console.warn(`[TILE] Scene ${sceneId} rejected: image ${imgW}×${imgH}px exceeds max ${MAX_WIDTH}×${MAX_HEIGHT}px`)
       const storageKey = new URL(rawImageUrl).pathname.replace(/^\//, '')
       await Promise.all([
         supabase.from('scenes').update({ status: 'failed' }).eq('id', sceneId),
