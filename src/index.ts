@@ -167,17 +167,13 @@ fastify.register(s3Plugin)
 
 process.stdout.write('📦 Registering health check route...\n')
 fastify.get('/health', async () => {
-  process.stdout.write('💓 Health check requested\n')
   let redisStatus: 'connected' | 'unavailable' | 'disabled' = 'disabled'
   if (fastify.redis) {
     redisStatus = await fastify.redis.ping()
       .then(() => 'connected' as const)
       .catch(() => 'unavailable' as const)
   }
-  const dbStatus = await fastify.supabase
-    .from('properties').select('id').limit(1)
-    .then(() => 'connected' as const, () => 'unavailable' as const)
-  return { status: 'ok', service: 'Viewora API', redis: redisStatus, db: dbStatus }
+  return { status: 'ok', service: 'Viewora API', redis: redisStatus }
 })
 
 process.stdout.write('📦 Registering rate limit...\n')
@@ -342,14 +338,13 @@ fastify.get('/', async () => {
   }
 })
 
-// Prometheus metrics endpoint — restrict to internal/Railway health probes
+// Prometheus metrics endpoint — requires METRICS_TOKEN; returns 404 if unset (no token = not configured)
 fastify.get('/metrics', async (request, reply) => {
   const allowedToken = process.env.METRICS_TOKEN
-  if (allowedToken) {
-    const authHeader = request.headers.authorization
-    if (!authHeader || authHeader !== `Bearer ${allowedToken}`) {
-      return reply.code(401).send({ error: 'Unauthorized' })
-    }
+  if (!allowedToken) return reply.code(404).send()
+  const authHeader = request.headers.authorization
+  if (!authHeader || authHeader !== `Bearer ${allowedToken}`) {
+    return reply.code(401).send({ error: 'Unauthorized' })
   }
   reply.header('Content-Type', 'text/plain; version=0.0.4')
   return getMetrics()
@@ -424,11 +419,13 @@ const start = async () => {
     const CLEANUP_INTERVAL_MS: Record<string, number> = {
       'cleanup-failed-media': 24 * 60 * 60 * 1000,
       'cleanup-orphan-media': 7 * 24 * 60 * 60 * 1000,
+      'cleanup-stale-pending-uploads': 6 * 60 * 60 * 1000,
     }
 
     const CLEANUP_LOCK_TTL_S: Record<string, number> = {
       'cleanup-failed-media': 23 * 60 * 60,
       'cleanup-orphan-media': 6 * 24 * 60 * 60 + 23 * 60 * 60,
+      'cleanup-stale-pending-uploads': 5 * 60 * 60 + 50 * 60,
     }
 
     const cleanupIntervals: NodeJS.Timeout[] = []

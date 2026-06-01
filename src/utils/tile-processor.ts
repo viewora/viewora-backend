@@ -92,7 +92,7 @@ export async function processTileScene(
     console.log(`[TILE] >>> STEP 6: Generating thumbnail...`);
     await sharp(cleanPath)
       .resize(2048, 1024, { fit: 'cover', withoutEnlargement: true })
-      .jpeg({ quality: 85, progressive: true })
+      .jpeg({ quality: 92, progressive: true })
       .toFile(thumbPath)
     console.log(`[TILE] >>> STEP 7: Thumbnail generated`);
 
@@ -167,7 +167,7 @@ export async function processTileScene(
           const buf = await image
             .clone()
             .extract({ left, top, width: w, height: h })
-            .webp({ quality: 82 })
+            .webp({ quality: 90 })
             .toBuffer()
           // Retry up to 3 times with exponential backoff so a single R2 blip
           // doesn't force a full re-tile of all 72+ tiles.

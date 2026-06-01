@@ -5,10 +5,11 @@
     "buildCommand": "npm run build"
   },
   "deploy": {
+    "startCommand": "node --max-old-space-size=400 dist/index.js",
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 300,
-    "restartPolicyType": "NEVER",
-    "drainingSeconds": 60,
+    "healthcheckTimeout": 60,
+    "restartPolicyType": "ON_FAILURE",
+    "drainingSeconds": 30,
     "overlapSeconds": 0,
     "sleepApplication": false
   }

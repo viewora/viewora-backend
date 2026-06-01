@@ -20,6 +20,29 @@ export interface QuotaContext {
 }
 
 export async function checkUserQuota(fastify: FastifyInstance, userId: string): Promise<QuotaContext> {
+  // Read from the billing:status Redis cache (same key written by GET /billing/status,
+  // invalidated by billing webhooks and space create/delete). Avoids 2 DB queries on
+  // every upload, space create, publish, and dashboard load.
+  const redis = (fastify as any).redis as ReturnType<typeof import('redis').createClient> | null
+  if (redis) {
+    try {
+      const cached = await redis.get(`billing:status:${userId}`)
+      if (cached) {
+        const { subscription: sub, plan } = JSON.parse(cached) as { subscription: any; plan: any }
+        if (plan) {
+          const status = sub?.status as SubStatus | undefined
+          let effectiveStatus = status
+          if (status === 'grace_period' && sub?.grace_period_ends_at) {
+            if (new Date(sub.grace_period_ends_at) < new Date()) effectiveStatus = 'expired' as SubStatus
+          }
+          const canWrite = effectiveStatus ? (ACTIVE_STATUSES as readonly string[]).includes(effectiveStatus) : true
+          const isGrace = effectiveStatus ? (GRACE_STATUSES as readonly string[]).includes(effectiveStatus) : false
+          return { plan, subscription: sub || null, canWrite, isGrace, isFree: !sub }
+        }
+      }
+    } catch { /* fall through to DB */ }
+  }
+
   const { data: sub, error: subError } = await fastify.supabase
     .from('subscriptions')
     .select('*, plans(*)')
