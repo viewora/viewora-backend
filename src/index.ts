@@ -420,12 +420,14 @@ const start = async () => {
       'cleanup-failed-media': 24 * 60 * 60 * 1000,
       'cleanup-orphan-media': 7 * 24 * 60 * 60 * 1000,
       'cleanup-stale-pending-uploads': 6 * 60 * 60 * 1000,
+      'recover-stuck-scenes': 10 * 60 * 1000,
     }
 
     const CLEANUP_LOCK_TTL_S: Record<string, number> = {
       'cleanup-failed-media': 23 * 60 * 60,
       'cleanup-orphan-media': 6 * 24 * 60 * 60 + 23 * 60 * 60,
       'cleanup-stale-pending-uploads': 5 * 60 * 60 + 50 * 60,
+      'recover-stuck-scenes': 8 * 60,
     }
 
     const cleanupIntervals: NodeJS.Timeout[] = []
