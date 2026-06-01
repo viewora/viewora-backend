@@ -238,11 +238,14 @@ export default async function (fastify: FastifyInstance) {
       }
     }
 
-    // Enforce per-file size limit against the R2-verified size.
-    // The presigned URL omits ContentLength so a client can upload more than
-    // declared and bypass the pre-upload check — this closes that gap.
+    // Enforce per-file size limit and storage quota against the R2-verified size.
+    // Fetch plan once here and pass it through to avoid redundant DB calls below.
+    // The presigned URL omits ContentLength so a client can upload more bytes than
+    // declared and bypass the pre-upload checks — this closes that gap.
+    let verifiedPlan: Record<string, any> | null = null
     if (verifiedFileSize) {
       const { plan } = await checkUserQuota(fastify, userId)
+      verifiedPlan = plan
       if (!checkFileSizeLimit(plan, verifiedFileSize)) {
         const mbLimit = Math.round(Number(plan.max_upload_bytes || 262144000) / 1048576)
         if (bucketName) {
@@ -302,6 +305,11 @@ export default async function (fastify: FastifyInstance) {
         }
         request.log.info({ userId, mediaId: promoted.id, objectKey }, 'Promoted pending_upload placeholder to pending')
         if (verifiedFileSize) {
+          const hasSpace = await checkStorageQuota(fastify, userId, verifiedFileSize, verifiedPlan ?? undefined)
+          if (!hasSpace) {
+            await fastify.supabase.from('property_media').delete().eq('id', promoted.id)
+            return reply.code(403).send({ statusMessage: 'Storage limit reached. Please upgrade your plan.' })
+          }
           await fastify.supabase.rpc('increment_storage_usage', { u_id: userId, bytes: verifiedFileSize })
         }
         if (finalId) scheduleMediaProcessing(fastify, promoted.id, finalId, userId, objectKey)
@@ -353,8 +361,17 @@ export default async function (fastify: FastifyInstance) {
 
     request.log.info({ userId, mediaId: media.id, size: verifiedFileSize, spaceId: finalId }, 'Completed media metadata R2 sync securely')
 
-    // 4. Update storage counter via RPC (uses R2-verified size, not client-reported)
+    // 4. Update storage counter via RPC (uses R2-verified size, not client-reported).
+    // Re-check quota here with the real size — the pre-upload check used the declared size.
     if (verifiedFileSize) {
+      const hasSpace = await checkStorageQuota(fastify, userId, verifiedFileSize, verifiedPlan ?? undefined)
+      if (!hasSpace) {
+        await fastify.supabase.from('property_media').delete().eq('id', media.id)
+        if (bucketName) {
+          await fastify.s3.send(new DeleteObjectCommand({ Bucket: bucketName, Key: objectKey })).catch(() => {})
+        }
+        return reply.code(403).send({ statusMessage: 'Storage limit reached. Please upgrade your plan.' })
+      }
       await fastify.supabase.rpc('increment_storage_usage', { u_id: userId, bytes: verifiedFileSize })
     }
 
