@@ -238,6 +238,20 @@ export default async function (fastify: FastifyInstance) {
       }
     }
 
+    // Enforce per-file size limit against the R2-verified size.
+    // The presigned URL omits ContentLength so a client can upload more than
+    // declared and bypass the pre-upload check — this closes that gap.
+    if (verifiedFileSize) {
+      const { plan } = await checkUserQuota(fastify, userId)
+      if (!checkFileSizeLimit(plan, verifiedFileSize)) {
+        const mbLimit = Math.round(Number(plan.max_upload_bytes || 262144000) / 1048576)
+        if (bucketName) {
+          await fastify.s3.send(new DeleteObjectCommand({ Bucket: bucketName, Key: objectKey })).catch(() => {})
+        }
+        return reply.code(413).send({ statusMessage: `File too large. Your plan allows up to ${mbLimit} MB per upload.` })
+      }
+    }
+
     // 1. Verify Space Ownership
     const { data: space, error: spaceErr } = await fastify.supabase
       .from('properties')
