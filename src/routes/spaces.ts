@@ -290,10 +290,10 @@ export default async function (fastify: FastifyInstance) {
       }
     }
 
-    // 3b. Cleanup R2 — scene tile directories (thumbnail + all tile files)
+    // 3b. Cleanup R2 — scene tile directories (thumbnail + all tile files), all scenes in parallel
     if (bucketName && sceneItems && sceneItems.length > 0) {
       const { ListObjectsV2Command } = await import('@aws-sdk/client-s3')
-      for (const scene of sceneItems) {
+      await Promise.all(sceneItems.map(async (scene) => {
         const prefix = `spaces/${id}/scenes/${scene.id}/`
         try {
           const listed = await fastify.s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: prefix }))
@@ -304,7 +304,7 @@ export default async function (fastify: FastifyInstance) {
         } catch (err) {
           fastify.log.error(err, `Failed to delete scene tiles for scene ${scene.id}`)
         }
-      }
+      }))
     }
 
     // 4. Update Quotas

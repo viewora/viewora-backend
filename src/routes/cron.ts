@@ -20,6 +20,23 @@ function verifyCronSecret(secret: string | string[] | undefined): boolean {
   }
 }
 
+/** Single RPC replaces N sequential getUserById calls */
+async function batchGetUsers(
+  fastify: FastifyInstance,
+  userIds: string[],
+): Promise<Map<string, { email: string; name: string | null }>> {
+  if (!userIds.length) return new Map()
+  const { data, error } = await fastify.supabase.rpc('get_users_by_ids', { user_ids: userIds })
+  if (error) {
+    fastify.log.error({ error: error.message }, 'batchGetUsers RPC failed')
+    return new Map()
+  }
+  return new Map(
+    (data as Array<{ id: string; email: string; full_name: string | null }>)
+      .map(u => [u.id, { email: u.email, name: u.full_name ?? null }])
+  )
+}
+
 export default async function cronRoutes(fastify: FastifyInstance) {
 
   // POST /cron/nudge
@@ -35,7 +52,6 @@ export default async function cronRoutes(fastify: FastifyInstance) {
     const eightDaysAgo = new Date()
     eightDaysAgo.setDate(eightDaysAgo.getDate() - 8)
 
-    // Find users created in the 7-day window who have no published spaces
     const { data: profiles, error } = await fastify.supabase
       .from('profiles')
       .select('id, full_name')
@@ -54,7 +70,6 @@ export default async function cronRoutes(fastify: FastifyInstance) {
 
     const userIds = profiles.map(p => p.id)
 
-    // Find which of those users have at least one published space
     const { data: publishedSpaces } = await fastify.supabase
       .from('properties')
       .select('user_id')
@@ -69,14 +84,14 @@ export default async function cronRoutes(fastify: FastifyInstance) {
       return reply.send({ sent: 0 })
     }
 
-    // Fetch emails from auth admin
+    const userMap = await batchGetUsers(fastify, unpublishedProfiles.map(p => p.id))
+
     let sent = 0
     for (const profile of unpublishedProfiles) {
       try {
-        const { data: authUser } = await fastify.supabase.auth.admin.getUserById(profile.id)
-        const email = (authUser as any)?.user?.email as string | undefined
-        if (!email) continue
-        await sendNoPublishNudgeEmail({ ownerEmail: email, name: profile.full_name })
+        const user = userMap.get(profile.id)
+        if (!user?.email) continue
+        await sendNoPublishNudgeEmail({ ownerEmail: user.email, name: profile.full_name })
         sent++
       } catch (err) {
         fastify.log.error(err, `cron/nudge: failed for user ${profile.id}`)
@@ -89,7 +104,6 @@ export default async function cronRoutes(fastify: FastifyInstance) {
 
   // POST /cron/expiry-reminder
   // Schedule: daily at 09:00 UTC
-  // Sends a reminder to users whose plan expires in exactly 7 days
   fastify.post('/cron/expiry-reminder', async (req, reply) => {
     if (!verifyCronSecret(req.headers['x-cron-secret'])) {
       return reply.code(401).send({ statusMessage: 'Unauthorized' })
@@ -117,19 +131,19 @@ export default async function cronRoutes(fastify: FastifyInstance) {
       return reply.send({ sent: 0 })
     }
 
+    const userMap = await batchGetUsers(fastify, subs.map(s => s.user_id))
+
     let sent = 0
     for (const sub of subs) {
       try {
-        const { data: authUser } = await fastify.supabase.auth.admin.getUserById(sub.user_id)
-        const email = (authUser as any)?.user?.email as string | undefined
-        const name = (authUser as any)?.user?.user_metadata?.full_name || null
-        if (!email) continue
+        const user = userMap.get(sub.user_id)
+        if (!user?.email) continue
 
         const expiresAt = new Date(sub.current_period_end)
         const daysLeft = Math.round((expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
         const planName = (sub as any).plans?.name || 'Premium'
 
-        await sendPlanExpiryReminderEmail({ ownerEmail: email, name, planName, expiresAt, daysLeft })
+        await sendPlanExpiryReminderEmail({ ownerEmail: user.email, name: user.name, planName, expiresAt, daysLeft })
         sent++
       } catch (err) {
         fastify.log.error(err, `cron/expiry-reminder: failed for user ${sub.user_id}`)
@@ -142,7 +156,6 @@ export default async function cronRoutes(fastify: FastifyInstance) {
 
   // POST /cron/weekly-digest
   // Schedule: every Monday at 08:00 UTC
-  // Sends each user a summary of leads received in the past 7 days
   fastify.post('/cron/weekly-digest', async (req, reply) => {
     if (!verifyCronSecret(req.headers['x-cron-secret'])) {
       return reply.code(401).send({ statusMessage: 'Unauthorized' })
@@ -152,7 +165,6 @@ export default async function cronRoutes(fastify: FastifyInstance) {
     const periodStart = new Date()
     periodStart.setDate(periodStart.getDate() - 7)
 
-    // Fetch leads with their space's owner info
     const { data: leads, error } = await fastify.supabase
       .from('leads')
       .select('name, email, properties!property_id(user_id, title)')
@@ -169,7 +181,6 @@ export default async function cronRoutes(fastify: FastifyInstance) {
       return reply.send({ sent: 0 })
     }
 
-    // Group leads by space owner
     const byOwner = new Map<string, Array<{ leadName: string; leadEmail: string; spaceName: string }>>()
     for (const lead of leads) {
       const space = (lead as any).properties
@@ -182,15 +193,14 @@ export default async function cronRoutes(fastify: FastifyInstance) {
       })
     }
 
+    const userMap = await batchGetUsers(fastify, Array.from(byOwner.keys()))
+
     let sent = 0
     for (const [userId, userLeads] of byOwner) {
       try {
-        const { data: authUser } = await fastify.supabase.auth.admin.getUserById(userId)
-        const email = (authUser as any)?.user?.email as string | undefined
-        const name = (authUser as any)?.user?.user_metadata?.full_name || null
-        if (!email) continue
-
-        await sendWeeklyLeadDigestEmail({ ownerEmail: email, name, leads: userLeads, periodStart, periodEnd })
+        const user = userMap.get(userId)
+        if (!user?.email) continue
+        await sendWeeklyLeadDigestEmail({ ownerEmail: user.email, name: user.name, leads: userLeads, periodStart, periodEnd })
         sent++
       } catch (err) {
         fastify.log.error(err, `cron/weekly-digest: failed for user ${userId}`)
@@ -203,13 +213,11 @@ export default async function cronRoutes(fastify: FastifyInstance) {
 
   // POST /cron/limit-warning
   // Schedule: daily at 10:00 UTC
-  // Warns users who are at ≥80% of their plan's tour or storage quota
   fastify.post('/cron/limit-warning', async (req, reply) => {
     if (!verifyCronSecret(req.headers['x-cron-secret'])) {
       return reply.code(401).send({ statusMessage: 'Unauthorized' })
     }
 
-    // Fetch all usage counters joined with subscriptions + plans
     const { data: rows, error } = await fastify.supabase
       .from('usage_counters')
       .select('user_id, active_properties_count, storage_used_bytes, subscriptions!inner(plan_id, status, plans!inner(name, max_active_properties, max_storage_bytes))')
@@ -222,44 +230,50 @@ export default async function cronRoutes(fastify: FastifyInstance) {
 
     if (!rows?.length) return reply.send({ sent: 0 })
 
-    let sent = 0
+    // Filter to users at ≥80% capacity and not recently warned before fetching emails
+    const eligible: typeof rows = []
     for (const row of rows) {
+      const sub = (row as any).subscriptions
+      const plan = sub?.plans
+      if (!plan) continue
+
+      const tourPct = plan.max_active_properties > 0 ? (row.active_properties_count || 0) / plan.max_active_properties : 0
+      const storagePct = Number(plan.max_storage_bytes) > 0 ? Number(row.storage_used_bytes || 0) / Number(plan.max_storage_bytes) : 0
+      if (tourPct < 0.8 && storagePct < 0.8) continue
+
+      if (fastify.redis) {
+        const recent = await fastify.redis.get(`limit_warn:${row.user_id}`).catch(() => null)
+        if (recent) continue
+      }
+      eligible.push(row)
+    }
+
+    if (!eligible.length) return reply.send({ sent: 0 })
+
+    const userMap = await batchGetUsers(fastify, eligible.map(r => r.user_id))
+
+    let sent = 0
+    for (const row of eligible) {
       try {
+        const user = userMap.get(row.user_id)
+        if (!user?.email) continue
+
         const sub = (row as any).subscriptions
         const plan = sub?.plans
-        if (!plan) continue
-
         const toursUsed: number = row.active_properties_count || 0
         const toursMax: number = plan.max_active_properties || 0
         const storageUsed: number = Number(row.storage_used_bytes || 0)
         const storageMax: number = Number(plan.max_storage_bytes || 0)
 
-        const tourPct = toursMax > 0 ? (toursUsed / toursMax) : 0
-        const storagePct = storageMax > 0 ? (storageUsed / storageMax) : 0
-
-        if (tourPct < 0.8 && storagePct < 0.8) continue
-
-        // Throttle: skip if warned in the last 7 days
-        const warnKey = `limit_warn:${row.user_id}`
-        if (fastify.redis) {
-          const recent = await fastify.redis.get(warnKey).catch(() => null)
-          if (recent) continue
-        }
-
-        const { data: authUser } = await fastify.supabase.auth.admin.getUserById(row.user_id)
-        const email = (authUser as any)?.user?.email as string | undefined
-        const name = (authUser as any)?.user?.user_metadata?.full_name || null
-        if (!email) continue
-
         await sendLimitWarningEmail({
-          ownerEmail: email, name,
+          ownerEmail: user.email, name: user.name,
           planName: plan.name,
           toursUsed, toursMax,
           storageUsedBytes: storageUsed, storageMaxBytes: storageMax,
         })
 
         if (fastify.redis) {
-          await fastify.redis.set(warnKey, '1', { EX: 60 * 60 * 24 * 7 }).catch(() => {})
+          await fastify.redis.set(`limit_warn:${row.user_id}`, '1', { EX: 60 * 60 * 24 * 7 }).catch(() => {})
         }
         sent++
       } catch (err) {
@@ -272,38 +286,34 @@ export default async function cronRoutes(fastify: FastifyInstance) {
   })
 
   // POST /cron/monthly-report
-  // Schedule: 1st of each month at 08:00 UTC — `0 8 1 * *`
-  // Sends each user their previous month's views + leads summary
+  // Schedule: 1st of each month at 08:00 UTC
   fastify.post('/cron/monthly-report', async (req, reply) => {
     if (!verifyCronSecret(req.headers['x-cron-secret'])) {
       return reply.code(401).send({ statusMessage: 'Unauthorized' })
     }
 
-    // Previous calendar month
     const now = new Date()
     const monthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
     const monthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59)
     const monthLabel = monthStart.toLocaleDateString('en-KE', { month: 'long', year: 'numeric' })
 
-    // Pull analytics_daily for the month, with property owner info
-    const { data: analyticsRows, error: analyticsErr } = await fastify.supabase
-      .from('analytics_daily')
-      .select('property_id, total_views, properties!inner(user_id, title)')
-      .gte('date', monthStart.toISOString().split('T')[0])
-      .lte('date', monthEnd.toISOString().split('T')[0])
+    const [{ data: analyticsRows, error: analyticsErr }, { data: leadRows, error: leadsErr }] = await Promise.all([
+      fastify.supabase
+        .from('analytics_daily')
+        .select('property_id, total_views, properties!inner(user_id, title)')
+        .gte('date', monthStart.toISOString().split('T')[0])
+        .lte('date', monthEnd.toISOString().split('T')[0]),
+      fastify.supabase
+        .from('leads')
+        .select('property_id, properties!inner(user_id)')
+        .gte('created_at', monthStart.toISOString())
+        .lte('created_at', monthEnd.toISOString()),
+    ])
 
     if (analyticsErr) {
       fastify.log.error(analyticsErr, 'cron/monthly-report: analytics query failed')
       return reply.code(500).send({ statusMessage: 'Query failed' })
     }
-
-    // Pull leads for the month
-    const { data: leadRows, error: leadsErr } = await fastify.supabase
-      .from('leads')
-      .select('property_id, properties!inner(user_id)')
-      .gte('created_at', monthStart.toISOString())
-      .lte('created_at', monthEnd.toISOString())
-
     if (leadsErr) {
       fastify.log.error(leadsErr, 'cron/monthly-report: leads query failed')
       return reply.code(500).send({ statusMessage: 'Query failed' })
@@ -314,7 +324,6 @@ export default async function cronRoutes(fastify: FastifyInstance) {
       return reply.send({ sent: 0 })
     }
 
-    // Aggregate by user → by property
     type TourAgg = { name: string; views: number; leads: number }
     const byUser = new Map<string, Map<string, TourAgg>>()
 
@@ -338,19 +347,19 @@ export default async function cronRoutes(fastify: FastifyInstance) {
       tourMap.set(row.property_id, existing)
     }
 
+    const userMap = await batchGetUsers(fastify, Array.from(byUser.keys()))
+
     let sent = 0
     for (const [userId, tourMap] of byUser) {
       try {
-        const { data: authUser } = await fastify.supabase.auth.admin.getUserById(userId)
-        const email = (authUser as any)?.user?.email as string | undefined
-        const name = (authUser as any)?.user?.user_metadata?.full_name || null
-        if (!email) continue
+        const user = userMap.get(userId)
+        if (!user?.email) continue
 
         const tours = Array.from(tourMap.values()).sort((a, b) => b.views - a.views)
         const totalViews = tours.reduce((s, t) => s + t.views, 0)
         const totalLeads = tours.reduce((s, t) => s + t.leads, 0)
 
-        await sendMonthlyReportEmail({ ownerEmail: email, name, monthLabel, totalViews, totalLeads, topTours: tours })
+        await sendMonthlyReportEmail({ ownerEmail: user.email, name: user.name, monthLabel, totalViews, totalLeads, topTours: tours })
         sent++
       } catch (err) {
         fastify.log.error(err, `cron/monthly-report: failed for user ${userId}`)

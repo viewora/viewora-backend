@@ -92,6 +92,10 @@ async function processUploadJob(job: any) {
     return
   }
 
+  if (job.name !== 'process-media') {
+    throw new Error(`Unknown job type '${job.name}' — add a handler in worker.ts`)
+  }
+
   const { mediaId, spaceId, userId, objectKey } = job.data as ProcessMediaJob
   const jobId = job.id
   const attempt = job.attemptsMade + 1

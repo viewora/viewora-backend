@@ -1,11 +1,18 @@
 import { FastifyInstance } from 'fastify'
+import { timingSafeEqual } from 'crypto'
 
 export default async function (fastify: FastifyInstance) {
   fastify.get('/sync-limits', async (request, reply) => {
     // Key is passed in x-maintenance-key header (never in URL — would appear in server logs)
     const key = (request.headers['x-maintenance-key'] as string | undefined) ?? ''
     const expectedKey = process.env.MAINTENANCE_KEY
-    if (!expectedKey || key !== expectedKey) {
+    let authorized = false
+    try {
+      if (expectedKey && key.length === expectedKey.length) {
+        authorized = timingSafeEqual(Buffer.from(key), Buffer.from(expectedKey))
+      }
+    } catch { authorized = false }
+    if (!authorized) {
       return reply.code(403).send({ error: 'Unauthorized' })
     }
 
