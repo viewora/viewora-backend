@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify'
+import { DeleteObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from '@aws-sdk/client-s3'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { invalidateCacheBySceneId, invalidateSpaceCache } from '../utils/cache.js'
@@ -191,12 +192,22 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     const { data: scene } = await fastify.supabase
       .from('scenes')
-      .select('id, space_id, properties!inner(user_id)')
+      .select('id, space_id, raw_image_url, properties!inner(user_id)')
       .eq('id', params.sceneId)
       .eq('properties.user_id', userId)
       .single()
 
     if (!scene) return reply.code(404).send({ statusMessage: 'Scene not found' })
+
+    // Find the associated property_media record before deleting so we can free storage
+    const { data: mediaRecord } = scene.raw_image_url
+      ? await fastify.supabase
+          .from('property_media')
+          .select('id, storage_key, file_size_bytes')
+          .eq('property_id', scene.space_id)
+          .eq('public_url', scene.raw_image_url)
+          .maybeSingle()
+      : { data: null }
 
     // Count cross-scene nav arrows that will be removed by the CASCADE before deleting
     const { count: removedLinks } = await fastify.supabase
@@ -208,6 +219,41 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     if (deleteError) {
       fastify.log.error(deleteError, 'Failed to delete scene')
       return reply.code(500).send({ statusMessage: 'Failed to delete scene from database' })
+    }
+
+    // Delete the property_media record and decrement storage counter
+    if (mediaRecord) {
+      await fastify.supabase.from('property_media').delete().eq('id', mediaRecord.id)
+      if (mediaRecord.file_size_bytes) {
+        await fastify.supabase.rpc('decrement_storage_usage', { u_id: userId, bytes: Number(mediaRecord.file_size_bytes) })
+      }
+    }
+
+    // Clean up R2: tiles directory + original panorama (best-effort)
+    const bucketName = process.env.R2_BUCKET_NAME
+    if (bucketName) {
+      const tilesPrefix = `spaces/${scene.space_id}/scenes/${params.sceneId}/`
+      try {
+        const listed = await fastify.s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: tilesPrefix }))
+        const objects = (listed.Contents ?? []).filter(o => o.Key).map(o => ({ Key: o.Key as string }))
+        if (objects.length > 0) {
+          await fastify.s3.send(new DeleteObjectsCommand({ Bucket: bucketName, Delete: { Objects: objects } }))
+        }
+      } catch (err) {
+        fastify.log.error(err, `Failed to delete R2 tiles for scene ${params.sceneId}`)
+      }
+      if (mediaRecord?.storage_key) {
+        try {
+          await fastify.s3.send(new DeleteObjectCommand({ Bucket: bucketName, Key: mediaRecord.storage_key }))
+        } catch (err) {
+          fastify.log.error(err, `Failed to delete R2 panorama for scene ${params.sceneId}`)
+        }
+      }
+    }
+
+    // Bust billing cache so next quota check sees the freed storage
+    if ((fastify as any).redis) {
+      await (fastify as any).redis.del(`billing:status:${userId}`).catch(() => {})
     }
 
     // Resequence order_index for remaining scenes in the space so there are no gaps
