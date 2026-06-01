@@ -293,6 +293,56 @@ export const stalePendingUploadCleanupTask: CleanupTask = {
 }
 
 /**
+ * Re-queue process-media jobs for property_media stuck in 'pending' for >10 minutes.
+ * Covers worker crashes where the EXIF-strip job was lost from the queue.
+ * Runs every 10 minutes.
+ */
+export const stuckMediaRecoveryTask: CleanupTask = {
+  name: 'recover-stuck-media',
+  schedule: '*/10 * * * *',
+  execute: async (fastify: FastifyInstance) => {
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+
+    const { data: stuckMedia, error } = await fastify.supabase
+      .from('property_media')
+      .select('id, storage_key, property_id, properties!inner(user_id)')
+      .eq('processing_status', 'pending')
+      .lt('updated_at', tenMinutesAgo)
+      .not('storage_key', 'is', null)
+
+    if (error) {
+      fastify.log.error({ error: error.message }, 'recover-stuck-media: query failed')
+      return
+    }
+
+    if (!stuckMedia?.length) return
+
+    fastify.log.warn({ count: stuckMedia.length }, 'recover-stuck-media: re-queuing stuck process-media jobs')
+
+    const uploadQueue = (fastify as any).uploadQueue
+    if (!uploadQueue) {
+      fastify.log.error('recover-stuck-media: uploadQueue not available')
+      return
+    }
+
+    for (const media of stuckMedia) {
+      const userId = (media.properties as any)?.user_id
+      try {
+        await uploadQueue.add('process-media', {
+          mediaId: media.id,
+          spaceId: media.property_id,
+          userId,
+          objectKey: media.storage_key,
+        })
+        fastify.log.info({ mediaId: media.id }, 'recover-stuck-media: re-queued process-media job')
+      } catch (err: any) {
+        fastify.log.error({ mediaId: media.id, error: err?.message }, 'recover-stuck-media: failed to re-queue')
+      }
+    }
+  },
+}
+
+/**
  * Re-queue tile-scene jobs for scenes stuck in 'pending' for >10 minutes.
  * Covers worker crashes, missed jobs, and queue drops without requiring
  * manual intervention. Runs every 10 minutes.
@@ -352,5 +402,6 @@ export const cleanupTasks: CleanupTask[] = [
   failedMediaCleanupTask,
   orphanMediaCleanupTask,
   stalePendingUploadCleanupTask,
+  stuckMediaRecoveryTask,
   stuckSceneRecoveryTask,
 ]
