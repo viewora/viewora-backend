@@ -228,11 +228,11 @@ export async function processTileScene(
       }).eq('id', sceneId),
 
       // Update the media record so the 'Publish' button is unlocked
-      // We match by the path (storage_key) to avoid domain mismatch issues
+      // Extract just the path portion (after the domain) regardless of which domain is used
       supabase.from('property_media').update({
         processing_status: 'complete',
         processed_at:      new Date().toISOString()
-      }).ilike('storage_key', `%${rawImageUrl.split('.software/')[1] || rawImageUrl.split('.dev/')[1]}`)
+      }).eq('storage_key', new URL(rawImageUrl).pathname.replace(/^\//, ''))
     ])
     
     // Invalidate the public cache so the viewer switches to tiled mode immediately

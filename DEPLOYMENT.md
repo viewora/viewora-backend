@@ -67,14 +67,16 @@ git push origin main
 
 ### Step 5: Link Environment Variables
 Both API and Worker services need access to:
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_KEY`
+- `SUPABASE_URL` (both)
+- `SUPABASE_SERVICE_KEY` (both)
+- `REDIS_URL` (both — auto-linked from Redis service)
+- `R2_ACCOUNT_ID` (both — worker uploads tiles/thumbnails)
+- `R2_BUCKET_NAME` (both — worker uploads tiles/thumbnails)
+- `R2_ACCESS_KEY_ID` (both — worker uploads tiles/thumbnails)
+- `R2_SECRET_ACCESS_KEY` (both — worker uploads tiles/thumbnails)
+- `MEDIA_DOMAIN` (both — worker generates CDN URLs)
 - `SUPABASE_JWT_SECRET` (API only)
-- `R2_ACCOUNT_ID` (API only)
-- `R2_BUCKET_NAME` (API only)
-- `R2_ACCESS_KEY_ID` (API only)
-- `R2_SECRET_ACCESS_KEY` (API only)
-- `REDIS_URL` (both, auto-linked)
+- `CORS_ORIGIN` (API only)
 
 ### Verification
 1. Call API health check: `curl https://your-api.railway.app/health`

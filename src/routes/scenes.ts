@@ -348,4 +348,64 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     fastify.log.info({ spaceId: params.spaceId, orphansRemoved, reordered, stuckReset }, '[repair] complete')
     return reply.send({ orphansRemoved, reordered, stuckReset })
   })
+
+  // ── REPROCESS FAILED SCENES ───────────────────────────────
+  // Resets all failed/stuck scenes in a space back to pending and re-queues
+  // their tile-scene jobs. Call this after the worker service is deployed
+  // to recover scenes that were marked failed while the worker was down.
+  fastify.post('/spaces/:spaceId/reprocess', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, spaceParamsSchema, (req as any).params)
+    if (!params) return
+
+    const { data: space } = await fastify.supabase
+      .from('properties')
+      .select('id')
+      .eq('id', params.spaceId)
+      .eq('user_id', userId)
+      .single()
+    if (!space) return reply.code(404).send({ statusMessage: 'Space not found.' })
+
+    if (!fastify.uploadQueue) {
+      return reply.code(503).send({ statusMessage: 'Worker queue unavailable — ensure REDIS_URL is set and the worker service is deployed.' })
+    }
+
+    const { data: failedScenes } = await fastify.supabase
+      .from('scenes')
+      .select('id, space_id, raw_image_url')
+      .eq('space_id', params.spaceId)
+      .in('status', ['failed', 'pending', 'processing'])
+      .not('raw_image_url', 'is', null)
+
+    if (!failedScenes?.length) {
+      return reply.send({ requeued: 0, message: 'No scenes need reprocessing.' })
+    }
+
+    await fastify.supabase
+      .from('scenes')
+      .update({ status: 'pending', updated_at: new Date().toISOString() })
+      .in('id', failedScenes.map(s => s.id))
+
+    let requeued = 0
+    for (const scene of failedScenes) {
+      try {
+        await fastify.uploadQueue.add('tile-scene', {
+          sceneId: scene.id,
+          rawImageUrl: scene.raw_image_url,
+          spaceId: scene.space_id,
+          userId,
+        }, {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+        })
+        requeued++
+      } catch (err: any) {
+        fastify.log.error({ sceneId: scene.id, error: err?.message }, 'reprocess: failed to re-queue')
+      }
+    }
+
+    await invalidateSpaceCache(fastify, params.spaceId)
+    fastify.log.info({ spaceId: params.spaceId, requeued }, '[reprocess] scenes re-queued')
+    return reply.send({ requeued, message: `${requeued} scene(s) queued for reprocessing.` })
+  })
 }
