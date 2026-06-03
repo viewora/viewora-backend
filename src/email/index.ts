@@ -675,3 +675,99 @@ export async function sendTourPublishedEmail(params: {
     `),
   })
 }
+
+// ─── GIFT SUBSCRIPTION EMAILS ────────────────────────────────────────────────
+
+/**
+ * Sent ~3 days before a gifted plan expires.
+ * Fired from: cron/gift-expiry warning phase
+ */
+export async function sendGiftExpiringSoonEmail(params: {
+  ownerEmail: string
+  name?: string | null
+  planName: string
+  expiresAt: Date
+  daysLeft: number
+}): Promise<void> {
+  if (!resend) return
+  const { ownerEmail, name, planName, expiresAt, daysLeft } = params
+  const safePlan = escapeHtml(planName)
+  const formattedDate = expiresAt.toLocaleDateString('en-KE', { dateStyle: 'long' })
+  const plural = daysLeft !== 1 ? 's' : ''
+
+  await resend.emails.send({
+    from: FROM,
+    to: ownerEmail,
+    subject: `Your ${safePlan} plan expires in ${daysLeft} day${plural}`,
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">${greet(name)}</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        Your complimentary <strong>${safePlan}</strong> plan expires on <strong>${formattedDate}</strong>
+        — that's ${daysLeft} day${plural} from now.
+      </p>
+
+      <div style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 16px; margin: 24px 0;">
+        <p style="margin: 0; color: #92400e; font-size: 14px;">
+          After expiry, you'll be moved to the Free plan. Your published tours stay live,
+          but new uploads and advanced features will be paused.
+        </p>
+      </div>
+
+      <p style="color: #4b5563; line-height: 1.6;">
+        Upgrade now to keep all your features without interruption.
+      </p>
+
+      ${ctaButton(`${APP_URL}/app/billing`, 'Upgrade my plan →')}
+
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        Questions? Reply to this email — we're happy to help.
+      </p>
+    `),
+  })
+}
+
+/**
+ * Sent when a gifted plan expires and the user is downgraded to Free.
+ * Fired from: cron/gift-expiry downgrade phase
+ */
+export async function sendGiftExpiredEmail(params: {
+  ownerEmail: string
+  name?: string | null
+  planName: string
+}): Promise<void> {
+  if (!resend) return
+  const { ownerEmail, name, planName } = params
+  const safePlan = escapeHtml(planName)
+
+  await resend.emails.send({
+    from: FROM,
+    to: ownerEmail,
+    subject: `Your ${safePlan} plan has ended`,
+    html: emailShell(`
+      <h2 style="font-size: 20px; margin-top: 0;">${greet(name)}</h2>
+      <p style="color: #4b5563; line-height: 1.6;">
+        Your complimentary <strong>${safePlan}</strong> plan has ended.
+        You've been moved back to the Free plan.
+      </p>
+
+      <div style="background: #f9fafb; border-radius: 8px; padding: 20px; margin: 24px 0;">
+        <p style="margin: 0 0 10px 0; font-weight: bold; font-size: 14px;">What this means:</p>
+        <ul style="margin: 0; padding-left: 20px; color: #4b5563; font-size: 14px; line-height: 2;">
+          <li>Your published tours remain live for clients</li>
+          <li>New tour creation is limited to Free plan quota</li>
+          <li>Advanced features (embeds, analytics) are paused</li>
+        </ul>
+      </div>
+
+      <p style="color: #4b5563; line-height: 1.6;">
+        Loved the experience? Subscribe now to keep full access.
+      </p>
+
+      ${ctaButton(`${APP_URL}/app/billing`, 'Subscribe now →')}
+
+      <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+        Questions? Reply to this email.
+      </p>
+    `),
+  })
+}

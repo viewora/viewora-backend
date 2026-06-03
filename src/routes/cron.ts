@@ -6,6 +6,8 @@ import {
   sendWeeklyLeadDigestEmail,
   sendLimitWarningEmail,
   sendMonthlyReportEmail,
+  sendGiftExpiringSoonEmail,
+  sendGiftExpiredEmail,
 } from '../email/index.js'
 
 function verifyCronSecret(secret: string | string[] | undefined): boolean {
@@ -368,5 +370,104 @@ export default async function cronRoutes(fastify: FastifyInstance) {
 
     fastify.log.info({ sent, monthLabel }, 'cron/monthly-report: complete')
     return reply.send({ sent })
+  })
+
+  // POST /cron/gift-expiry
+  // Schedule: daily at 08:30 UTC
+  // Phase 1: Warn users whose gifted plan expires in 1–4 days
+  // Phase 2: Downgrade + notify users whose gifted plan expired in the last 24 hours
+  fastify.post('/cron/gift-expiry', async (req, reply) => {
+    if (!verifyCronSecret(req.headers['x-cron-secret'])) {
+      return reply.code(401).send({ statusMessage: 'Unauthorized' })
+    }
+
+    const now = new Date()
+
+    // ── Phase 1: expiry warnings ─────────────────────────────────────────────
+    const warnWindowStart = new Date(now.getTime() + 1 * 24 * 60 * 60 * 1000)  // tomorrow
+    const warnWindowEnd   = new Date(now.getTime() + 4 * 24 * 60 * 60 * 1000)  // 4 days from now
+
+    const { data: expiringSoon } = await fastify.supabase
+      .from('subscriptions')
+      .select('id, user_id, current_period_end, plans(name)')
+      .eq('provider', 'manual')
+      .eq('status', 'active')
+      .gte('current_period_end', warnWindowStart.toISOString())
+      .lte('current_period_end', warnWindowEnd.toISOString())
+
+    let warned = 0
+    if (expiringSoon?.length) {
+      const userMap = await batchGetUsers(fastify, expiringSoon.map(s => s.user_id))
+      for (const sub of expiringSoon) {
+        try {
+          // Skip if we already warned this user recently
+          const warnKey = `gift_warn:${sub.id}`
+          if (fastify.redis) {
+            const already = await fastify.redis.get(warnKey).catch(() => null)
+            if (already) continue
+          }
+
+          const user = userMap.get(sub.user_id)
+          if (!user?.email) continue
+
+          const expiresAt = new Date(sub.current_period_end)
+          const daysLeft = Math.max(1, Math.round((expiresAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)))
+          const planName = (sub as any).plans?.name || 'Premium'
+
+          await sendGiftExpiringSoonEmail({ ownerEmail: user.email, name: user.name, planName, expiresAt, daysLeft })
+
+          // Mark as warned — don't re-warn for 3 days
+          if (fastify.redis) {
+            await fastify.redis.set(warnKey, '1', { EX: 60 * 60 * 24 * 3 }).catch(() => {})
+          }
+          warned++
+        } catch (err) {
+          fastify.log.error(err, `cron/gift-expiry: warn failed for sub ${sub.id}`)
+        }
+      }
+    }
+
+    // ── Phase 2: downgrade expired gifts ────────────────────────────────────
+    // Find manual subs that are now expired (current_period_end < now) and still marked 'active'
+    const { data: nowExpired } = await fastify.supabase
+      .from('subscriptions')
+      .select('id, user_id, plans(name)')
+      .eq('provider', 'manual')
+      .eq('status', 'active')
+      .lt('current_period_end', now.toISOString())
+
+    let downgraded = 0
+    if (nowExpired?.length) {
+      const subIds = nowExpired.map(s => s.id)
+
+      // Mark as expired
+      await fastify.supabase
+        .from('subscriptions')
+        .update({ status: 'expired', updated_at: now.toISOString() })
+        .in('id', subIds)
+
+      const userMap = await batchGetUsers(fastify, nowExpired.map(s => s.user_id))
+
+      for (const sub of nowExpired) {
+        try {
+          const user = userMap.get(sub.user_id)
+          if (!user?.email) continue
+
+          const planName = (sub as any).plans?.name || 'Premium'
+          await sendGiftExpiredEmail({ ownerEmail: user.email, name: user.name, planName })
+
+          // Bust Redis billing cache so quota checks immediately reflect Free limits
+          if (fastify.redis) {
+            await fastify.redis.del(`billing:status:${sub.user_id}`).catch(() => {})
+          }
+          downgraded++
+        } catch (err) {
+          fastify.log.error(err, `cron/gift-expiry: downgrade failed for sub ${sub.id}`)
+        }
+      }
+    }
+
+    fastify.log.info({ warned, downgraded }, 'cron/gift-expiry: complete')
+    return reply.send({ warned, downgraded })
   })
 }
