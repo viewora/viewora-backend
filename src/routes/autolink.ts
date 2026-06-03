@@ -5,7 +5,7 @@ import { parseWithSchema } from '../utils/validation.js'
 const spaceParamsSchema = z.object({ spaceId: z.string().uuid() })
 
 const MAX_SCENES           = 20
-const CONFIDENCE_THRESHOLD = 58
+const CONFIDENCE_THRESHOLD = 50   // low enough to keep forced fallback doorways (confidence 60)
 const DEG_TO_RAD           = Math.PI / 180
 const DEFAULT_PITCH_RAD    = -8 * DEG_TO_RAD
 const DEDUP_MIN_ANGLE_RAD  = 0.18   // ~10° — closer than this = duplicate
@@ -108,6 +108,17 @@ EXCLUDE: closed doors, windows, mirrors, decorative arches, glass partitions wit
 PRECISION: position_pct ±2%. pitch_deg = centre of the doorway opening height.
   Standard door at eye level: -5 to -12°. Camera tilted up: 0 to +8°. Camera tilted down: -15 to -25°.
 CONFIDENCE: 90-100 = crystal clear | 75-89 = clear, minor uncertainty | 60-74 = probable | <58 = OMIT
+
+CRITICAL — REACHABILITY RULE:
+Every scene in the tour MUST have at least one navigation doorway so visitors can continue the tour.
+If you cannot see a clear open doorway, you MUST still suggest the MOST LIKELY exit point based on:
+  • The direction the previous/next scene seems to be (use scene names as clues)
+  • The brightest or most open-looking area of the image
+  • The area with the least furniture obstruction
+  • Default to position_pct=50 (front) with confidence=60 only if truly nothing is visible
+A scene with zero doorways = a dead end = the tour is broken. This is the worst possible outcome.
+It is ALWAYS better to suggest a low-confidence doorway at a reasonable position than to leave
+a scene with no navigation at all.
 </navigation_rules>
 
 <info_hotspot_rules>
@@ -324,6 +335,101 @@ function deduplicate<T extends { fromSceneId: string; yaw: number; confidence_hi
   return result
 }
 
+// ── Connectivity guarantee ─────────────────────────────────────────────────
+// Ensures every scene has at least one outgoing AND one incoming navigation link.
+// If the AI missed a doorway in a scene, that scene becomes a dead end.
+// This function detects isolated scenes and inserts fallback links so the tour
+// is always fully traversable — no scene is ever unreachable.
+type NavSuggestion = {
+  fromSceneId: string; fromSceneName: string
+  toSceneId:   string; toSceneName:   string
+  yaw: number; pitch: number
+  label: string; doorwayDescription: string
+  confidence_hint: number
+}
+
+function ensureFullConnectivity(
+  scenes: Array<{ id: string; name: string }>,
+  suggestions: NavSuggestion[],
+  existingLinkedPairs: Set<string>,
+): NavSuggestion[] {
+  const extra: NavSuggestion[] = []
+
+  // Build outgoing and incoming sets from existing links + new suggestions
+  const outgoing = new Map<string, Set<string>>()
+  const incoming = new Map<string, Set<string>>()
+  for (const s of scenes) {
+    outgoing.set(s.id, new Set())
+    incoming.set(s.id, new Set())
+  }
+
+  for (const pair of existingLinkedPairs) {
+    const [from, to] = pair.split(':')
+    outgoing.get(from)?.add(to)
+    incoming.get(to)?.add(from)
+  }
+
+  for (const s of suggestions) {
+    outgoing.get(s.fromSceneId)?.add(s.toSceneId)
+    incoming.get(s.toSceneId)?.add(s.fromSceneId)
+  }
+
+  // For each scene, ensure it has at least one outgoing AND one incoming link
+  for (let i = 0; i < scenes.length; i++) {
+    const scene    = scenes[i]
+    const hasOut   = (outgoing.get(scene.id)?.size ?? 0) > 0
+    const hasIn    = (incoming.get(scene.id)?.size ?? 0) > 0
+
+    // Find the best neighbour to connect to (prefer adjacent in sequence)
+    const candidates = [
+      i + 1 < scenes.length ? scenes[i + 1] : null,
+      i - 1 >= 0            ? scenes[i - 1] : null,
+    ].filter((c): c is typeof scenes[number] => c !== null)
+
+    if (!hasOut && candidates.length > 0) {
+      const target = candidates[0]
+      // Skip if this pair is already covered by existing links
+      if (!existingLinkedPairs.has(`${scene.id}:${target.id}`)) {
+        extra.push({
+          fromSceneId:        scene.id,
+          fromSceneName:      scene.name,
+          toSceneId:          target.id,
+          toSceneName:        target.name,
+          yaw:                0,                 // front-facing — best guess
+          pitch:              DEFAULT_PITCH_RAD,
+          confidence_hint:    40,                // marked low so it sorts last
+          label:              titleCase(target.name || 'Next Room'),
+          doorwayDescription: 'Continue tour →',
+        })
+        outgoing.get(scene.id)?.add(target.id)
+        incoming.get(target.id)?.add(scene.id)
+      }
+    }
+
+    if (!hasIn && candidates.length > 0) {
+      // Pick the neighbour that doesn't already have an outgoing link to this scene
+      const source = candidates.find(c => !outgoing.get(c.id)?.has(scene.id)) ?? candidates[0]
+      if (!existingLinkedPairs.has(`${source.id}:${scene.id}`)) {
+        extra.push({
+          fromSceneId:        source.id,
+          fromSceneName:      source.name,
+          toSceneId:          scene.id,
+          toSceneName:        scene.name,
+          yaw:                Math.PI,            // facing back — natural return direction
+          pitch:              DEFAULT_PITCH_RAD,
+          confidence_hint:    40,
+          label:              titleCase(scene.name || 'Return'),
+          doorwayDescription: '← Return',
+        })
+        outgoing.get(source.id)?.add(scene.id)
+        incoming.get(scene.id)?.add(source.id)
+      }
+    }
+  }
+
+  return extra
+}
+
 // ── Route ──────────────────────────────────────────────────────────────────
 export default async function (fastify: FastifyInstance) {
   fastify.post('/spaces/:spaceId/auto-link', {
@@ -485,7 +591,13 @@ export default async function (fastify: FastifyInstance) {
     }
 
     rawNav.sort((a, b) => b.confidence_hint - a.confidence_hint)
-    const suggestions = deduplicate(rawNav).map(({ confidence_hint: _c, ...s }) => s)
+    const deduped = deduplicate(rawNav)
+
+    // Guarantee full connectivity — every scene must have at least one outgoing
+    // and one incoming navigation link. If the AI missed doorways in a scene,
+    // insert fallback links to adjacent scenes so no room is ever a dead end.
+    const fallbacks = ensureFullConnectivity(scenes, deduped, linkedPairs)
+    const suggestions = [...deduped, ...fallbacks].map(({ confidence_hint: _c, ...s }) => s)
 
     // ── Info hotspot suggestions ────────────────────────────────────────────
     const infoHotspots = analyses.flatMap(a => {
