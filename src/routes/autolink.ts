@@ -4,110 +4,168 @@ import { parseWithSchema } from '../utils/validation.js'
 
 const spaceParamsSchema = z.object({ spaceId: z.string().uuid() })
 
-const MAX_SCENES          = 20
-const CONFIDENCE_THRESHOLD = 55   // discard detections below this
+const MAX_SCENES           = 20
+const CONFIDENCE_THRESHOLD = 58    // discard anything below this
 const DEG_TO_RAD           = Math.PI / 180
-const DEFAULT_PITCH_RAD    = -8 * DEG_TO_RAD  // ≈ -0.14 rad — slightly below horizon
+const DEFAULT_PITCH_RAD    = -8 * DEG_TO_RAD   // ≈ -0.14 rad — typical door threshold
+const DEDUP_MIN_ANGLE_RAD  = 0.18  // ~10° — two hotspots closer than this = duplicate
 
-// ── Model tier config ──────────────────────────────────────────────────────
-// Haiku 4.5  = $1/$5 per 1M tokens  — 97 tokens/sec — used for all scenes first
-// Sonnet 4.6 = $3/$15 per 1M tokens — slower         — fallback for hard scenes only
-// A two-tier approach keeps costs ~3× lower than Sonnet-only while maintaining
-// accuracy: Sonnet only fires when Haiku returns zero doorways or all low-confidence.
 const MODEL_FAST     = 'claude-haiku-4-5-20251001'
 const MODEL_ACCURATE = 'claude-sonnet-4-6'
 
 type Doorway = {
-  position_pct: number   // 0–100 horizontal in equirectangular image
-  pitch_deg:    number   // degrees, negative = below horizon
+  position_pct: number
+  pitch_deg:    number
   leads_to:     string
-  confidence:   number   // 0–100
+  confidence:   number
 }
-type SceneAnalysis = { room_type: string; doorways: Doorway[]; model_used: string }
+type SceneAnalysis = {
+  room_type:  string
+  new_name:   string       // suggested rename; empty string = keep current name
+  doorways:   Doorway[]
+  model_used: string
+}
 
-// ── Shared prompt (cached by Anthropic after first call in a 5-min window) ─
-// Prompt caching: first call pays full price; all subsequent calls in the
-// same auto-link run pay only 10% of input token cost for this text block.
-// Placing the static instruction BEFORE the per-scene image lets the API
-// cache the text and treat each image as the only fresh input.
-const SYSTEM_PROMPT = [
-  '<task>',
-  'You are a spatial analysis engine embedded in a 360° virtual tour platform.',
-  'Your job: analyse an equirectangular panorama and identify every physical',
-  'opening a person could WALK THROUGH to reach an adjacent space.',
-  '</task>',
+// ── Room-type vocabulary per property type ─────────────────────────────────
+// Giving Claude a constrained vocabulary for the specific building type makes
+// naming far more accurate — it can't invent generic labels when precise ones exist.
+const ROOM_VOCAB: Record<string, string> = {
+  residential:  'bedroom, master bedroom, kids bedroom, bathroom, en-suite bathroom, kitchen, living room, dining room, study, home office, hallway, entrance hall, laundry room, storage room, garage, garden, balcony, staircase',
+  commercial:   'open office, private office, executive office, meeting room, conference room, boardroom, reception, lobby, corridor, server room, break room, kitchen, bathroom, staircase, storage room, print room',
+  hospitality:  'standard room, deluxe room, suite, lobby, reception, restaurant, bar, gym, spa, pool area, corridor, conference room, meeting room, business centre, rooftop',
+  education:    'classroom, lecture hall, laboratory, library, computer lab, staffroom, principal office, reception, corridor, gymnasium, canteen, storage room, toilet',
+  automotive:   'showroom, service bay, reception, waiting area, parts room, detail bay, office, toilet, wash bay',
+  other:        'room, space, area, corridor, entrance, outdoor area',
+}
+
+// ── Static cached instruction — identical for every call ───────────────────
+// Marked with cache_control so Anthropic charges only 10% for this block
+// on all calls after the first in a 5-minute window.
+const STATIC_INSTRUCTION = [
+  '<role>',
+  'You are a precision spatial analysis engine for a 360° virtual tour platform.',
+  'Your two jobs: (1) identify every walkable doorway in the panorama with sub-degree accuracy,',
+  'and (2) suggest a precise, human-friendly name for this scene.',
+  '</role>',
   '',
-  '<projection_notes>',
-  'The image uses EQUIRECTANGULAR (2:1 aspect ratio) projection:',
-  '• Horizontal: 0 % = far-left edge (behind camera, left) | 50 % = directly in front | 100 % = far-right edge (behind camera, right)',
-  '• The left and right edges ARE the same physical point — they wrap seamlessly.',
-  '• Vertical: top = ceiling, bottom = floor, vertical center = horizon (eye level).',
-  '• Distortion increases toward top and bottom. Doors near vertical centre are clearest.',
-  '• A door spanning the left edge (e.g. 2 %) and right edge (e.g. 98 %) is ONE door behind you.',
-  '</projection_notes>',
+  '<projection>',
+  'The image is EQUIRECTANGULAR (2:1 aspect ratio):',
+  '• Horizontal axis: 0% = far-left edge (directly behind the camera, left side)',
+  '                   50% = directly in front of the camera (image centre)',
+  '                  100% = far-right edge (directly behind the camera, right side)',
+  '• LEFT EDGE and RIGHT EDGE are the SAME physical point. A door at 2% and 98% is ONE door.',
+  '• Vertical axis: top edge = ceiling | vertical centre = eye level | bottom edge = floor',
+  '• Distortion increases toward top and bottom. Objects near vertical centre are least distorted.',
+  '• A door spanning left-right across the image wraps — estimate its TRUE centre position.',
+  '</projection>',
   '',
-  '<what_counts>',
-  'COUNT as a walkable opening:',
-  '  • Open doorways (door fully open or absent)',
+  '<doorway_rules>',
+  'INCLUDE as a doorway:',
+  '  • Open doorways (door removed or fully open)',
   '  • Open archways leading to another room',
-  '  • Corridors and passageways you can walk into',
-  '  • Open patio / balcony doors',
+  '  • Open corridors or passageways',
+  '  • Open sliding doors, open double doors',
   '',
-  'DO NOT COUNT:',
-  '  • Closed doors (even if you can see the door frame)',
-  '  • Windows of any size',
-  '  • Mirrors (they reflect the same room)',
-  '  • Decorative arches that do not lead anywhere',
-  '  • Glass walls or partitions that are not doorways',
-  '  • Dark corners where no opening is clearly visible',
-  '</what_counts>',
+  'EXCLUDE — do NOT count:',
+  '  • Any closed door (even partially closed)',
+  '  • Windows (no matter how large)',
+  '  • Mirrors (reflect the same room — common trap)',
+  '  • Decorative arches with no room behind',
+  '  • Glass partitions without an opening',
+  '  • Dark areas where no opening is visible',
+  '  • The same physical opening detected twice from different parts of the image',
+  '</doorway_rules>',
+  '',
+  '<precision_guide>',
+  'position_pct: Mark the GEOMETRIC CENTRE of the doorway opening (not the door frame).',
+  '  — A door at the left edge of a room = ~10–20%.',
+  '  — A door dead-centre = 50%.',
+  '  — A narrow door off-centre right = ~60–70%.',
+  '  — Be precise to ±2 percentage points.',
+  '',
+  'pitch_deg: The vertical angle to the MIDDLE HEIGHT of the doorway opening.',
+  '  — Standard door at eye level: -5 to -12 degrees.',
+  '  — Door viewed from below (camera tilted up): can be 0 to +8 degrees.',
+  '  — Door viewed from above (camera tilted down): can be -15 to -25 degrees.',
+  '  — Do NOT use values outside -30 to +15 unless extreme tilt is obvious.',
+  '',
+  'confidence:',
+  '  90–100 = crystal-clear open doorway, unambiguous',
+  '  75–89  = clearly a passage, minor uncertainty about exact position',
+  '  60–74  = probable doorway, some occlusion or partial view',
+  '  Below 58 = omit entirely — too uncertain',
+  '</precision_guide>',
   '',
   '<output_format>',
-  'Return ONLY valid compact JSON, no markdown, no explanation:',
-  '{"room_type":"<type>","doorways":[{"position_pct":<0-100>,"pitch_deg":<degrees>,"leads_to":"<1-3 words>","confidence":<0-100>}]}',
+  'Return ONLY valid compact JSON, zero markdown, zero explanation:',
+  '{"room_type":"<type>","new_name":"<suggested name or empty string>","doorways":[{"position_pct":<int>,"pitch_deg":<int>,"leads_to":"<1-3 words>","confidence":<int>}]}',
   '',
-  'Fields:',
-  '  room_type   — one of: living room, kitchen, bedroom, master bedroom, bathroom,',
-  '                hallway, entrance hall, dining room, office, balcony, garden, staircase,',
-  '                garage, storage, gym, lobby, corridor. Use "room" only if truly uncertain.',
-  '  position_pct — integer 0–100. Be precise to ±3 pts. Mark the geometric CENTER of the opening.',
-  '  pitch_deg   — integer degrees. Doors typically sit at -5 to -15 (slightly below eye level).',
-  '                Only use values outside -25 to +5 if camera tilt clearly justifies it.',
-  '  leads_to    — 1–3 words describing the destination (e.g. "hallway", "master bedroom", "outside").',
-  '  confidence  — 0=complete guess, 100=undeniably clear walkable opening.',
-  '                70+ = include. 55–69 = include with caution. Below 55 = omit entirely.',
+  'new_name rules:',
+  '  — Use the allowed vocabulary for this property type (provided in context).',
+  '  — Return empty string "" if current name is already correct.',
+  '  — Be specific: "master bedroom" not "bedroom" when it clearly has an en-suite.',
+  '  — For outdoor scenes: "garden", "balcony", "rooftop", etc.',
   '</output_format>',
 ].join('\n')
+
+// ── Per-scene context (NOT cached — changes per scene) ─────────────────────
+function buildSceneContext(opts: {
+  spaceTitle:    string
+  spaceType:     string
+  locationText:  string
+  totalScenes:   number
+  sceneIndex:    number
+  sceneName:     string
+  prevSceneName: string | null
+  nextSceneName: string | null
+}): string {
+  const vocab = ROOM_VOCAB[opts.spaceType] || ROOM_VOCAB.other
+  const lines = [
+    '<scene_context>',
+    `Property: "${opts.spaceTitle}" — type: ${opts.spaceType}${opts.locationText ? ` — location: ${opts.locationText}` : ''}`,
+    `This is scene ${opts.sceneIndex + 1} of ${opts.totalScenes} in the tour.`,
+    `Current scene name: "${opts.sceneName}"`,
+  ]
+  if (opts.prevSceneName) lines.push(`Previous scene: "${opts.prevSceneName}"`)
+  if (opts.nextSceneName) lines.push(`Next scene: "${opts.nextSceneName}"`)
+  lines.push(`Allowed room_type and new_name vocabulary: ${vocab}`)
+  lines.push('</scene_context>')
+  return lines.join('\n')
+}
 
 // ── Core API call ──────────────────────────────────────────────────────────
 async function callClaude(
   thumbnailUrl: string,
-  apiKey: string,
-  model: string,
+  sceneContext: string,
+  apiKey:       string,
+  model:        string,
 ): Promise<SceneAnalysis> {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
+    method:  'POST',
     headers: {
-      'x-api-key':           apiKey,
-      'anthropic-version':   '2023-06-01',
-      'anthropic-beta':      'prompt-caching-2024-07-31',  // enable caching
-      'content-type':        'application/json',
+      'x-api-key':         apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta':    'prompt-caching-2024-07-31',
+      'content-type':      'application/json',
     },
     body: JSON.stringify({
       model,
-      max_tokens: 400,   // doorway JSON is always < 300 tokens; cap saves cost
+      max_tokens: 400,
       messages: [{
-        role: 'user',
+        role:    'user',
         content: [
-          // ① Static instruction — marked for caching. After the first call in a
-          //   5-min window Anthropic returns this at 10% of normal input token cost.
+          // Block 1: static instruction — cached after first call
           {
-            type: 'text',
-            text: SYSTEM_PROMPT,
+            type:          'text',
+            text:          STATIC_INSTRUCTION,
             cache_control: { type: 'ephemeral' },
           },
-          // ② Per-scene image — sent as URL so the server never downloads it.
-          //   Claude fetches the CDN thumbnail directly, saving bandwidth & latency.
+          // Block 2: per-scene context — NOT cached (changes each call)
+          {
+            type: 'text',
+            text: sceneContext,
+          },
+          // Block 3: the panorama — Claude fetches from CDN directly (no base64 overhead)
           {
             type:   'image',
             source: { type: 'url', url: thumbnailUrl },
@@ -132,47 +190,54 @@ async function callClaude(
       room_type: typeof parsed.room_type === 'string'
         ? parsed.room_type.toLowerCase().trim()
         : 'room',
+      new_name: typeof parsed.new_name === 'string'
+        ? parsed.new_name.trim()
+        : '',
       doorways: Array.isArray(parsed.doorways)
-        ? parsed.doorways.filter((d: any) =>
-            typeof d.position_pct === 'number' &&
-            typeof d.pitch_deg    === 'number' &&
-            typeof d.confidence   === 'number' &&
-            d.position_pct >= 0 && d.position_pct <= 100 &&
-            d.confidence   >= CONFIDENCE_THRESHOLD,
-          )
+        ? parsed.doorways
+            .filter((d: any) =>
+              typeof d.position_pct === 'number' &&
+              typeof d.pitch_deg    === 'number' &&
+              typeof d.confidence   === 'number' &&
+              d.position_pct >= 0 && d.position_pct <= 100 &&
+              d.confidence   >= CONFIDENCE_THRESHOLD,
+            )
+            // Sort by confidence desc so we always use the best detection first
+            .sort((a: any, b: any) => b.confidence - a.confidence)
         : [],
       model_used: model,
     }
   } catch {
-    return { room_type: 'room', doorways: [], model_used: model }
+    return { room_type: 'room', new_name: '', doorways: [], model_used: model }
   }
 }
 
-// ── Two-tier scene analysis ────────────────────────────────────────────────
-// 1. Try Haiku (fast, cheap). If it returns confident results → done.
-// 2. If Haiku finds nothing or all low-confidence → retry with Sonnet.
-//    Haiku handles ~90 % of scenes; Sonnet only fires for ambiguous cases.
-async function analyzeScene(thumbnailUrl: string, apiKey: string): Promise<SceneAnalysis> {
-  const fast = await callClaude(thumbnailUrl, apiKey, MODEL_FAST)
+// ── Two-tier analysis: Haiku first, Sonnet on uncertain scenes ─────────────
+async function analyzeScene(
+  thumbnailUrl: string,
+  sceneContext: string,
+  apiKey:       string,
+): Promise<SceneAnalysis> {
+  const fast = await callClaude(thumbnailUrl, sceneContext, apiKey, MODEL_FAST)
 
   const maxConf = fast.doorways.length
     ? Math.max(...fast.doorways.map(d => d.confidence))
     : 0
 
-  // Use Haiku result if: ≥1 doorway found AND top confidence ≥ 65
-  if (fast.doorways.length > 0 && maxConf >= 65) return fast
+  // Accept Haiku result only if at least one doorway is high-confidence
+  if (fast.doorways.length > 0 && maxConf >= 70) return fast
 
-  // Otherwise upgrade to Sonnet for a second opinion on this scene
+  // Upgrade to Sonnet for ambiguous / doorway-less scenes
   try {
-    const accurate = await callClaude(thumbnailUrl, apiKey, MODEL_ACCURATE)
-    // Merge: keep Sonnet's doorways; use its room_type if Haiku was uncertain
+    const accurate = await callClaude(thumbnailUrl, sceneContext, apiKey, MODEL_ACCURATE)
     return {
       room_type:  accurate.room_type !== 'room' ? accurate.room_type : fast.room_type,
+      new_name:   accurate.new_name  || fast.new_name,
       doorways:   accurate.doorways.length > 0  ? accurate.doorways  : fast.doorways,
       model_used: `${MODEL_FAST}+${MODEL_ACCURATE}`,
     }
   } catch {
-    return fast  // Sonnet failed — use whatever Haiku had
+    return fast
   }
 }
 
@@ -186,28 +251,61 @@ function pctToYawRad(pct: number): number {
 }
 
 function oppositeYawRad(yawRad: number): number {
-  const flipped = yawRad + Math.PI
-  return flipped > Math.PI ? flipped - 2 * Math.PI : flipped
+  const f = yawRad + Math.PI
+  return f > Math.PI ? f - 2 * Math.PI : f
+}
+
+// Angular distance on a circle (accounts for wrap-around)
+function angularDist(a: number, b: number): number {
+  const d = Math.abs(a - b) % (2 * Math.PI)
+  return d > Math.PI ? 2 * Math.PI - d : d
 }
 
 function findMatchingDoorway(doorways: Doorway[], targetRoomType: string): Doorway | null {
   if (!doorways.length) return null
   const target = targetRoomType.toLowerCase()
-
-  const exactMatch = doorways.find(d =>
+  const exact  = doorways.find(d =>
     d.leads_to.toLowerCase().includes(target) ||
     target.includes(d.leads_to.toLowerCase()),
   )
-  if (exactMatch) return exactMatch
+  if (exact) return exact
+  // Fall back to highest-confidence doorway
+  return doorways[0]  // already sorted by confidence desc
+}
 
-  return doorways.reduce((best, d) => d.confidence > best.confidence ? d : best, doorways[0])
+// ── Global deduplication ───────────────────────────────────────────────────
+// Removes hotspots that are too close together from the same source scene.
+// This prevents the "two arrows in the same place" bug that occurs when:
+//   - The AI detects the same physical opening twice (from different image angles)
+//   - The forward and extra-exit pass create overlapping suggestions
+function deduplicate(
+  suggestions: Array<{
+    fromSceneId: string; toSceneId: string
+    yaw: number; pitch: number
+    confidence_hint: number
+    label: string; doorwayDescription: string
+    fromSceneName: string; toSceneName: string
+  }>,
+): typeof suggestions {
+  const result: typeof suggestions = []
+
+  for (const s of suggestions) {
+    // Check if a spatially similar hotspot from the same source scene already exists
+    const isDuplicate = result.some(r =>
+      r.fromSceneId === s.fromSceneId &&
+      angularDist(r.yaw, s.yaw) < DEDUP_MIN_ANGLE_RAD,
+    )
+    if (!isDuplicate) result.push(s)
+  }
+
+  return result
 }
 
 // ── Route ──────────────────────────────────────────────────────────────────
 export default async function (fastify: FastifyInstance) {
   fastify.post('/spaces/:spaceId/auto-link', {
     preHandler: [fastify.authenticate],
-    config: { rateLimit: { max: 3, timeWindow: '1 minute' } },
+    config:     { rateLimit: { max: 3, timeWindow: '1 minute' } },
   }, async (req, reply) => {
     const userId = (req.user as any).sub
     const params = parseWithSchema(reply, spaceParamsSchema, (req as any).params)
@@ -220,13 +318,18 @@ export default async function (fastify: FastifyInstance) {
       })
     }
 
+    // Fetch space including type and location for AI context
     const { data: space } = await fastify.supabase
       .from('properties')
-      .select('id')
+      .select('id, title, property_type, location_text')
       .eq('id', params.spaceId)
       .eq('user_id', userId)
       .single()
     if (!space) return reply.code(404).send({ statusMessage: 'Space not found.' })
+
+    const spaceType     = (space.property_type || 'other') as string
+    const spaceTitle    = (space.title          || 'Property') as string
+    const locationText  = (space.location_text  || '') as string
 
     const { data: scenes, error: scenesErr } = await fastify.supabase
       .from('scenes')
@@ -242,7 +345,7 @@ export default async function (fastify: FastifyInstance) {
     if (scenes.length < 2)
       return reply.code(400).send({ statusMessage: 'You need at least 2 ready scenes to auto-link.' })
 
-    // Fetch existing links to avoid duplicates
+    // Existing links — skip pairs already linked
     const sceneIds = scenes.map(s => s.id)
     const { data: existingLinks } = await fastify.supabase
       .from('hotspots')
@@ -255,47 +358,54 @@ export default async function (fastify: FastifyInstance) {
         .map((h: any) => `${h.scene_id}:${h.target_scene_id}`),
     )
 
-    // ── Analyse scenes sequentially ──────────────────────────────────────
-    // Sequential (not parallel) to respect Anthropic's per-minute token limits.
-    // 200 ms delay between calls; the prompt cache warms on the first call so
-    // subsequent calls are fast (cache hit latency ~100 ms vs ~800 ms cold).
+    // ── Analyse all scenes ─────────────────────────────────────────────────
     const analyses: Array<{ sceneId: string } & SceneAnalysis> = []
 
-    for (const scene of scenes) {
+    for (let i = 0; i < scenes.length; i++) {
+      const scene = scenes[i]
       if (!scene.thumbnail_url) {
-        analyses.push({ sceneId: scene.id, room_type: 'room', doorways: [], model_used: 'none' })
-      } else {
-        try {
-          const result = await analyzeScene(scene.thumbnail_url, apiKey)
-          analyses.push({ sceneId: scene.id, ...result })
-          fastify.log.info(
-            {
-              sceneId:    scene.id,
-              room_type:  result.room_type,
-              doorways:   result.doorways.length,
-              model_used: result.model_used,
-            },
-            '[autolink] scene analysed',
-          )
-        } catch (err: any) {
-          fastify.log.warn(
-            { err: err.message, sceneId: scene.id },
-            '[autolink] scene analysis failed — using fallback',
-          )
-          analyses.push({ sceneId: scene.id, room_type: 'room', doorways: [], model_used: 'error' })
-        }
+        analyses.push({ sceneId: scene.id, room_type: 'room', new_name: '', doorways: [], model_used: 'none' })
+        continue
       }
+
+      const context = buildSceneContext({
+        spaceTitle,
+        spaceType,
+        locationText,
+        totalScenes:   scenes.length,
+        sceneIndex:    i,
+        sceneName:     scene.name || `Scene ${i + 1}`,
+        prevSceneName: i > 0                  ? (scenes[i - 1].name || null) : null,
+        nextSceneName: i < scenes.length - 1  ? (scenes[i + 1].name || null) : null,
+      })
+
+      try {
+        const result = await analyzeScene(scene.thumbnail_url, context, apiKey)
+        analyses.push({ sceneId: scene.id, ...result })
+        fastify.log.info({
+          sceneId:    scene.id,
+          room_type:  result.room_type,
+          new_name:   result.new_name,
+          doorways:   result.doorways.length,
+          model_used: result.model_used,
+        }, '[autolink] scene analysed')
+      } catch (err: any) {
+        fastify.log.warn({ err: err.message, sceneId: scene.id }, '[autolink] scene analysis failed')
+        analyses.push({ sceneId: scene.id, room_type: 'room', new_name: '', doorways: [], model_used: 'error' })
+      }
+
       await new Promise(r => setTimeout(r, 200))
     }
 
     const byId = Object.fromEntries(analyses.map(a => [a.sceneId, a]))
 
-    // ── Build hotspot suggestions ─────────────────────────────────────────
-    const suggestions: Array<{
-      fromSceneId:        string; fromSceneName: string
-      toSceneId:          string; toSceneName:   string
-      yaw:                number; pitch: number
-      label:              string; doorwayDescription: string
+    // ── Build raw suggestions ──────────────────────────────────────────────
+    const raw: Array<{
+      fromSceneId: string; fromSceneName: string
+      toSceneId:   string; toSceneName:   string
+      yaw: number; pitch: number
+      confidence_hint: number
+      label: string; doorwayDescription: string
     }> = []
 
     for (let i = 0; i < scenes.length - 1; i++) {
@@ -308,69 +418,71 @@ export default async function (fastify: FastifyInstance) {
 
       // Forward: A → B
       if (!linkedPairs.has(`${a.id}:${b.id}`)) {
-        const doorAB   = findMatchingDoorway(analysisA?.doorways ?? [], analysisB?.room_type ?? '')
-        const yawAB    = doorAB ? pctToYawRad(doorAB.position_pct) : 0
-        const pitchAB  = doorAB ? doorAB.pitch_deg * DEG_TO_RAD   : DEFAULT_PITCH_RAD
+        const doorAB  = findMatchingDoorway(analysisA?.doorways ?? [], analysisB?.room_type ?? '')
+        const yawAB   = doorAB ? pctToYawRad(doorAB.position_pct) : 0
+        const pitchAB = doorAB ? doorAB.pitch_deg * DEG_TO_RAD    : DEFAULT_PITCH_RAD
 
-        suggestions.push({
+        raw.push({
           fromSceneId: a.id, fromSceneName: a.name,
           toSceneId:   b.id, toSceneName:   b.name,
           yaw:   parseFloat(yawAB.toFixed(4)),
           pitch: parseFloat(pitchAB.toFixed(4)),
+          confidence_hint: doorAB?.confidence ?? 50,
           label: labelB,
           doorwayDescription: doorAB?.leads_to ?? `Leads to ${labelB}`,
         })
+      }
 
-        // Backward: B → A
-        if (!linkedPairs.has(`${b.id}:${a.id}`)) {
-          const doorBA  = findMatchingDoorway(analysisB?.doorways ?? [], analysisA?.room_type ?? '')
-          const yawBA   = doorBA ? pctToYawRad(doorBA.position_pct) : oppositeYawRad(yawAB)
-          const pitchBA = doorBA ? doorBA.pitch_deg * DEG_TO_RAD    : DEFAULT_PITCH_RAD
+      // Backward: B → A
+      if (!linkedPairs.has(`${b.id}:${a.id}`)) {
+        const doorBA  = findMatchingDoorway(analysisB?.doorways ?? [], analysisA?.room_type ?? '')
+        // If the AI found the matching doorway use it; otherwise estimate the opposite
+        // direction of the forward hotspot as the best guess for where to return from.
+        const yawBA   = doorBA
+          ? pctToYawRad(doorBA.position_pct)
+          : oppositeYawRad(raw.find(s => s.fromSceneId === a.id && s.toSceneId === b.id)?.yaw ?? 0)
+        const pitchBA = doorBA ? doorBA.pitch_deg * DEG_TO_RAD : DEFAULT_PITCH_RAD
 
-          suggestions.push({
-            fromSceneId: b.id, fromSceneName: b.name,
-            toSceneId:   a.id, toSceneName:   a.name,
-            yaw:   parseFloat(yawBA.toFixed(4)),
-            pitch: parseFloat(pitchBA.toFixed(4)),
-            label: labelA,
-            doorwayDescription: doorBA?.leads_to ?? `Back to ${labelA}`,
-          })
-        }
-
-        // Extra exits in A (hallways, rooms with multiple doors)
-        const extras = (analysisA?.doorways ?? [])
-          .filter(d => d !== doorAB && d.confidence >= CONFIDENCE_THRESHOLD + 10)
-        for (const extra of extras) {
-          const extraYaw   = pctToYawRad(extra.position_pct)
-          const extraPitch = extra.pitch_deg * DEG_TO_RAD
-          const tooClose   = suggestions.some(
-            s => s.fromSceneId === a.id && s.toSceneId === b.id &&
-                 Math.abs(s.yaw - extraYaw) < 0.3,
-          )
-          if (!tooClose) {
-            suggestions.push({
-              fromSceneId: a.id, fromSceneName: a.name,
-              toSceneId:   b.id, toSceneName:   b.name,
-              yaw:   parseFloat(extraYaw.toFixed(4)),
-              pitch: parseFloat(extraPitch.toFixed(4)),
-              label: labelB,
-              doorwayDescription: extra.leads_to,
-            })
-          }
-        }
+        raw.push({
+          fromSceneId: b.id, fromSceneName: b.name,
+          toSceneId:   a.id, toSceneName:   a.name,
+          yaw:   parseFloat(yawBA.toFixed(4)),
+          pitch: parseFloat(pitchBA.toFixed(4)),
+          confidence_hint: doorBA?.confidence ?? 50,
+          label: labelA,
+          doorwayDescription: doorBA?.leads_to ?? `Back to ${labelA}`,
+        })
       }
     }
 
-    // Scene rename suggestions for default "Scene N" names
-    const sceneRenames = scenes
-      .filter(s => /^scene\s+\d+$/i.test(s.name || ''))
-      .flatMap(s => {
-        const rt = byId[s.id]?.room_type
-        if (!rt || rt === 'room') return []
-        const suggested = titleCase(rt)
-        if (suggested.toLowerCase() === (s.name || '').toLowerCase()) return []
+    // ── Global spatial deduplication ───────────────────────────────────────
+    // Sort high-confidence first so the best detection survives dedup
+    raw.sort((a, b) => b.confidence_hint - a.confidence_hint)
+    const suggestions = deduplicate(raw).map(({ confidence_hint: _c, ...s }) => s)
+
+    // ── Scene rename suggestions ───────────────────────────────────────────
+    // Suggest a rename whenever:
+    //   (a) the scene has a generic "Scene N" name, OR
+    //   (b) the AI returned a new_name that differs from the current name
+    const sceneRenames = scenes.flatMap(s => {
+      const analysis = byId[s.id]
+      if (!analysis) return []
+
+      const currentNorm  = (s.name || '').toLowerCase().trim()
+      const suggestedRaw = analysis.new_name || analysis.room_type
+      const suggested    = titleCase(suggestedRaw)
+      const suggestedNorm = suggested.toLowerCase()
+
+      // Skip if AI result is uncertain or matches current name
+      if (!suggestedRaw || suggestedRaw === 'room' || suggestedNorm === currentNorm) return []
+
+      // Always rename generic "Scene N" names; also rename when AI is confident of a better name
+      const isGeneric = /^scene\s+\d+$/i.test(s.name || '')
+      if (isGeneric || analysis.new_name) {
         return [{ sceneId: s.id, currentName: s.name, suggestedName: suggested }]
-      })
+      }
+      return []
+    })
 
     return reply.send({ suggestions, sceneRenames, sceneCount: scenes.length })
   })
