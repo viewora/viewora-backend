@@ -229,6 +229,12 @@ export default async function (fastify: FastifyInstance) {
       const { id } = request.params as any
       const { suspend, reason } = request.body as any
 
+      // Self-protection: cannot suspend your own account
+      const adminId = request.headers['x-admin-id'] as string | undefined
+      if (suspend && adminId && adminId === id) {
+        return reply.code(403).send({ statusMessage: 'Cannot suspend your own admin account' })
+      }
+
       const updates = suspend
         ? { suspended_at: new Date().toISOString(), suspended_reason: reason || null }
         : { suspended_at: null, suspended_reason: null }
@@ -250,24 +256,34 @@ export default async function (fastify: FastifyInstance) {
     try {
       const { id } = request.params as any
 
-      // Cascade: delete all spaces (media cascades via DB FK), subscriptions, counters, notes
+      // Self-protection: prevent admin from deleting their own account
+      const adminId = request.headers['x-admin-id'] as string | undefined
+      if (adminId && adminId === id) {
+        return reply.code(403).send({ statusMessage: 'Cannot delete your own admin account' })
+      }
+
+      // Delete auth user FIRST — if this fails, nothing else is deleted
+      const { error: authError } = await fastify.supabase.auth.admin.deleteUser(id)
+      if (authError) {
+        fastify.log.error({ id, authError }, 'Failed to delete Supabase auth user')
+        return reply.code(500).send({ statusMessage: `Auth deletion failed: ${authError.message}` })
+      }
+
+      // Now delete DB records in dependency order
       await fastify.supabase.from('admin_notes').delete().eq('user_id', id)
       await fastify.supabase.from('subscriptions').delete().eq('user_id', id)
       await fastify.supabase.from('usage_counters').delete().eq('user_id', id)
 
-      // Delete all spaces and their media (soft-cascaded by properties FK)
       const { data: userSpaces } = await fastify.supabase
         .from('properties').select('id').eq('user_id', id)
       if (userSpaces?.length) {
         const spaceIds = userSpaces.map((s: any) => s.id)
+        await fastify.supabase.from('leads').delete().in('property_id', spaceIds)
+        await fastify.supabase.from('property_media').delete().in('property_id', spaceIds)
         await fastify.supabase.from('properties').delete().in('id', spaceIds)
       }
 
       await fastify.supabase.from('profiles').delete().eq('id', id)
-
-      // Delete Supabase auth user
-      const { error: authError } = await fastify.supabase.auth.admin.deleteUser(id)
-      if (authError) fastify.log.warn({ id, authError }, 'Failed to delete Supabase auth user — profile already deleted')
 
       await auditLog(fastify, request, 'delete_user', 'user', id)
       fastify.log.warn({ id }, 'Admin deleted user account')
@@ -305,6 +321,11 @@ export default async function (fastify: FastifyInstance) {
       const { targetUserId } = request.body as any
       if (!targetUserId) return reply.code(400).send({ statusMessage: 'targetUserId required' })
 
+      // Verify target user exists before transferring
+      const { data: targetUser } = await fastify.supabase
+        .from('profiles').select('id').eq('id', targetUserId).single()
+      if (!targetUser) return reply.code(404).send({ statusMessage: 'Target user not found' })
+
       const { data, error } = await fastify.supabase
         .from('properties')
         .update({ user_id: targetUserId })
@@ -335,9 +356,11 @@ export default async function (fastify: FastifyInstance) {
 
   fastify.post('/users/:id/notes', async (request, reply) => {
     const { id } = request.params as any
-    const { body: noteBody, adminId } = request.body as any
+    const { body: noteBody } = request.body as any
+    // adminId comes from the verified X-Admin-Id header, not request body
+    const adminId = request.headers['x-admin-id'] as string | undefined
     if (!noteBody?.trim()) return reply.code(400).send({ statusMessage: 'Note body required' })
-    if (!adminId) return reply.code(400).send({ statusMessage: 'adminId required' })
+    if (!adminId) return reply.code(400).send({ statusMessage: 'Admin identity required' })
 
     const { data, error } = await fastify.supabase
       .from('admin_notes')
@@ -555,6 +578,11 @@ export default async function (fastify: FastifyInstance) {
       const { targetUserId } = request.body as any
       if (!targetUserId) return reply.code(400).send({ statusMessage: 'targetUserId required' })
 
+      // Verify target user exists
+      const { data: targetUser } = await fastify.supabase
+        .from('profiles').select('id').eq('id', targetUserId).single()
+      if (!targetUser) return reply.code(404).send({ statusMessage: 'Target user not found' })
+
       const { data, error } = await fastify.supabase
         .from('properties').update({ user_id: targetUserId }).eq('id', id).select().single()
       if (error) throw error
@@ -671,10 +699,18 @@ export default async function (fastify: FastifyInstance) {
       } while (continuationToken)
 
       // Get all known storage keys from DB
-      const { data: dbKeys } = await fastify.supabase
-        .from('property_media').select('storage_key')
-      const knownSet = new Set((dbKeys ?? []).map((r: any) => r.storage_key))
+      const { data: dbKeys, count: dbCount } = await fastify.supabase
+        .from('property_media').select('storage_key', { count: 'exact' })
 
+      // Safety: refuse purge if DB returned 0 records and R2 has objects
+      // (would incorrectly classify everything as orphaned)
+      if (!dryRun && (dbCount === 0 || dbCount === null) && listedObjects.length > 0) {
+        return reply.code(409).send({
+          statusMessage: 'Safety check failed: DB returned 0 media records but R2 has objects. Run dry-run first.',
+        })
+      }
+
+      const knownSet = new Set((dbKeys ?? []).map((r: any) => r.storage_key))
       const orphans = listedObjects.filter(k => !knownSet.has(k))
 
       if (!dryRun && orphans.length > 0) {
@@ -987,6 +1023,8 @@ export default async function (fastify: FastifyInstance) {
     try {
       const { subject, html, filter = {} } = request.body as any
       if (!subject || !html) return reply.code(400).send({ statusMessage: 'subject and html required' })
+      if (subject.length > 200) return reply.code(400).send({ statusMessage: 'Subject too long (max 200 chars)' })
+      if (html.length > 100_000) return reply.code(400).send({ statusMessage: 'HTML too large (max 100KB)' })
 
       let query = fastify.supabase.from('profiles').select('id, email, full_name')
       if (filter.plan) {
@@ -1140,6 +1178,199 @@ export default async function (fastify: FastifyInstance) {
       return reply.send({ success: true, data: { logs: data, total: count, page: pageNum, limit: limitNum } })
     } catch (error: any) {
       return reply.code(500).send({ statusMessage: 'Failed to fetch audit log' })
+    }
+  })
+
+  // ── MISSING SCENARIOS ──────────────────────────────────────────────────────
+
+  /**
+   * POST /admin/users/:id/recalculate-usage
+   * Recalculates storage_used_bytes and active_properties_count from actual DB data.
+   * Use when a user's quota counter gets out of sync.
+   */
+  fastify.post('/users/:id/recalculate-usage', async (request, reply) => {
+    try {
+      const { id } = request.params as any
+
+      const [
+        { data: mediaRows },
+        { count: activeSpaces },
+      ] = await Promise.all([
+        fastify.supabase
+          .from('property_media')
+          .select('file_size_bytes, properties!property_media_property_id_fkey(user_id)')
+          .eq('properties.user_id', id),
+        fastify.supabase
+          .from('properties')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', id)
+          .eq('is_published', true),
+      ])
+
+      const storageBytesActual = (mediaRows ?? []).reduce((sum: number, r: any) => sum + Number(r.file_size_bytes || 0), 0)
+      const activeCount = activeSpaces ?? 0
+
+      const { error } = await fastify.supabase
+        .from('usage_counters')
+        .upsert({
+          user_id: id,
+          storage_used_bytes: storageBytesActual,
+          active_properties_count: activeCount,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'user_id' })
+
+      if (error) throw error
+
+      await auditLog(fastify, request, 'recalculate_usage', 'user', id, {
+        storage_used_bytes: storageBytesActual,
+        active_properties_count: activeCount,
+      })
+
+      return reply.send({
+        success: true,
+        data: { storage_used_bytes: storageBytesActual, active_properties_count: activeCount },
+      })
+    } catch (error: any) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to recalculate usage' })
+    }
+  })
+
+  /**
+   * POST /admin/users/:id/revoke-sessions
+   * Signs out the user from all devices by invalidating their Supabase sessions.
+   * Use for compromised accounts or immediate access revocation.
+   */
+  fastify.post('/users/:id/revoke-sessions', async (request, reply) => {
+    try {
+      const { id } = request.params as any
+
+      const { error } = await fastify.supabase.auth.admin.signOut(id, 'global')
+      if (error) throw error
+
+      await auditLog(fastify, request, 'revoke_sessions', 'user', id)
+      fastify.log.warn({ id }, 'Admin revoked all sessions for user')
+      return reply.send({ success: true, data: { revoked: true } })
+    } catch (error: any) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to revoke sessions' })
+    }
+  })
+
+  /**
+   * POST /admin/users/:id/verify-email
+   * Force-marks the user's email as confirmed in Supabase Auth.
+   * Use when a user can't receive verification email but you've confirmed their identity.
+   */
+  fastify.post('/users/:id/verify-email', async (request, reply) => {
+    try {
+      const { id } = request.params as any
+
+      const { data, error } = await fastify.supabase.auth.admin.updateUserById(id, {
+        email_confirm: true,
+      })
+      if (error) throw error
+
+      await auditLog(fastify, request, 'verify_email', 'user', id)
+      return reply.send({ success: true, data: { verified: true, email: data.user?.email } })
+    } catch (error: any) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to verify email' })
+    }
+  })
+
+  /**
+   * GET /admin/leads/export
+   * Returns all leads as CSV. Capped at 10,000 rows.
+   */
+  fastify.get('/leads/export', async (request, reply) => {
+    try {
+      const { search = '', status = '' } = request.query as any
+
+      let query = fastify.supabase
+        .from('leads')
+        .select('id, name, email, phone, message, source, status, created_at, properties!leads_property_id_fkey(title, slug, profiles!properties_user_id_fkey(email))')
+        .order('created_at', { ascending: false })
+        .limit(10000)
+
+      if (search) query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`)
+      if (status) query = query.eq('status', status)
+
+      const { data, error } = await query
+      if (error) throw error
+
+      const rows = (data ?? []).map((l: any) => [
+        l.id,
+        l.name ?? '',
+        l.email ?? '',
+        l.phone ?? '',
+        (l.message ?? '').replace(/"/g, '""'),
+        l.source,
+        l.status,
+        l.created_at,
+        l.properties?.title ?? '',
+        l.properties?.profiles?.email ?? '',
+      ])
+
+      const header = 'id,name,email,phone,message,source,status,created_at,space_title,owner_email'
+      const csv = [header, ...rows.map((r: any[]) => r.map((v: any) => `"${v}"`).join(','))].join('\n')
+
+      return reply
+        .header('Content-Type', 'text/csv')
+        .header('Content-Disposition', 'attachment; filename="viewora-leads.csv"')
+        .send(csv)
+    } catch (error: any) {
+      return reply.code(500).send({ statusMessage: 'Failed to export leads' })
+    }
+  })
+
+  /**
+   * GET /admin/queue/job/:jobId
+   * Returns full detail of a specific job (any state) for debugging.
+   */
+  fastify.get('/queue/job/:jobId', async (request, reply) => {
+    try {
+      const { jobId } = request.params as any
+      const queue = getQueue()
+      const job = await queue.getJob(jobId)
+      if (!job) return reply.code(404).send({ statusMessage: 'Job not found' })
+
+      const state = await job.getState()
+      return reply.send({
+        success: true,
+        data: {
+          jobId: job.id,
+          state,
+          data: job.data,
+          attemptsMade: job.attemptsMade,
+          failedReason: job.failedReason,
+          stackTrace: job.stacktrace,
+          timestamp: job.timestamp,
+          processedOn: job.processedOn,
+          finishedOn: job.finishedOn,
+        },
+      })
+    } catch (error: any) {
+      return reply.code(500).send({ statusMessage: 'Failed to fetch job detail' })
+    }
+  })
+
+  /**
+   * GET /admin/users/:id/subscription-history
+   * Returns full subscription record including all fields for support scenarios.
+   */
+  fastify.get('/users/:id/subscription-history', async (request, reply) => {
+    try {
+      const { id } = request.params as any
+      const { data, error } = await fastify.supabase
+        .from('subscriptions')
+        .select('*, plans(*)')
+        .eq('user_id', id)
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      return reply.send({ success: true, data: data ?? [] })
+    } catch (error: any) {
+      return reply.code(500).send({ statusMessage: 'Failed to fetch subscription history' })
     }
   })
 }
