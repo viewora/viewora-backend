@@ -7,6 +7,23 @@ import { parseWithSchema } from '../utils/validation.js'
 import { sendTourPublishedEmail } from '../email/index.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
 
+// Converts a space title into a URL-safe slug.
+// "Modern 3-Bed Villa, Westlands" → "modern-3-bed-villa-westlands"
+// Falls back to "tour-{id fragment}" when title is absent or too short.
+function generateSlug(title: string | null | undefined, id: string): string {
+  const base = (title || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // strip accents
+    .replace(/[^a-z0-9\s-]/g, '')                     // keep alphanumeric + spaces + hyphens
+    .trim()
+    .replace(/[\s-]+/g, '-')                           // collapse spaces/hyphens
+    .replace(/^-+|-+$/g, '')                           // trim leading/trailing hyphens
+    .slice(0, 80)
+
+  if (base.length >= 3) return base
+  return `tour-${id.slice(0, 8)}`
+}
+
 const uuidSchema = z.string().uuid()
 
 const idParamsSchema = z.object({
@@ -463,9 +480,9 @@ export default async function (fastify: FastifyInstance) {
       if (!currentSpace.published_at) updates.published_at = new Date().toISOString()
       if (body.slug) updates.slug = body.slug
 
-      // 5. Slug Check — if missing, auto-generate one to unblock the user
+      // 5. Slug — auto-generate from title if not provided, falling back to id fragment
       if (!body.slug && !currentSpace.slug) {
-        updates.slug = `tour-${currentSpace.id.slice(0, 8)}`
+        updates.slug = generateSlug(currentSpace.title, currentSpace.id)
       }
     } else {
       updates.published_at = null
