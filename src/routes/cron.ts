@@ -427,34 +427,54 @@ export default async function cronRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // ── Phase 2: downgrade expired gifts ────────────────────────────────────
-    // Find manual subs that are now expired (current_period_end < now) and still marked 'active'
-    const { data: nowExpired } = await fastify.supabase
+    // ── Phase 2: notify + finalize expired gifts ────────────────────────────
+    // Handle two cases:
+    //   A) Still 'active' but past period_end (this cron runs before expireStaleSubscriptions)
+    //   B) Already 'expired' by expireStaleSubscriptions but not yet notified
+    // We use a Redis key to ensure we notify exactly once per sub.
+    const twentyFiveHoursAgo = new Date(now.getTime() - 25 * 60 * 60 * 1000)
+
+    const { data: expiredGifts } = await fastify.supabase
       .from('subscriptions')
-      .select('id, user_id, plans(name)')
+      .select('id, user_id, status, plans(name)')
       .eq('provider', 'manual')
-      .eq('status', 'active')
+      .in('status', ['active', 'expired'])
       .lt('current_period_end', now.toISOString())
+      // Only consider subs updated (or created) recently to avoid re-processing old records
+      .gte('updated_at', twentyFiveHoursAgo.toISOString())
 
     let downgraded = 0
-    if (nowExpired?.length) {
-      const subIds = nowExpired.map(s => s.id)
+    if (expiredGifts?.length) {
+      // Mark any still-active ones as expired
+      const stillActive = expiredGifts.filter(s => s.status === 'active').map(s => s.id)
+      if (stillActive.length) {
+        await fastify.supabase
+          .from('subscriptions')
+          .update({ status: 'expired', updated_at: now.toISOString() })
+          .in('id', stillActive)
+      }
 
-      // Mark as expired
-      await fastify.supabase
-        .from('subscriptions')
-        .update({ status: 'expired', updated_at: now.toISOString() })
-        .in('id', subIds)
+      const userMap = await batchGetUsers(fastify, expiredGifts.map(s => s.user_id))
 
-      const userMap = await batchGetUsers(fastify, nowExpired.map(s => s.user_id))
-
-      for (const sub of nowExpired) {
+      for (const sub of expiredGifts) {
         try {
+          // Idempotency: skip if we already sent the downgrade email for this sub
+          const notifyKey = `gift_expired_notified:${sub.id}`
+          if (fastify.redis) {
+            const alreadyNotified = await fastify.redis.get(notifyKey).catch(() => null)
+            if (alreadyNotified) continue
+          }
+
           const user = userMap.get(sub.user_id)
           if (!user?.email) continue
 
           const planName = (sub as any).plans?.name || 'Premium'
           await sendGiftExpiredEmail({ ownerEmail: user.email, name: user.name, planName })
+
+          // Mark as notified — keep for 7 days to prevent re-sending
+          if (fastify.redis) {
+            await fastify.redis.set(notifyKey, '1', { EX: 60 * 60 * 24 * 7 }).catch(() => {})
+          }
 
           // Bust Redis billing cache so quota checks immediately reflect Free limits
           if (fastify.redis) {

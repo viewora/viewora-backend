@@ -298,14 +298,48 @@ export default async function (fastify: FastifyInstance) {
     try {
       const { id } = request.params as any
       const { data: profile } = await fastify.supabase
-        .from('profiles').select('email').eq('id', id).single()
+        .from('profiles').select('email, full_name').eq('id', id).single()
       if (!profile?.email) return reply.code(404).send({ statusMessage: 'User email not found' })
 
-      const { error } = await fastify.supabase.auth.admin.generateLink({
+      // generateLink returns the recovery URL — then we send it ourselves via Resend
+      const { data: linkData, error: linkError } = await fastify.supabase.auth.admin.generateLink({
         type: 'recovery',
         email: profile.email,
       })
-      if (error) throw error
+      if (linkError) throw linkError
+
+      const recoveryUrl = (linkData as any)?.properties?.action_link
+      if (!recoveryUrl) throw new Error('Failed to generate recovery link')
+
+      const { Resend } = await import('resend')
+      const resend = new Resend(process.env.RESEND_API_KEY)
+      const name = profile.full_name?.trim().split(' ')[0] || null
+
+      await resend.emails.send({
+        from: 'Viewora <hello@viewora.software>',
+        to: profile.email,
+        subject: 'Reset your Viewora password',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #1a1a1a;">
+            <div style="background: #0a0a0b; padding: 24px 32px; border-radius: 12px 12px 0 0; text-align: center;">
+              <span style="color: #fff; font-size: 22px; font-weight: bold;">Viewora</span>
+            </div>
+            <div style="padding: 32px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
+              <h2 style="margin-top: 0;">Hi${name ? ` ${name}` : ''},</h2>
+              <p style="color: #4b5563; line-height: 1.6;">
+                An admin has requested a password reset for your account.
+                Click the button below to set a new password.
+              </p>
+              <a href="${recoveryUrl}" style="display: inline-block; background: #0a0a0b; color: #fff; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 15px; margin: 24px 0;">
+                Reset my password →
+              </a>
+              <p style="color: #6b7280; font-size: 13px;">
+                This link expires in 24 hours. If you didn't request this, ignore this email.
+              </p>
+            </div>
+          </div>
+        `,
+      })
 
       await auditLog(fastify, request, 'send_reset_email', 'user', id)
       return reply.send({ success: true, data: { sent: true, email: profile.email } })
@@ -1192,14 +1226,18 @@ export default async function (fastify: FastifyInstance) {
     try {
       const { id } = request.params as any
 
+      // Get all space IDs for this user first, then sum media sizes
+      const { data: userSpaces } = await fastify.supabase
+        .from('properties').select('id').eq('user_id', id)
+      const spaceIds = userSpaces?.map((s: any) => s.id) ?? []
+
       const [
         { data: mediaRows },
         { count: activeSpaces },
       ] = await Promise.all([
-        fastify.supabase
-          .from('property_media')
-          .select('file_size_bytes, properties!property_media_property_id_fkey(user_id)')
-          .eq('properties.user_id', id),
+        spaceIds.length
+          ? fastify.supabase.from('property_media').select('file_size_bytes').in('property_id', spaceIds)
+          : Promise.resolve({ data: [] }),
         fastify.supabase
           .from('properties')
           .select('id', { count: 'exact', head: true })
