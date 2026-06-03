@@ -81,6 +81,36 @@ export default async function publicRoutes(fastify: FastifyInstance) {
     return reply.send({ tour: formattedData })
   })
 
+  // ── SITEMAP DATA ──────────────────────────────────────────
+  // Returns all published, public tour slugs + last-modified dates for sitemap generation.
+  // Lightweight: only reads two columns, no RPC, no per-row auth check.
+  fastify.get('/sitemap-data', {
+    config: {
+      rateLimit: { max: 10, timeWindow: '1 minute' },
+    },
+  }, async (req, reply) => {
+    const { data, error } = await fastify.supabase
+      .from('properties')
+      .select('slug, updated_at')
+      .eq('is_published', true)
+      .eq('visibility', 'public')
+      .not('slug', 'is', null)
+      .order('updated_at', { ascending: false })
+      .limit(50000)
+
+    if (error) {
+      return reply.code(500).send({ statusMessage: 'Failed to fetch sitemap data' })
+    }
+
+    reply.header('Cache-Control', 'public, s-maxage=3600')
+    return reply.send({
+      slugs: (data ?? []).map((row: any) => ({
+        slug: row.slug as string,
+        updated_at: row.updated_at as string,
+      })),
+    })
+  })
+
   // ── PUBLIC TOUR VIEWER ────────────────────────────────────
   // No auth required. Calls the get_tour_data() RPC which checks
   // is_published=true AND visibility='public' before returning anything.
