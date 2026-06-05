@@ -962,6 +962,61 @@ export default async function (fastify: FastifyInstance) {
     }
   })
 
+  // ── CAPTURE REQUESTS ───────────────────────────────────────────────────────
+
+  fastify.get('/capture-requests', async (request, reply) => {
+    try {
+      const { page = '1', limit = '50', search = '', status = '', dept = '' } = request.query as any
+      const pageNum  = Math.max(1, parseInt(page))
+      const limitNum = Math.min(200, parseInt(limit))
+      const from = (pageNum - 1) * limitNum
+      const to   = from + limitNum - 1
+
+      let q = fastify.supabase
+        .from('capture_requests')
+        .select('*, profiles!capture_requests_user_id_fkey(email, full_name)', { count: 'exact' })
+        .order('created_at', { ascending: false })
+        .range(from, to)
+
+      if (search) q = q.or(`name.ilike.%${search}%,email.ilike.%${search}%,address.ilike.%${search}%`)
+      if (status) q = q.eq('status', status)
+      if (dept)   q = q.eq('dept', dept)
+
+      const { data, count, error } = await q
+      if (error) throw error
+      return reply.send({ success: true, data: { requests: data ?? [], total: count ?? 0, page: pageNum, limit: limitNum } })
+    } catch {
+      return reply.code(500).send({ statusMessage: 'Failed to fetch capture requests' })
+    }
+  })
+
+  fastify.patch('/capture-requests/:id', async (request, reply) => {
+    try {
+      const { id } = request.params as any
+      const { status } = request.body as any
+      const allowed = ['pending', 'confirmed', 'completed', 'cancelled']
+      if (!allowed.includes(status)) return reply.code(400).send({ statusMessage: 'Invalid status' })
+      const { data, error } = await fastify.supabase
+        .from('capture_requests').update({ status }).eq('id', id).select('id, status').single()
+      if (error) throw error
+      await auditLog(fastify, request, 'update_capture_status', 'capture_request', id, { status })
+      return reply.send({ success: true, data })
+    } catch {
+      return reply.code(500).send({ statusMessage: 'Failed to update status' })
+    }
+  })
+
+  fastify.delete('/capture-requests/:id', async (request, reply) => {
+    try {
+      const { id } = request.params as any
+      await fastify.supabase.from('capture_requests').delete().eq('id', id)
+      await auditLog(fastify, request, 'delete_capture_request', 'capture_request', id)
+      return reply.send({ success: true })
+    } catch {
+      return reply.code(500).send({ statusMessage: 'Failed to delete capture request' })
+    }
+  })
+
   // ── PLANS ──────────────────────────────────────────────────────────────────
 
   fastify.get('/plans', async (_request, reply) => {
