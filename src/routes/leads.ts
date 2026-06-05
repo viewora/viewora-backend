@@ -135,7 +135,7 @@ export default async function (fastify: FastifyInstance) {
 
     const { data: leads, error, count } = await fastify.supabase
       .from('leads')
-      .select('*, properties!inner(title, user_id)', { count: 'exact' })
+      .select('*, properties!inner(id, title, slug, user_id)', { count: 'exact' })
       .eq('properties.user_id', userId)
       .order('created_at', { ascending: false })
       .range(from, to)
@@ -145,7 +145,16 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(500).send({ statusMessage: 'Failed to fetch leads' })
     }
 
-    return reply.send({ data: leads, total: count ?? 0, page, limit })
+    // Map DB shape → frontend shape (property_id→project_id, properties→projects)
+    const transformed = (leads ?? []).map((l: any) => ({
+      ...l,
+      project_id: l.property_id,
+      projects: l.properties
+        ? { id: l.properties.id, name: l.properties.title, slug: l.properties.slug ?? null }
+        : null,
+    }))
+
+    return reply.send({ data: transformed, total: count ?? 0, page, limit })
   })
 
   // AUTH ROUTE: Count leads created within the last N days
