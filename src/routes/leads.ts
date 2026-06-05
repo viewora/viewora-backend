@@ -115,12 +115,15 @@ export default async function (fastify: FastifyInstance) {
         if (ownerErr || !ownerData?.user?.email) return
         const owner = ownerData.user
 
-        await sendLeadNotification({
-          ownerEmail: owner.email!,
-          spaceName: prop.title,
-          spaceSlug: prop.slug,
-          lead: { name: cleanName, email: cleanEmail, phone: cleanPhone, message: cleanMessage },
-        })
+        // WhatsApp click leads have no email — skip the notification (no contact info to surface)
+        if (cleanEmail) {
+          await sendLeadNotification({
+            ownerEmail: owner.email!,
+            spaceName: prop.title,
+            spaceSlug: prop.slug,
+            lead: { name: cleanName, email: cleanEmail, phone: cleanPhone, message: cleanMessage },
+          })
+        }
       } catch (err) {
         fastify.log.error(err, 'Lead notification email failed')
       }
