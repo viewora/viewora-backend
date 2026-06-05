@@ -972,9 +972,10 @@ export default async function (fastify: FastifyInstance) {
       const from = (pageNum - 1) * limitNum
       const to   = from + limitNum - 1
 
+      // name/email/phone are stored directly on the row — no join needed
       let q = fastify.supabase
         .from('capture_requests')
-        .select('*, profiles!capture_requests_user_id_fkey(email, full_name)', { count: 'exact' })
+        .select('*', { count: 'exact' })
         .order('created_at', { ascending: false })
         .range(from, to)
 
@@ -983,9 +984,14 @@ export default async function (fastify: FastifyInstance) {
       if (dept)   q = q.eq('dept', dept)
 
       const { data, count, error } = await q
-      if (error) throw error
+      if (error) {
+        fastify.log.error(error, 'capture_requests query failed — table may not exist yet')
+        // Return empty rather than 500 if the table hasn't been created yet
+        return reply.send({ success: true, data: { requests: [], total: 0, page: pageNum, limit: limitNum, hint: 'Run migration-capture-requests.sql in Supabase to create the table.' } })
+      }
       return reply.send({ success: true, data: { requests: data ?? [], total: count ?? 0, page: pageNum, limit: limitNum } })
-    } catch {
+    } catch (err: any) {
+      fastify.log.error(err, 'Failed to fetch capture requests')
       return reply.code(500).send({ statusMessage: 'Failed to fetch capture requests' })
     }
   })
