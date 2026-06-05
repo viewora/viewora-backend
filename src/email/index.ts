@@ -635,6 +635,85 @@ export async function sendLeadNotification(params: {
   })
 }
 
+export async function sendCaptureRequestEmail(params: {
+  userEmail: string
+  userName: string
+  serviceName: string
+  servicePrice: string
+  phone: string
+  address: string
+  spaceName?: string | null
+  preferredDate?: string | null
+  notes?: string | null
+  planName?: string | null
+}): Promise<void> {
+  if (!resend) return
+  const { userEmail, userName, serviceName, servicePrice, phone, address, spaceName, preferredDate, notes, planName } = params
+
+  const safeName      = escapeHtml(userName)
+  const safeService   = escapeHtml(serviceName)
+  const safePrice     = escapeHtml(servicePrice)
+  const safePhone     = escapeHtml(phone)
+  const safeAddress   = escapeHtml(address)
+  const safeSpace     = spaceName     ? escapeHtml(spaceName)     : null
+  const safeDate      = preferredDate ? escapeHtml(preferredDate) : null
+  const safeNotes     = notes         ? escapeHtml(notes)         : null
+  const safePlan      = planName      ? escapeHtml(planName)      : 'Free'
+
+  const detailRows = [
+    `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;border-top:1px solid #e5e7eb;">Service</td><td style="padding:8px 0;font-weight:bold;font-size:14px;text-align:right;border-top:1px solid #e5e7eb;">${safeService}</td></tr>`,
+    `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;border-top:1px solid #e5e7eb;">Price</td><td style="padding:8px 0;font-weight:bold;font-size:14px;text-align:right;border-top:1px solid #e5e7eb;">${safePrice}</td></tr>`,
+    `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;border-top:1px solid #e5e7eb;">Address</td><td style="padding:8px 0;font-size:14px;text-align:right;border-top:1px solid #e5e7eb;">${safeAddress}</td></tr>`,
+    safeSpace ? `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;border-top:1px solid #e5e7eb;">Property Name</td><td style="padding:8px 0;font-size:14px;text-align:right;border-top:1px solid #e5e7eb;">${safeSpace}</td></tr>` : '',
+    safeDate  ? `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;border-top:1px solid #e5e7eb;">Preferred Date</td><td style="padding:8px 0;font-size:14px;text-align:right;border-top:1px solid #e5e7eb;">${safeDate}</td></tr>` : '',
+    `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;border-top:1px solid #e5e7eb;">Phone</td><td style="padding:8px 0;font-size:14px;text-align:right;border-top:1px solid #e5e7eb;">${safePhone}</td></tr>`,
+    `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;border-top:1px solid #e5e7eb;">Plan</td><td style="padding:8px 0;font-size:14px;text-align:right;border-top:1px solid #e5e7eb;">${safePlan}</td></tr>`,
+  ].join('')
+
+  // Notification to the Viewora ops team
+  await resend.emails.send({
+    from: FROM,
+    to: 'hello@viewora.software',
+    subject: `New Capture Booking — ${safeService} (${safePrice})`,
+    html: emailShell(`
+      <h2 style="font-size:20px;margin-top:0;">New capture booking request</h2>
+      <p style="color:#4b5563;line-height:1.6;">
+        <strong>${safeName}</strong> (<a href="mailto:${escapeHtml(userEmail)}" style="color:#0066cc;">${escapeHtml(userEmail)}</a>)
+        just booked a <strong>${safeService}</strong> shoot.
+      </p>
+      <div style="background:#f9fafb;border-radius:8px;padding:20px;margin:24px 0;">
+        <table cellpadding="0" cellspacing="0" style="width:100%;">${detailRows}</table>
+      </div>
+      ${safeNotes ? `<p style="color:#4b5563;font-size:14px;"><strong>Notes:</strong> ${safeNotes}</p>` : ''}
+      <p style="color:#6b7280;font-size:13px;margin-bottom:0;">Reply to this email to confirm the booking with the client.</p>
+    `),
+    replyTo: userEmail,
+  })
+
+  // Confirmation to the user
+  await resend.emails.send({
+    from: FROM,
+    to: userEmail,
+    subject: `Booking request received — ${safeService}`,
+    html: emailShell(`
+      <h2 style="font-size:20px;margin-top:0;">${greet(userName)}</h2>
+      <p style="color:#4b5563;line-height:1.6;">
+        We've received your booking request for a <strong>${safeService}</strong> shoot.
+        Our team will contact you within <strong>24 hours</strong> to confirm the details.
+      </p>
+      <div style="background:#f9fafb;border-radius:8px;padding:20px;margin:24px 0;">
+        <table cellpadding="0" cellspacing="0" style="width:100%;">${detailRows}</table>
+      </div>
+      ${safeNotes ? `<p style="color:#4b5563;font-size:14px;"><strong>Your notes:</strong> ${safeNotes}</p>` : ''}
+      ${ctaButton(`${APP_URL}/app/capture`, 'View all services →')}
+      <p style="color:#6b7280;font-size:13px;margin-bottom:0;">
+        Questions? Reply to this email or write to
+        <a href="mailto:hello@viewora.software" style="color:#0066cc;">hello@viewora.software</a>.
+      </p>
+    `),
+  })
+}
+
 export async function sendTourPublishedEmail(params: {
   ownerEmail: string
   spaceName: string

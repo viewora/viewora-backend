@@ -27,6 +27,7 @@ import hotspotsRoutes from './routes/hotspots.js'
 import publicRoutes from './routes/public.js'
 import cronRoutes from './routes/cron.js'
 import autolinkRoutes from './routes/autolink.js'
+import captureRoutes from './routes/capture.js'
 import { createUploadQueue } from './queues/upload.queue.js'
 import type { Queue } from 'bullmq'
 import { getMetrics } from './utils/metrics.js'
@@ -366,6 +367,7 @@ fastify.register(hotspotsRoutes)
 fastify.register(publicRoutes)
 fastify.register(cronRoutes)
 fastify.register(autolinkRoutes)
+fastify.register(captureRoutes, { prefix: '/capture' })
 process.stdout.write('✅ All plugins and routes registered\n')
 
 // Alias for /plans (used by frontend dashboard) to avoid 404
