@@ -673,7 +673,7 @@ export async function sendCaptureRequestEmail(params: {
   // Notification to the Viewora ops team
   await resend.emails.send({
     from: FROM,
-    to: 'hello@viewora.software',
+    to: 'vieworasoftware@gmail.com',
     subject: `New Capture Booking — ${safeService} (${safePrice})`,
     html: emailShell(`
       <h2 style="font-size:20px;margin-top:0;">New capture booking request</h2>
