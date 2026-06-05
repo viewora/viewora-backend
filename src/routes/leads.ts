@@ -142,10 +142,27 @@ export default async function (fastify: FastifyInstance) {
     const from = (page - 1) * limit
     const to = from + limit - 1
 
+    // Step 1: get this user's property IDs — avoids unreliable joined-table filter
+    const { data: userProps, error: propsErr } = await fastify.supabase
+      .from('properties')
+      .select('id')
+      .eq('user_id', userId)
+
+    if (propsErr) {
+      fastify.log.error(propsErr)
+      return reply.code(500).send({ statusMessage: 'Failed to fetch leads' })
+    }
+
+    const propIds = (userProps ?? []).map((p: any) => p.id)
+    if (!propIds.length) {
+      return reply.send({ data: [], total: 0, page, limit })
+    }
+
+    // Step 2: fetch leads for those properties + join space name/slug
     const { data: leads, error, count } = await fastify.supabase
       .from('leads')
-      .select('*, properties!inner(id, title, slug, user_id)', { count: 'exact' })
-      .eq('properties.user_id', userId)
+      .select('*, properties(id, title, slug)', { count: 'exact' })
+      .in('property_id', propIds)
       .order('created_at', { ascending: false })
       .range(from, to)
 
