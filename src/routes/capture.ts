@@ -108,6 +108,84 @@ export default async function captureRoutes(fastify: FastifyInstance) {
     return reply.send({ data: data ?? [] })
   })
 
+  // GET /capture/free-status — check if this user has already claimed their free shoot
+  fastify.get('/free-status', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const user = request.user as any
+    const { count } = await fastify.supabase
+      .from('capture_requests')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.sub)
+      .eq('service_id', 'free-demo')
+    return reply.send({ claimed: (count ?? 0) > 0 })
+  })
+
+  // POST /capture/claim-free — claim a free demo shoot (one per account)
+  fastify.post('/claim-free', {
+    preHandler: [fastify.authenticate],
+    config: {
+      rateLimit: { max: 2, timeWindow: '1 hour', keyGenerator: (req: any) => req.user?.sub ?? req.ip },
+    },
+  }, async (request, reply) => {
+    const user = request.user as any
+    const body = parseWithSchema(reply, captureRequestBodySchema, request.body)
+    if (!body) return
+
+    // One free claim per account
+    const { count } = await fastify.supabase
+      .from('capture_requests')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.sub)
+      .eq('service_id', 'free-demo')
+
+    if ((count ?? 0) > 0) {
+      return reply.code(409).send({ statusMessage: 'You have already claimed your free demo shoot.' })
+    }
+
+    const name    = sanitizeLeadText(body.name, 100)
+    const email   = body.email.trim().toLowerCase()
+    const phone   = sanitizeLeadText(body.phone, 30)
+    const address = sanitizeLeadText(body.address, 300)
+    const notes   = body.notes ? sanitizeLeadText(body.notes, 1000) : null
+
+    const { data: saved, error: insertErr } = await fastify.supabase
+      .from('capture_requests')
+      .insert({
+        user_id:       user.sub,
+        service_id:    'free-demo',
+        service_name:  'Free Demo Shoot',
+        service_price: 'FREE',
+        dept:          body.dept ?? null,
+        name,
+        email,
+        phone,
+        address,
+        space_name:    body.spaceName   ? sanitizeLeadText(body.spaceName, 120)  : null,
+        preferred_date: body.preferredDate ?? null,
+        notes,
+        plan_name:     body.planName ?? null,
+      })
+      .select()
+      .single()
+
+    if (insertErr) fastify.log.error(insertErr, 'Failed to persist free claim')
+
+    void sendCaptureRequestEmail({
+      userEmail:     email,
+      userName:      name,
+      serviceName:   '🎁 FREE Demo Shoot (Claimed)',
+      servicePrice:  'FREE',
+      phone,
+      address,
+      spaceName:     body.spaceName   ? sanitizeLeadText(body.spaceName, 120) : null,
+      preferredDate: body.preferredDate ?? null,
+      notes,
+      planName:      body.planName ?? null,
+    }).catch((err) => fastify.log.error(err, 'Free claim email failed'))
+
+    fastify.log.info({ userId: user.sub, email }, 'Free demo shoot claimed')
+    return reply.code(201).send({ statusMessage: 'Free shoot claimed!', id: saved?.id ?? null })
+  })
+
   // PATCH /capture/requests/:id — update booking status
   fastify.patch('/requests/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = request.user as any
