@@ -27,6 +27,10 @@ const idParamsSchema = z.object({
   id: z.string().uuid(),
 })
 
+const patchLeadBodySchema = z.object({
+  status: z.enum(['new', 'contacted', 'qualified', 'closed']),
+})
+
 export default async function (fastify: FastifyInstance) {
   // PUBLIC ROUTE: Submit a lead
   fastify.post('/', {
@@ -207,5 +211,77 @@ export default async function (fastify: FastifyInstance) {
 
     if (error) return reply.code(500).send({ statusMessage: 'Failed to fetch leads' })
     return reply.send(leads)
+  })
+
+  // AUTH ROUTE: Update lead status
+  fastify.patch('/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const user = request.user as any
+    const userId = user.sub
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const body = parseWithSchema(reply, patchLeadBodySchema, request.body)
+    if (!body) return
+
+    // Verify ownership: lead must belong to a space owned by this user
+    const { data: lead } = await fastify.supabase
+      .from('leads')
+      .select('id, property_id')
+      .eq('id', params.id)
+      .single()
+
+    if (!lead) return reply.code(404).send({ statusMessage: 'Lead not found' })
+
+    const { data: space } = await fastify.supabase
+      .from('properties')
+      .select('id')
+      .eq('id', lead.property_id)
+      .eq('user_id', userId)
+      .single()
+
+    if (!space) return reply.code(403).send({ statusMessage: 'Unauthorized' })
+
+    const { data: updated, error } = await fastify.supabase
+      .from('leads')
+      .update({ status: body.status, updated_at: new Date().toISOString() })
+      .eq('id', params.id)
+      .select('id, status, updated_at')
+      .single()
+
+    if (error) return reply.code(500).send({ statusMessage: 'Failed to update lead' })
+    return reply.send(updated)
+  })
+
+  // AUTH ROUTE: Delete a lead
+  fastify.delete('/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const user = request.user as any
+    const userId = user.sub
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+
+    // Verify ownership
+    const { data: lead } = await fastify.supabase
+      .from('leads')
+      .select('id, property_id')
+      .eq('id', params.id)
+      .single()
+
+    if (!lead) return reply.code(404).send({ statusMessage: 'Lead not found' })
+
+    const { data: space } = await fastify.supabase
+      .from('properties')
+      .select('id')
+      .eq('id', lead.property_id)
+      .eq('user_id', userId)
+      .single()
+
+    if (!space) return reply.code(403).send({ statusMessage: 'Unauthorized' })
+
+    const { error } = await fastify.supabase
+      .from('leads')
+      .delete()
+      .eq('id', params.id)
+
+    if (error) return reply.code(500).send({ statusMessage: 'Failed to delete lead' })
+    return reply.code(204).send()
   })
 }
