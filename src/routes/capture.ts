@@ -3,6 +3,16 @@ import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { sanitizeLeadText } from '../utils/sanitize.js'
 import { sendCaptureRequestEmail } from '../email/index.js'
+import { checkUserQuota } from '../utils/quotas.js'
+
+// Monthly free shoot allowance per plan name
+const PLAN_SHOOT_ALLOWANCES: Record<string, number> = {
+  Free:    0,
+  Starter: 0,
+  Plus:    1,
+  Pro:     2,
+  Elite:   4,
+}
 
 const captureRequestBodySchema = z.object({
   name:          z.string().trim().min(1).max(100),
@@ -108,37 +118,60 @@ export default async function captureRoutes(fastify: FastifyInstance) {
     return reply.send({ data: data ?? [] })
   })
 
-  // GET /capture/free-status — check if this user has already claimed their free shoot
+  // GET /capture/free-status — return plan allowance and this month's usage
   fastify.get('/free-status', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = request.user as any
+
+    const { plan } = await checkUserQuota(fastify, user.sub)
+    const allowed = PLAN_SHOOT_ALLOWANCES[plan?.name ?? 'Free'] ?? 0
+
+    // Count free claims this calendar month
+    const monthStart = new Date()
+    monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0)
+
     const { count } = await fastify.supabase
       .from('capture_requests')
       .select('id', { count: 'exact', head: true })
       .eq('user_id', user.sub)
       .eq('service_id', 'free-demo')
-    return reply.send({ claimed: (count ?? 0) > 0 })
+      .gte('created_at', monthStart.toISOString())
+
+    const used = count ?? 0
+    return reply.send({ allowed, used, remaining: Math.max(0, allowed - used), planName: plan?.name ?? 'Free' })
   })
 
-  // POST /capture/claim-free — claim a free demo shoot (one per account)
+  // POST /capture/claim-free — use a plan-included free shoot (monthly limit)
   fastify.post('/claim-free', {
     preHandler: [fastify.authenticate],
     config: {
-      rateLimit: { max: 2, timeWindow: '1 hour', keyGenerator: (req: any) => req.user?.sub ?? req.ip },
+      rateLimit: { max: 5, timeWindow: '1 hour', keyGenerator: (req: any) => req.user?.sub ?? req.ip },
     },
   }, async (request, reply) => {
     const user = request.user as any
     const body = parseWithSchema(reply, captureRequestBodySchema, request.body)
     if (!body) return
 
-    // One free claim per account
+    // Check plan allowance
+    const { plan } = await checkUserQuota(fastify, user.sub)
+    const allowed = PLAN_SHOOT_ALLOWANCES[plan?.name ?? 'Free'] ?? 0
+
+    if (allowed === 0) {
+      return reply.code(403).send({ statusMessage: 'Free shoots are not included in your current plan. Upgrade to Plus or higher.' })
+    }
+
+    // Check monthly usage
+    const monthStart = new Date()
+    monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0)
+
     const { count } = await fastify.supabase
       .from('capture_requests')
       .select('id', { count: 'exact', head: true })
       .eq('user_id', user.sub)
       .eq('service_id', 'free-demo')
+      .gte('created_at', monthStart.toISOString())
 
-    if ((count ?? 0) > 0) {
-      return reply.code(409).send({ statusMessage: 'You have already claimed your free demo shoot.' })
+    if ((count ?? 0) >= allowed) {
+      return reply.code(409).send({ statusMessage: `You've used all ${allowed} free shoot${allowed > 1 ? 's' : ''} for this month. Your allowance resets on the 1st.` })
     }
 
     const name    = sanitizeLeadText(body.name, 100)
@@ -150,19 +183,16 @@ export default async function captureRoutes(fastify: FastifyInstance) {
     const { data: saved, error: insertErr } = await fastify.supabase
       .from('capture_requests')
       .insert({
-        user_id:       user.sub,
-        service_id:    'free-demo',
-        service_name:  'Free Demo Shoot',
-        service_price: 'FREE',
-        dept:          body.dept ?? null,
-        name,
-        email,
-        phone,
-        address,
-        space_name:    body.spaceName   ? sanitizeLeadText(body.spaceName, 120)  : null,
+        user_id:        user.sub,
+        service_id:     'free-demo',
+        service_name:   `Free Shoot — ${plan.name} Plan`,
+        service_price:  'FREE (Plan Included)',
+        dept:           body.dept ?? null,
+        name, email, phone, address,
+        space_name:     body.spaceName     ? sanitizeLeadText(body.spaceName, 120)  : null,
         preferred_date: body.preferredDate ?? null,
         notes,
-        plan_name:     body.planName ?? null,
+        plan_name:      plan.name,
       })
       .select()
       .single()
@@ -172,18 +202,17 @@ export default async function captureRoutes(fastify: FastifyInstance) {
     void sendCaptureRequestEmail({
       userEmail:     email,
       userName:      name,
-      serviceName:   '🎁 FREE Demo Shoot (Claimed)',
-      servicePrice:  'FREE',
-      phone,
-      address,
-      spaceName:     body.spaceName   ? sanitizeLeadText(body.spaceName, 120) : null,
+      serviceName:   `🎁 Free Shoot — ${plan.name} Plan`,
+      servicePrice:  'FREE (Plan Included)',
+      phone, address,
+      spaceName:     body.spaceName ? sanitizeLeadText(body.spaceName, 120) : null,
       preferredDate: body.preferredDate ?? null,
       notes,
-      planName:      body.planName ?? null,
+      planName:      plan.name,
     }).catch((err) => fastify.log.error(err, 'Free claim email failed'))
 
-    fastify.log.info({ userId: user.sub, email }, 'Free demo shoot claimed')
-    return reply.code(201).send({ statusMessage: 'Free shoot claimed!', id: saved?.id ?? null })
+    fastify.log.info({ userId: user.sub, email, planName: plan.name }, 'Plan free shoot claimed')
+    return reply.code(201).send({ statusMessage: 'Free shoot booked!', id: saved?.id ?? null })
   })
 
   // PATCH /capture/requests/:id — update booking status
