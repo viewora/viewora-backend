@@ -48,6 +48,7 @@ const updateSpaceBodySchema = z.object({
   location_lat: z.number().min(-90).max(90).nullable().optional(),
   location_lng: z.number().min(-180).max(180).nullable().optional(),
   logo_url: z.string().url().max(2048).nullable().optional(),
+  floorplan_url: z.string().url().max(2048).nullable().optional(),
   phone: z.string().max(50).nullable().optional(),
   email: z.string().email().max(255).nullable().optional(),
   slug: slugSchema.nullable().optional(),
@@ -87,7 +88,7 @@ export default async function (fastify: FastifyInstance) {
 
     const { data, error, count } = await fastify.supabase
       .from('properties')
-      .select('id, title, slug, description, property_type, location_text, location_lat, location_lng, logo_url, phone, email, cover_image_url, has_360, has_gallery, is_published, visibility, lead_form_enabled, branding_enabled, created_at, updated_at', { count: 'exact' })
+      .select('id, title, slug, description, property_type, location_text, location_lat, location_lng, logo_url, floorplan_url, phone, email, cover_image_url, has_360, has_gallery, is_published, visibility, lead_form_enabled, branding_enabled, created_at, updated_at', { count: 'exact' })
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
       .range(from, to)
@@ -117,7 +118,7 @@ export default async function (fastify: FastifyInstance) {
       .from('properties')
       .select(`
         id, title, slug, description, property_type, location_text, location_lat, location_lng,
-        logo_url, phone, email, cover_image_url, has_360, has_gallery, is_published, published_at,
+        logo_url, floorplan_url, phone, email, cover_image_url, has_360, has_gallery, is_published, published_at,
         visibility, lead_form_enabled, branding_enabled,
         cta_enabled, cta_button_text, cta_action, cta_destination,
         created_at, updated_at,
@@ -218,6 +219,7 @@ export default async function (fastify: FastifyInstance) {
     if (body.location_lat !== undefined) updates.location_lat = body.location_lat
     if (body.location_lng !== undefined) updates.location_lng = body.location_lng
     if (body.logo_url !== undefined) updates.logo_url = body.logo_url
+    if (body.floorplan_url !== undefined) updates.floorplan_url = body.floorplan_url
     if (body.phone !== undefined) updates.phone = body.phone
     if (body.email !== undefined) updates.email = body.email
     if (body.cta_enabled !== undefined) updates.cta_enabled = body.cta_enabled
@@ -373,6 +375,55 @@ export default async function (fastify: FastifyInstance) {
     const rawExt = (body.fileName.split('.').pop() ?? '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
     const fileExt = rawExt || 'jpg'
     const objectKey = `spaces/${id}/logo/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${fileExt}`
+
+    const command = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: objectKey,
+      ContentType: body.contentType,
+      CacheControl: 'public, max-age=31536000, immutable',
+    })
+
+    try {
+      const uploadUrl = await getSignedUrl(fastify.s3, command, { expiresIn: 900 })
+      const customDomain = process.env.MEDIA_DOMAIN || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
+      const publicUrl = `${customDomain}/${objectKey}`
+      return reply.send({ uploadUrl, publicUrl })
+    } catch (err) {
+      fastify.log.error(err)
+      return reply.code(500).send({ statusMessage: 'Failed to generate upload URL' })
+    }
+  })
+
+  // FLOOR PLAN upload — returns a presigned PUT URL; client PUTs the file, then PATCHes /spaces/:id with floorplan_url
+  fastify.post('/:id/floorplan-url', { preHandler: fastify.authenticate }, async (request, reply) => {
+    const user = request.user as any
+    const userId = user.sub
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const { id } = params
+
+    const floorplanUploadBodySchema = z.object({
+      fileName: z.string().trim().min(1).max(255),
+      contentType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']),
+    })
+    const body = parseWithSchema(reply, floorplanUploadBodySchema, request.body)
+    if (!body) return
+
+    const { data: space } = await fastify.supabase
+      .from('properties')
+      .select('id')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single()
+
+    if (!space) return reply.code(404).send({ statusMessage: 'Space not found' })
+
+    const bucketName = process.env.R2_BUCKET_NAME
+    if (!bucketName) return reply.code(500).send({ statusMessage: 'Storage configuration error' })
+
+    const rawExt = (body.fileName.split('.').pop() ?? '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
+    const fileExt = rawExt || 'jpg'
+    const objectKey = `spaces/${id}/floorplan/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${fileExt}`
 
     const command = new PutObjectCommand({
       Bucket: bucketName,
