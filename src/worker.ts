@@ -18,6 +18,7 @@ import {
   updateQueueMetrics,
 } from './utils/metrics.js'
 import { expireStaleSubscriptions } from './utils/subscription-expiry.js'
+import { generateSpaceFloorPlan } from './utils/floor-plan-generator.js'
 import { initSentry } from './utils/sentry.js'
 
 dotenv.config()
@@ -89,6 +90,33 @@ async function processUploadJob(job: any) {
   if (job.name === 'tile-scene') {
     const { sceneId, rawImageUrl, spaceId } = job.data
     await processTileScene(fastify.s3, fastify.supabase, { sceneId, rawImageUrl, spaceId }, redis)
+
+    // After this scene tiles, check whether all scenes in the space are now complete.
+    // If so, enqueue the floor-plan generation job (deduplicated by jobId so concurrent
+    // completions don't spawn duplicates).
+    const { count } = await fastify.supabase
+      .from('scenes')
+      .select('id', { count: 'exact', head: true })
+      .eq('space_id', spaceId)
+      .in('status', ['pending', 'processing'])
+
+    if ((count ?? 0) === 0) {
+      await metricsQueue.add('generate-floor-plan', { spaceId }, {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 },
+        jobId: `floor-plan-${spaceId}`,
+      })
+      fastify.log.info({ spaceId }, '[worker] All scenes tiled — floor-plan job enqueued')
+    }
+    return
+  }
+
+  // Generate the automated floor plan SVG for a space
+  if (job.name === 'generate-floor-plan') {
+    const { spaceId } = job.data
+    const cdnBase = process.env.MEDIA_DOMAIN
+      || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
+    await generateSpaceFloorPlan(fastify.s3, fastify.supabase, spaceId, cdnBase, redis)
     return
   }
 
