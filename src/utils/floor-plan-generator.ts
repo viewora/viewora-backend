@@ -162,7 +162,7 @@ function clamp(v: number, lo: number, hi: number): number {
 }
 
 // ── 3. Normalise virtual positions onto the canvas ────────────────────────
-function normalise(
+export function normalise(
   rawPositions: Map<string, Pos>,
 ): { normed: Map<string, Pos>; scale: number } {
   if (!rawPositions.size) return { normed: new Map(), scale: 1 }
@@ -346,10 +346,14 @@ export async function generateSpaceFloorPlan(
 
   const hs: HotspotRow[] = hotspots ?? []
 
-  // Compute positions
+  // Compute positions and normalise to canvas pixels in one pass.
+  // We save the CANVAS positions (not virtual coords) so that MapPlugin's
+  // `center` config receives pixel coordinates that actually match the SVG image.
   const rawPositions = computeScenePositions(scenes as SceneRow[], hs)
+  const { normed: canvasPositions } = normalise(rawPositions)
 
-  // Generate SVG
+  // Generate SVG — passes rawPositions; normalise() is called internally too,
+  // but that's a pure computation so the double call is harmless.
   const svg = generateFloorPlanSvg(scenes as SceneRow[], hs, rawPositions)
 
   // Upload SVG to R2
@@ -366,7 +370,6 @@ export async function generateSpaceFloorPlan(
       Key: key,
       Body: Buffer.from(svg, 'utf-8'),
       ContentType: 'image/svg+xml',
-      // Shorter TTL than tiles — floor plan regenerates when hotspots change
       CacheControl: 'public, max-age=3600, stale-while-revalidate=86400',
     }))
   } catch (err: any) {
@@ -376,8 +379,9 @@ export async function generateSpaceFloorPlan(
 
   const publicUrl = `${cdnBase}/${key}`
 
-  // Persist floorplan_url + update scene positions in parallel
-  const positionUpdates = Array.from(rawPositions.entries()).map(([id, pos]) =>
+  // Save canvas pixel positions — these are what MapPlugin uses for `center`
+  // to know where on the SVG image each scene dot sits.
+  const positionUpdates = Array.from(canvasPositions.entries()).map(([id, pos]) =>
     supabase.from('scenes')
       .update({ position_x: pos.x, position_y: pos.y })
       .eq('id', id)

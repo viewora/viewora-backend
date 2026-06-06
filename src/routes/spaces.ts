@@ -6,6 +6,7 @@ import { canCreateSpace, checkUserQuota } from '../utils/quotas.js'
 import { parseWithSchema } from '../utils/validation.js'
 import { sendTourPublishedEmail } from '../email/index.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
+import { generateSpaceFloorPlan } from '../utils/floor-plan-generator.js'
 
 // Converts a space title into a URL-safe slug.
 // "Modern 3-Bed Villa, Westlands" → "modern-3-bed-villa-westlands"
@@ -571,5 +572,45 @@ export default async function (fastify: FastifyInstance) {
     await invalidateSpaceCache(fastify, id)
 
     return reply.send(space)
+  })
+
+  // REGENERATE FLOOR PLAN — manually triggers floor-plan generation for a space.
+  // Use this for spaces that were tiled before the auto-generation feature shipped,
+  // or any time you want to refresh the floor plan after editing hotspots.
+  fastify.post('/:id/regenerate-floor-plan', { preHandler: fastify.authenticate }, async (request, reply) => {
+    const user = request.user as any
+    const userId = user.sub
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const { id } = params
+
+    // Verify ownership
+    const { data: space } = await fastify.supabase
+      .from('properties')
+      .select('id')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single()
+
+    if (!space) return reply.code(404).send({ statusMessage: 'Space not found' })
+
+    const cdnBase = process.env.MEDIA_DOMAIN
+      || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
+
+    const floorplanUrl = await generateSpaceFloorPlan(
+      fastify.s3,
+      fastify.supabase,
+      id,
+      cdnBase,
+      fastify.redis ?? null,
+    )
+
+    if (!floorplanUrl) {
+      return reply.code(422).send({
+        statusMessage: 'Floor plan could not be generated. Make sure the space has at least one scene with hotspots.',
+      })
+    }
+
+    return reply.send({ floorplanUrl })
   })
 }
