@@ -473,77 +473,112 @@ export default async function (fastify: FastifyInstance) {
     if (scenes.length < 2)
       return reply.code(400).send({ statusMessage: 'You need at least 2 ready scenes to auto-link.' })
 
-    const sceneIds = scenes.map(s => s.id)
+    // ── Switch to SSE streaming ────────────────────────────────────────────
+    // Takes over the raw socket so Fastify's onSend hooks don't interfere.
+    // The connection stays alive as long as we write events — Railway never
+    // times out a streaming response that is actively sending data.
+    reply.hijack()
+    const raw = reply.raw
+    raw.writeHead(200, {
+      'Content-Type':      'text/event-stream; charset=utf-8',
+      'Cache-Control':     'no-cache, no-transform',
+      'Connection':        'keep-alive',
+      'X-Accel-Buffering': 'no',   // disable nginx/Railway proxy buffering
+    })
 
-    // Fetch ALL existing hotspots across the tour in one query
-    const { data: allHotspots } = await fastify.supabase
-      .from('hotspots')
-      .select('id, scene_id, type, label, yaw, pitch, target_scene_id')
-      .in('scene_id', sceneIds)
+    let clientGone = false
+    raw.on('close', () => { clientGone = true })
+    raw.on('error', () => { clientGone = true })
 
-    // Group hotspots by scene
-    const hotspotsByScene: Record<string, any[]> = {}
-    for (const h of (allHotspots ?? [])) {
-      if (!hotspotsByScene[h.scene_id]) hotspotsByScene[h.scene_id] = []
-      hotspotsByScene[h.scene_id].push(h)
+    const sendEvent = (event: string, data: object) => {
+      if (clientGone) return
+      try { raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
+      catch { clientGone = true }
     }
 
-    // Track which pairs are already linked (for nav dedup)
-    const linkedPairs = new Set<string>(
-      (allHotspots ?? [])
-        .filter((h: any) => h.type === 'scene_link' && h.target_scene_id)
-        .map((h: any) => `${h.scene_id}:${h.target_scene_id}`),
-    )
+    try {
+      const sceneIds = scenes.map(s => s.id)
 
-    // ── Analyse all scenes ─────────────────────────────────────────────────
-    const analyses: Array<{ sceneId: string } & SceneAnalysis> = []
+      // Fetch ALL existing hotspots across the tour in one query
+      const { data: allHotspots } = await fastify.supabase
+        .from('hotspots')
+        .select('id, scene_id, type, label, yaw, pitch, target_scene_id')
+        .in('scene_id', sceneIds)
 
-    for (let i = 0; i < scenes.length; i++) {
-      const scene = scenes[i]
-      if (!scene.thumbnail_url) {
-        analyses.push({ sceneId: scene.id, room_type: 'room', new_name: '', doorways: [], info_hotspots: [], remove_ids: [], model_used: 'none' })
-        continue
+      // Group hotspots by scene
+      const hotspotsByScene: Record<string, any[]> = {}
+      for (const h of (allHotspots ?? [])) {
+        if (!hotspotsByScene[h.scene_id]) hotspotsByScene[h.scene_id] = []
+        hotspotsByScene[h.scene_id].push(h)
       }
 
-      const existing = (hotspotsByScene[scene.id] ?? []).map((h: any) => ({
-        id:    h.id,
-        type:  h.type,
-        label: h.label || (h.type === 'scene_link' ? 'Navigation' : 'Info'),
-        yaw:   Number(h.yaw   || 0),
-        pitch: Number(h.pitch || 0),
-      }))
+      // Track which pairs are already linked (for nav dedup)
+      const linkedPairs = new Set<string>(
+        (allHotspots ?? [])
+          .filter((h: any) => h.type === 'scene_link' && h.target_scene_id)
+          .map((h: any) => `${h.scene_id}:${h.target_scene_id}`),
+      )
 
-      const context = buildSceneContext({
-        spaceTitle,
-        spaceType,
-        locationText,
-        totalScenes:      scenes.length,
-        sceneIndex:       i,
-        sceneName:        scene.name || `Scene ${i + 1}`,
-        prevSceneName:    i > 0               ? (scenes[i - 1].name || null) : null,
-        nextSceneName:    i < scenes.length-1 ? (scenes[i + 1].name || null) : null,
-        existingHotspots: existing,
-      })
+      // ── Analyse all scenes ─────────────────────────────────────────────────
+      const analyses: Array<{ sceneId: string } & SceneAnalysis> = []
 
-      try {
-        const result = await analyzeScene(scene.thumbnail_url, context, apiKey)
-        analyses.push({ sceneId: scene.id, ...result })
-        fastify.log.info({
-          sceneId:      scene.id,
-          room_type:    result.room_type,
-          new_name:     result.new_name,
-          doorways:     result.doorways.length,
-          info_hs:      result.info_hotspots.length,
-          remove_count: result.remove_ids.length,
-          model_used:   result.model_used,
-        }, '[autolink] scene analysed')
-      } catch (err: any) {
-        fastify.log.warn({ err: err.message, sceneId: scene.id }, '[autolink] scene analysis failed')
-        analyses.push({ sceneId: scene.id, room_type: 'room', new_name: '', doorways: [], info_hotspots: [], remove_ids: [], model_used: 'error' })
+      for (let i = 0; i < scenes.length; i++) {
+        if (clientGone) break
+
+        const scene = scenes[i]
+
+        // Stream progress before analysing each scene so the connection stays
+        // active and the frontend can show which scene is being processed.
+        sendEvent('progress', {
+          sceneIndex: i + 1,
+          total:      scenes.length,
+          sceneName:  scene.name || `Scene ${i + 1}`,
+        })
+
+        if (!scene.thumbnail_url) {
+          analyses.push({ sceneId: scene.id, room_type: 'room', new_name: '', doorways: [], info_hotspots: [], remove_ids: [], model_used: 'none' })
+          continue
+        }
+
+        const existing = (hotspotsByScene[scene.id] ?? []).map((h: any) => ({
+          id:    h.id,
+          type:  h.type,
+          label: h.label || (h.type === 'scene_link' ? 'Navigation' : 'Info'),
+          yaw:   Number(h.yaw   || 0),
+          pitch: Number(h.pitch || 0),
+        }))
+
+        const context = buildSceneContext({
+          spaceTitle,
+          spaceType,
+          locationText,
+          totalScenes:      scenes.length,
+          sceneIndex:       i,
+          sceneName:        scene.name || `Scene ${i + 1}`,
+          prevSceneName:    i > 0               ? (scenes[i - 1].name || null) : null,
+          nextSceneName:    i < scenes.length-1 ? (scenes[i + 1].name || null) : null,
+          existingHotspots: existing,
+        })
+
+        try {
+          const result = await analyzeScene(scene.thumbnail_url, context, apiKey)
+          analyses.push({ sceneId: scene.id, ...result })
+          fastify.log.info({
+            sceneId:      scene.id,
+            room_type:    result.room_type,
+            new_name:     result.new_name,
+            doorways:     result.doorways.length,
+            info_hs:      result.info_hotspots.length,
+            remove_count: result.remove_ids.length,
+            model_used:   result.model_used,
+          }, '[autolink] scene analysed')
+        } catch (err: any) {
+          fastify.log.warn({ err: err.message, sceneId: scene.id }, '[autolink] scene analysis failed')
+          analyses.push({ sceneId: scene.id, room_type: 'room', new_name: '', doorways: [], info_hotspots: [], remove_ids: [], model_used: 'error' })
+        }
+
+        if (i < scenes.length - 1) await new Promise(r => setTimeout(r, 250))
       }
-
-      await new Promise(r => setTimeout(r, 250))
-    }
 
     const byId = Object.fromEntries(analyses.map(a => [a.sceneId, a]))
 
@@ -647,12 +682,18 @@ export default async function (fastify: FastifyInstance) {
       return []
     })
 
-    return reply.send({
-      suggestions,
-      infoHotspots,
-      hotspotDeletions,
-      sceneRenames,
-      sceneCount: scenes.length,
-    })
+      sendEvent('complete', {
+        suggestions,
+        infoHotspots,
+        hotspotDeletions,
+        sceneRenames,
+        sceneCount: scenes.length,
+      })
+    } catch (err: any) {
+      fastify.log.error({ err: err.message }, '[autolink] fatal error during SSE stream')
+      sendEvent('error', { message: err.message || 'Analysis failed unexpectedly.' })
+    } finally {
+      raw.end()
+    }
   })
 }
