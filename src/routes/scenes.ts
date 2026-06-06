@@ -21,10 +21,12 @@ const CreateSceneBodySchema = z.object({
 // raw_image_url excluded: changing it without re-tiling corrupts state.
 // status excluded: only the tile worker may change it.
 const UpdateSceneBodySchema = z.object({
-  name: z.string().min(1).max(100).optional(),
-  order_index: z.number().int().min(0).optional(),
-  initial_yaw: z.number().min(-180).max(180).optional(),
+  name:          z.string().min(1).max(100).optional(),
+  order_index:   z.number().int().min(0).optional(),
+  initial_yaw:   z.number().min(-180).max(180).optional(),
   initial_pitch: z.number().min(-90).max(90).optional(),
+  position_x:    z.number().optional(),
+  position_y:    z.number().optional(),
 })
 
 export default async function scenesRoutes(fastify: FastifyInstance) {
@@ -88,13 +90,15 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       const result = await fastify.supabase
         .from('scenes')
         .insert({
-          space_id: params.spaceId,
-          name: body.name,
+          space_id:   params.spaceId,
+          name:       body.name,
           order_index: orderIndex,
           raw_image_url: body.raw_image_url,
-          initial_yaw: body.initial_yaw,
+          initial_yaw:   body.initial_yaw,
           initial_pitch: body.initial_pitch,
-          status: 'pending',
+          status:        'pending',
+          position_x:    orderIndex * 3.0,
+          position_y:    0,
         })
         .select()
         .single()

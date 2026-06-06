@@ -7,11 +7,13 @@ import path from 'path'
 import fs from 'fs/promises'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 
-const TILE_SIZE  = 512
-const TEMP_DIR   = process.env.TEMP_DIR ?? '/tmp/viewora-tiles'
-const BATCH      = 10
-const MAX_WIDTH  = 12288
-const MAX_HEIGHT = 6144
+const TILE_SIZE        = 512
+const MEDIUM_MAX_WIDTH = 4096
+const MEDIUM_MAX_HEIGHT = 2048
+const TEMP_DIR         = process.env.TEMP_DIR ?? '/tmp/viewora-tiles'
+const BATCH            = 10
+const MAX_WIDTH        = 12288
+const MAX_HEIGHT       = 6144
 
 function nextPowerOfTwo(n: number): number {
   if (n <= 1) return 1
@@ -42,6 +44,8 @@ export async function processTileScene(
   const tempDir       = path.join(TEMP_DIR, sceneId)
   const inputPath     = path.join(tempDir, 'input.jpg')
   const cleanPath     = path.join(tempDir, 'input.clean.jpg')
+  const processedPath = path.join(tempDir, 'input.processed.jpg')
+  const mediumPath    = path.join(tempDir, 'input.medium.jpg')
   const thumbPath     = path.join(tempDir, 'thumbnail.jpg')
 
   const bucket  = process.env.R2_BUCKET_NAME!
@@ -90,9 +94,20 @@ export async function processTileScene(
       .toFile(cleanPath)
     console.log(`[TILE] >>> STEP 5: Metadata stripped`);
 
-    // 3. Thumbnail 2048×1024 — used as PSV baseUrl (visible during tile loading)
-    console.log(`[TILE] >>> STEP 6: Generating thumbnail...`);
+    // 3b. Server-side tone-mapping — applied before tiling and thumbnail so the viewer
+    // receives display-ready textures without needing any shader correction.
+    // Gamma 2.3 decode + 2.2 encode lifts shadow detail; saturation 1.1 adds subtle pop.
+    console.log(`[TILE] >>> STEP 5b: Applying tone-mapping...`);
     await sharp(cleanPath)
+      .gamma(2.3, 2.2)
+      .modulate({ saturation: 1.1, brightness: 1.02 })
+      .jpeg({ quality: 95 })
+      .toFile(processedPath)
+    console.log(`[TILE] >>> STEP 5c: Tone-mapping complete`);
+
+    // 3c. Thumbnail 2048×1024 — used as PSV baseUrl (visible during tile loading)
+    console.log(`[TILE] >>> STEP 6: Generating thumbnail...`);
+    await sharp(processedPath)
       .resize(2048, 1024, { fit: 'cover', withoutEnlargement: true })
       .jpeg({ quality: 92, progressive: true })
       .toFile(thumbPath)
@@ -124,7 +139,7 @@ export async function processTileScene(
     console.log(`[TILE] Thumbnail ready for scene ${sceneId}`)
 
     // 4. Read dimensions once, then build PSV grid tile jobs
-    const meta = await sharp(cleanPath).metadata()
+    const meta = await sharp(processedPath).metadata()
     const imgW = meta.width  ?? 12288
     const imgH = meta.height ?? 6144
 
@@ -166,7 +181,7 @@ export async function processTileScene(
     const tileH = Math.ceil(imgH / rows)
 
     // Load image once — each job clones to avoid re-reading the file
-    const image = sharp(cleanPath)
+    const image = sharp(processedPath)
 
     const tileJobs: Array<() => Promise<void>> = []
     for (let row = 0; row < rows; row++) {
@@ -212,19 +227,83 @@ export async function processTileScene(
       await Promise.all(tileJobs.slice(i, i + BATCH).map(fn => fn()))
     }
 
+    // 5b. Generate medium-resolution tile set (≤4096×2048) for lite/mobile viewers.
+    // These are served instead of the full tile set on constrained devices, trading
+    // some sharpness for dramatically reduced bandwidth and VRAM usage.
+    const mMaxW = Math.min(imgW, MEDIUM_MAX_WIDTH)
+    const mMaxH = Math.min(imgH, MEDIUM_MAX_HEIGHT)
+    await sharp(processedPath)
+      .resize(mMaxW, mMaxH, { fit: 'fill', withoutEnlargement: true })
+      .jpeg({ quality: 88, progressive: true })
+      .toFile(mediumPath)
+
+    const mediumMeta = await sharp(mediumPath).metadata()
+    const mW = mediumMeta.width  ?? mMaxW
+    const mH = mediumMeta.height ?? mMaxH
+    const mCols  = nextPowerOfTwo(Math.ceil(mW / TILE_SIZE))
+    const mRows  = nextPowerOfTwo(Math.ceil(mH / TILE_SIZE))
+    const mTileW = Math.ceil(mW / mCols)
+    const mTileH = Math.ceil(mH / mRows)
+
+    const mediumImage = sharp(mediumPath)
+    const mediumJobs: Array<() => Promise<void>> = []
+    for (let row = 0; row < mRows; row++) {
+      for (let col = 0; col < mCols; col++) {
+        const left = col * mTileW
+        const top  = row * mTileH
+        const w    = Math.min(mTileW, mW - left)
+        const h    = Math.min(mTileH, mH - top)
+        const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles_medium/${col}_${row}.webp`
+        mediumJobs.push(async () => {
+          const buf = await mediumImage
+            .clone()
+            .extract({ left, top, width: w, height: h })
+            .webp({ quality: 85 })
+            .toBuffer()
+          let lastErr: unknown
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              await s3.send(new PutObjectCommand({
+                Bucket: bucket,
+                Key: key,
+                Body: buf,
+                ContentType: 'image/webp',
+                CacheControl: 'public, max-age=31536000, immutable',
+              }))
+              return
+            } catch (err) {
+              lastErr = err
+              if (attempt < 2) await new Promise(r => setTimeout(r, 500 * 2 ** attempt))
+            }
+          }
+          throw lastErr
+        })
+      }
+    }
+
+    console.log(`[TILE] Uploading ${mediumJobs.length} medium tiles (${mCols}×${mRows}) for scene ${sceneId}`)
+    for (let i = 0; i < mediumJobs.length; i += BATCH) {
+      await Promise.all(mediumJobs.slice(i, i + BATCH).map(fn => fn()))
+    }
+
+    const mediumTileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles_medium`
+
     // 6. Mark tiles_ready = true only after ALL tiles are uploaded
     const tileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles`
     // 6. Update BOTH tables to unlock publishing
     await Promise.all([
       // Update the scene itself
       supabase.from('scenes').update({
-        tile_manifest_url: tileBase,
-        width:       imgW,
-        height:      imgH,
-        tile_cols:   cols,
-        tile_rows:   rows,
-        tiles_ready: true,
-        status:      'ready'
+        tile_manifest_url:        tileBase,
+        width:                    imgW,
+        height:                   imgH,
+        tile_cols:                cols,
+        tile_rows:                rows,
+        tile_medium_manifest_url: mediumTileBase,
+        tile_medium_cols:         mCols,
+        tile_medium_rows:         mRows,
+        tiles_ready:              true,
+        status:                   'ready'
       }).eq('id', sceneId),
 
       // Update the media record so the 'Publish' button is unlocked

@@ -44,6 +44,9 @@ export default async function publicRoutes(fastify: FastifyInstance) {
           order_index,
           raw_image_url,
           tile_manifest_url,
+          tile_medium_manifest_url,
+          tile_medium_cols,
+          tile_medium_rows,
           thumbnail_url,
           status,
           initial_yaw,
@@ -53,6 +56,8 @@ export default async function publicRoutes(fastify: FastifyInstance) {
           tiles_ready,
           width,
           height,
+          position_x,
+          position_y,
           hotspots (
             *
           )
