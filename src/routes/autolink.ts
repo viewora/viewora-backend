@@ -431,6 +431,37 @@ function ensureFullConnectivity(
 }
 
 // ── Route ──────────────────────────────────────────────────────────────────
+
+// Duplicated from index.ts to handle CORS in this hijacked route
+function normalizeOriginPattern(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+function isOriginAllowed(origin: string, patterns: string[]): boolean {
+  const normalizedOrigin = normalizeOriginPattern(origin)
+  return patterns.some((pattern) => {
+    if (!pattern) return false
+    if (pattern.includes('*')) {
+      const regex = new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`)
+      return regex.test(normalizedOrigin)
+    }
+    return normalizedOrigin === pattern
+  })
+}
+
+const defaultCorsOrigins = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'https://viewora.software',
+  'https://app.viewora.software',
+  'https://*.vercel.app',
+].map(normalizeOriginPattern)
+
+const configuredCorsOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map(normalizeOriginPattern).filter(Boolean)
+  : defaultCorsOrigins
+
+
 export default async function (fastify: FastifyInstance) {
   fastify.post('/spaces/:spaceId/auto-link', {
     preHandler: [fastify.authenticate],
@@ -479,12 +510,21 @@ export default async function (fastify: FastifyInstance) {
     // times out a streaming response that is actively sending data.
     reply.hijack()
     const raw = reply.raw
-    raw.writeHead(200, {
+    const origin = req.headers.origin
+
+    const headers: Record<string, string | number | boolean> = {
       'Content-Type':      'text/event-stream; charset=utf-8',
       'Cache-Control':     'no-cache, no-transform',
       'Connection':        'keep-alive',
-      'X-Accel-Buffering': 'no',   // disable nginx/Railway proxy buffering
-    })
+      'X-Accel-Buffering': 'no', // disable nginx/Railway proxy buffering
+    }
+
+    if (origin && isOriginAllowed(origin, configuredCorsOrigins)) {
+      headers['Access-Control-Allow-Origin'] = origin
+      headers['Access-Control-Allow-Credentials'] = true
+    }
+
+    raw.writeHead(200, headers)
 
     let clientGone = false
     raw.on('close', () => { clientGone = true })
