@@ -15,6 +15,7 @@
  */
 
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import sharp from 'sharp'
 
 // ── Canvas / layout constants ─────────────────────────────────────────────
 const CANVAS_W = 1100
@@ -356,20 +357,41 @@ export async function generateSpaceFloorPlan(
   // but that's a pure computation so the double call is harmless.
   const svg = generateFloorPlanSvg(scenes as SceneRow[], hs, rawPositions)
 
-  // Upload SVG to R2
+  // Rasterise SVG → PNG before uploading.
+  // PSV MapPlugin uses canvas-based rendering and SVG images fail to load
+  // in Firefox and some mobile browsers, causing a null-reference crash.
+  // PNG is universally supported. sharp rasterises SVG via bundled resvg.
   const bucket = process.env.R2_BUCKET_NAME
   if (!bucket) {
     console.error('[FLOOR-PLAN] R2_BUCKET_NAME not set')
     return null
   }
 
-  const key = `spaces/${spaceId}/floorplan/auto-generated.svg`
+  let imageBody: Buffer
+  let contentType: string
+  let key: string
+
+  try {
+    imageBody = await sharp(Buffer.from(svg, 'utf-8'), { density: 96 })
+      .png({ compressionLevel: 8 })
+      .toBuffer()
+    contentType = 'image/png'
+    key = `spaces/${spaceId}/floorplan/auto-generated.png`
+    console.log(`[FLOOR-PLAN] SVG rasterised to PNG (${imageBody.length} bytes)`)
+  } catch (rasterErr: any) {
+    // sharp SVG support requires resvg — fall back to raw SVG if unavailable
+    console.warn(`[FLOOR-PLAN] PNG rasterisation failed (${rasterErr.message}), falling back to SVG`)
+    imageBody = Buffer.from(svg, 'utf-8')
+    contentType = 'image/svg+xml'
+    key = `spaces/${spaceId}/floorplan/auto-generated.svg`
+  }
+
   try {
     await s3.send(new PutObjectCommand({
       Bucket: bucket,
       Key: key,
-      Body: Buffer.from(svg, 'utf-8'),
-      ContentType: 'image/svg+xml',
+      Body: imageBody,
+      ContentType: contentType,
       CacheControl: 'public, max-age=3600, stale-while-revalidate=86400',
     }))
   } catch (err: any) {
