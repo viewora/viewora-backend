@@ -512,7 +512,7 @@ export default async function (fastify: FastifyInstance) {
     const raw = reply.raw
     const origin = req.headers.origin
 
-    const headers: Record<string, string | number | boolean> = {
+    const headers: Record<string, string | number> = {
       'Content-Type':      'text/event-stream; charset=utf-8',
       'Cache-Control':     'no-cache, no-transform',
       'Connection':        'keep-alive',
@@ -521,7 +521,7 @@ export default async function (fastify: FastifyInstance) {
 
     if (origin && isOriginAllowed(origin, configuredCorsOrigins)) {
       headers['Access-Control-Allow-Origin'] = origin
-      headers['Access-Control-Allow-Credentials'] = true
+      headers['Access-Control-Allow-Credentials'] = 'true'
     }
 
     raw.writeHead(200, headers)
