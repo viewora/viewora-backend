@@ -88,7 +88,7 @@ export default async function tilesRoutes(fastify: FastifyInstance) {
 
         if (!Body) continue
 
-        const buffer = Buffer.from(await Body.transformToUint8Array())
+        const buffer = Buffer.from(await (Body as any).transformToByteArray())
 
         // 3. Cache in Redis
         if (fastify.redis && fastify.redis.isOpen) {
@@ -97,14 +97,18 @@ export default async function tilesRoutes(fastify: FastifyInstance) {
           })
         }
 
-        reply.header('Content-Type', ContentType || 'image/jpeg')
+        reply.header('Content-Type', ContentType || `image/${ext === 'webp' ? 'webp' : 'jpeg'}`)
         reply.header('Cache-Control', 'public, max-age=31536000, immutable')
         reply.header('X-Cache', 'MISS')
         return reply.send(buffer)
       } catch (err: any) {
-        if (err.name === 'NoSuchKey') continue
-        fastify.log.error({ err, r2Key }, 'Failed to fetch tile from R2')
-        return reply.code(500).send({ statusMessage: 'Failed to fetch tile' })
+        if (err.name === 'NoSuchKey' || err?.$metadata?.httpStatusCode === 404) continue
+        fastify.log.error({ err, r2Key, sceneId, spaceId }, 'Failed to fetch tile from R2')
+        return reply.code(500).send({ 
+          statusMessage: 'Failed to fetch tile',
+          message: err.message,
+          code: err.code || err.name
+        })
       }
     }
 
