@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { DeleteObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from '@aws-sdk/client-s3'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
-import { invalidateCacheBySceneId, invalidateSpaceCache } from '../utils/cache.js'
+import { invalidateCacheBySceneId, invalidateSpaceCache, purgeSceneTiles } from '../utils/cache.js'
 
 // ── Param schemas ─────────────────────────────────────────────
 const sceneParamsSchema = z.object({ sceneId: z.string().uuid() })
@@ -258,6 +258,7 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     // Bust billing cache so next quota check sees the freed storage
     if ((fastify as any).redis) {
       await (fastify as any).redis.del(`billing:status:${userId}`).catch(() => {})
+      await purgeSceneTiles(fastify, params.sceneId)
     }
 
     // Resequence order_index for remaining scenes in the space so there are no gaps
@@ -393,6 +394,7 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     let requeued = 0
     for (const scene of failedScenes) {
       try {
+        await purgeSceneTiles(fastify, scene.id)
         await fastify.uploadQueue.add('tile-scene', {
           sceneId: scene.id,
           rawImageUrl: scene.raw_image_url,

@@ -258,7 +258,7 @@ export async function processTileScene(
           const buf = await mediumImage
             .clone()
             .extract({ left, top, width: w, height: h })
-            .webp({ quality: 85 })
+            .webp({ quality: 90 })
             .toBuffer()
           let lastErr: unknown
           for (let attempt = 0; attempt < 3; attempt++) {
@@ -286,10 +286,10 @@ export async function processTileScene(
       await Promise.all(mediumJobs.slice(i, i + BATCH).map(fn => fn()))
     }
 
-    const mediumTileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles_medium`
+    const apiBase = process.env.API_URL || 'https://api.viewora.software'
+    const tileBase = `${apiBase}/tiles/${sceneId}`
+    const mediumTileBase = `${apiBase}/tiles-medium/${sceneId}`
 
-    // 6. Mark tiles_ready = true only after ALL tiles are uploaded
-    const tileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles`
     // 6. Update BOTH tables to unlock publishing
     await Promise.all([
       // Update the scene itself

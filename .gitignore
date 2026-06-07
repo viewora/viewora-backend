@@ -24,3 +24,9 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Performance Audit Reports
+FRONTEND_STAGE2_REPORT.md
+PERFORMANCE_REMEDIATION_REPORT.md
+Viewora_Performance_Audit.pdf
+Viewora_Stage2_Frontend.pdf
