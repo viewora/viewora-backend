@@ -190,13 +190,13 @@ export async function processTileScene(
         const top  = row * tileH
         const w    = Math.min(tileW, imgW - left)
         const h    = Math.min(tileH, imgH - top)
-        const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles/${col}_${row}.webp`
+        const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles/${col}_${row}.jpg`
 
         tileJobs.push(async () => {
           const buf = await image
             .clone()
             .extract({ left, top, width: w, height: h })
-            .webp({ quality: 90 })
+            .jpeg({ quality: 90 })
             .toBuffer()
           // Retry up to 3 times with exponential backoff so a single R2 blip
           // doesn't force a full re-tile of all 72+ tiles.
@@ -207,7 +207,7 @@ export async function processTileScene(
                 Bucket: bucket,
                 Key: key,
                 Body: buf,
-                ContentType: 'image/webp',
+                ContentType: 'image/jpeg',
                 CacheControl: 'public, max-age=31536000, immutable',
               }))
               return
@@ -253,12 +253,12 @@ export async function processTileScene(
         const top  = row * mTileH
         const w    = Math.min(mTileW, mW - left)
         const h    = Math.min(mTileH, mH - top)
-        const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles_medium/${col}_${row}.webp`
+        const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles_medium/${col}_${row}.jpg`
         mediumJobs.push(async () => {
           const buf = await mediumImage
             .clone()
             .extract({ left, top, width: w, height: h })
-            .webp({ quality: 90 })
+            .jpeg({ quality: 90 })
             .toBuffer()
           let lastErr: unknown
           for (let attempt = 0; attempt < 3; attempt++) {
@@ -267,7 +267,7 @@ export async function processTileScene(
                 Bucket: bucket,
                 Key: key,
                 Body: buf,
-                ContentType: 'image/webp',
+                ContentType: 'image/jpeg',
                 CacheControl: 'public, max-age=31536000, immutable',
               }))
               return

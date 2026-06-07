@@ -71,48 +71,19 @@ export default async function tilesRoutes(fastify: FastifyInstance) {
     // 2. Fetch from R2
     const bucket = process.env.R2_BUCKET_NAME!
     const folder = isMedium ? 'tiles_medium' : 'tiles'
-    let s3Key = `spaces/${spaceId}/scenes/${sceneId}/${folder}/${col}_${row}.${ext}`
-    let bodyData: any = null
-    let responseContentType = `image/${ext === 'jpg' || ext === 'jpeg' ? 'jpeg' : ext}`
+    const s3Key = `spaces/${spaceId}/scenes/${sceneId}/${folder}/${col}_${row}.${ext}`
 
     try {
-      const response = await fastify.s3.send(new GetObjectCommand({
+      const { Body, ContentType } = await fastify.s3.send(new GetObjectCommand({
         Bucket: bucket,
         Key: s3Key,
       }))
-      bodyData = response.Body
-      if (response.ContentType) responseContentType = response.ContentType
-    } catch (err: any) {
-      if (err.name === 'NoSuchKey' && ext === 'webp') {
-        s3Key = `spaces/${spaceId}/scenes/${sceneId}/${folder}/${col}_${row}.jpg`
-        try {
-          const fallback = await fastify.s3.send(new GetObjectCommand({
-            Bucket: bucket,
-            Key: s3Key,
-          }))
-          bodyData = fallback.Body
-          responseContentType = fallback.ContentType || 'image/jpeg'
-        } catch (fallbackErr: any) {
-          if (fallbackErr.name === 'NoSuchKey') {
-            return reply.code(404).send({ statusMessage: 'Tile not found' })
-          }
-          fastify.log.error({ err: fallbackErr, s3Key }, 'Failed to fetch tile from R2')
-          return reply.code(500).send({ statusMessage: 'Failed to fetch tile' })
-        }
-      } else if (err.name === 'NoSuchKey') {
-        return reply.code(404).send({ statusMessage: 'Tile not found' })
-      } else {
-        fastify.log.error({ err, s3Key }, 'Failed to fetch tile from R2')
-        return reply.code(500).send({ statusMessage: 'Failed to fetch tile' })
+
+      if (!Body) {
+        return reply.code(404).send({ statusMessage: 'Tile not found in storage' })
       }
-    }
 
-    if (!bodyData) {
-      return reply.code(404).send({ statusMessage: 'Tile not found in storage' })
-    }
-
-    try {
-      const buffer = Buffer.from(await bodyData.transformToUint8Array())
+      const buffer = Buffer.from(await Body.transformToUint8Array())
 
       // 3. Cache in Redis
       if (fastify.redis && fastify.redis.isOpen) {
@@ -122,13 +93,16 @@ export default async function tilesRoutes(fastify: FastifyInstance) {
         })
       }
 
-      reply.header('Content-Type', responseContentType)
+      reply.header('Content-Type', ContentType || `image/${ext === 'jpg' || ext === 'jpeg' ? 'jpeg' : ext}`)
       reply.header('Cache-Control', 'public, max-age=31536000, immutable')
       reply.header('X-Cache', 'MISS')
       return reply.send(buffer)
     } catch (err: any) {
-      fastify.log.error({ err, s3Key }, 'Failed to process tile from R2')
-      return reply.code(500).send({ statusMessage: 'Failed to process tile' })
+      if (err.name === 'NoSuchKey') {
+        return reply.code(404).send({ statusMessage: 'Tile not found' })
+      }
+      fastify.log.error({ err, s3Key }, 'Failed to fetch tile from R2')
+      return reply.code(500).send({ statusMessage: 'Failed to fetch tile' })
     }
   }
 
