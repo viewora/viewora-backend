@@ -132,20 +132,36 @@ export default async function tilesRoutes(fastify: FastifyInstance) {
     }
   }
 
-  fastify.get('/tiles/:sceneId/:col_:row.:ext', async (req, reply) => {
+  fastify.get('/tiles/:sceneId/:filename', async (req: any, reply) => {
+    const { sceneId, filename } = req.params
+    const [colRow, ext] = filename.split('.')
+    const [col, row] = colRow ? colRow.split('_') : []
+    req.params = { sceneId, col, row, ext }
     return handleTileRequest(req, reply, false)
   })
 
-  fastify.get('/tiles-medium/:sceneId/:col_:row.:ext', async (req, reply) => {
+  fastify.get('/tiles-medium/:sceneId/:filename', async (req: any, reply) => {
+    const { sceneId, filename } = req.params
+    const [colRow, ext] = filename.split('.')
+    const [col, row] = colRow ? colRow.split('_') : []
+    req.params = { sceneId, col, row, ext }
     return handleTileRequest(req, reply, true)
   })
 
   // Full path variants (to match legacy and explicit frontend requests)
-  fastify.get('/spaces/:spaceId/scenes/:sceneId/tiles/:col_:row.:ext', async (req, reply) => {
+  fastify.get('/spaces/:spaceId/scenes/:sceneId/tiles/:filename', async (req: any, reply) => {
+    const { spaceId, sceneId, filename } = req.params
+    const [colRow, ext] = filename.split('.')
+    const [col, row] = colRow ? colRow.split('_') : []
+    req.params = { spaceId, sceneId, col, row, ext }
     return handleTileRequest(req, reply, false, true)
   })
 
-  fastify.get('/spaces/:spaceId/scenes/:sceneId/tiles_medium/:col_:row.:ext', async (req, reply) => {
+  fastify.get('/spaces/:spaceId/scenes/:sceneId/tiles_medium/:filename', async (req: any, reply) => {
+    const { spaceId, sceneId, filename } = req.params
+    const [colRow, ext] = filename.split('.')
+    const [col, row] = colRow ? colRow.split('_') : []
+    req.params = { spaceId, sceneId, col, row, ext }
     return handleTileRequest(req, reply, true, true)
   })
 }
