@@ -11,31 +11,39 @@ const tileParamsSchema = z.object({
   ext: z.enum(['webp', 'jpg', 'jpeg']),
 })
 
+const spaceTileParamsSchema = tileParamsSchema.extend({
+  spaceId: z.string().uuid(),
+})
+
 export default async function tilesRoutes(fastify: FastifyInstance) {
   // Handler for both full and medium tiles
-  const handleTileRequest = async (req: any, reply: any, isMedium: boolean) => {
-    const params = parseWithSchema(reply, tileParamsSchema, req.params)
+  const handleTileRequest = async (req: any, reply: any, isMedium: boolean, hasSpaceId: boolean = false) => {
+    const schema = hasSpaceId ? spaceTileParamsSchema : tileParamsSchema
+    const params = parseWithSchema(reply, schema, req.params)
     if (!params) return
 
     const { sceneId, col, row, ext } = params
+    let spaceId = hasSpaceId ? (params as any).spaceId : null
     
-    // Check if this scene belongs to a space and get spaceId
-    const sceneSpaceKey = `scene-space:${sceneId}`
-    let spaceId = fastify.redis ? await fastify.redis.get(sceneSpaceKey) : null
-
     if (!spaceId) {
-      const { data: scene } = await fastify.supabase
-        .from('scenes')
-        .select('space_id')
-        .eq('id', sceneId)
-        .single()
-      
-      if (!scene) {
-        return reply.code(404).send({ statusMessage: 'Scene not found' })
-      }
-      spaceId = scene.space_id
-      if (fastify.redis && spaceId) {
-        await fastify.redis.setEx(sceneSpaceKey, 86400, spaceId)
+      // Check if this scene belongs to a space and get spaceId
+      const sceneSpaceKey = `scene-space:${sceneId}`
+      spaceId = fastify.redis ? await fastify.redis.get(sceneSpaceKey) : null
+
+      if (!spaceId) {
+        const { data: scene } = await fastify.supabase
+          .from('scenes')
+          .select('space_id')
+          .eq('id', sceneId)
+          .single()
+        
+        if (!scene) {
+          return reply.code(404).send({ statusMessage: 'Scene not found' })
+        }
+        spaceId = scene.space_id
+        if (fastify.redis && spaceId) {
+          await fastify.redis.setEx(sceneSpaceKey, 86400, spaceId)
+        }
       }
     }
 
@@ -130,5 +138,14 @@ export default async function tilesRoutes(fastify: FastifyInstance) {
 
   fastify.get('/tiles-medium/:sceneId/:col_:row.:ext', async (req, reply) => {
     return handleTileRequest(req, reply, true)
+  })
+
+  // Full path variants (to match legacy and explicit frontend requests)
+  fastify.get('/spaces/:spaceId/scenes/:sceneId/tiles/:col_:row.:ext', async (req, reply) => {
+    return handleTileRequest(req, reply, false, true)
+  })
+
+  fastify.get('/spaces/:spaceId/scenes/:sceneId/tiles_medium/:col_:row.:ext', async (req, reply) => {
+    return handleTileRequest(req, reply, true, true)
   })
 }
