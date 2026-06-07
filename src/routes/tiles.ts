@@ -71,10 +71,11 @@ export default async function tilesRoutes(fastify: FastifyInstance) {
     // 2. Fetch from R2
     const bucket = process.env.R2_BUCKET_NAME!
     const folder = isMedium ? 'tiles_medium' : 'tiles'
-    // Try jpg first; fall back to webp for scenes processed before the webp→jpg revert
+    // Try webp first (legacy scenes + all new scenes), fall back to jpg for any recently
+    // processed scenes that were uploaded between the webp revert and this change
     const keysToTry = [
-      `spaces/${spaceId}/scenes/${sceneId}/${folder}/${col}_${row}.jpg`,
       `spaces/${spaceId}/scenes/${sceneId}/${folder}/${col}_${row}.webp`,
+      `spaces/${spaceId}/scenes/${sceneId}/${folder}/${col}_${row}.jpg`,
     ]
 
     for (const r2Key of keysToTry) {

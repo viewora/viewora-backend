@@ -94,13 +94,11 @@ export async function processTileScene(
       .toFile(cleanPath)
     console.log(`[TILE] >>> STEP 5: Metadata stripped`);
 
-    // 3b. Server-side tone-mapping — applied before tiling and thumbnail so the viewer
-    // receives display-ready textures without needing any shader correction.
-    // Gamma 2.3 decode + 2.2 encode lifts shadow detail; saturation 1.1 adds subtle pop.
+    // 3b. Subtle tone-mapping — very light saturation lift only.
+    // Insta360 JPEGs are already display-calibrated; gamma correction hurts sharpness.
     console.log(`[TILE] >>> STEP 5b: Applying tone-mapping...`);
     await sharp(cleanPath)
-      .gamma(2.3, 2.2)
-      .modulate({ saturation: 1.1, brightness: 1.02 })
+      .modulate({ saturation: 1.04 })
       .jpeg({ quality: 95 })
       .toFile(processedPath)
     console.log(`[TILE] >>> STEP 5c: Tone-mapping complete`);
@@ -190,13 +188,13 @@ export async function processTileScene(
         const top  = row * tileH
         const w    = Math.min(tileW, imgW - left)
         const h    = Math.min(tileH, imgH - top)
-        const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles/${col}_${row}.jpg`
+        const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles/${col}_${row}.webp`
 
         tileJobs.push(async () => {
           const buf = await image
             .clone()
             .extract({ left, top, width: w, height: h })
-            .jpeg({ quality: 90 })
+            .webp({ quality: 88, effort: 4 })
             .toBuffer()
           // Retry up to 3 times with exponential backoff so a single R2 blip
           // doesn't force a full re-tile of all 72+ tiles.
@@ -207,7 +205,7 @@ export async function processTileScene(
                 Bucket: bucket,
                 Key: key,
                 Body: buf,
-                ContentType: 'image/jpeg',
+                ContentType: 'image/webp',
                 CacheControl: 'public, max-age=31536000, immutable',
               }))
               return
@@ -253,12 +251,12 @@ export async function processTileScene(
         const top  = row * mTileH
         const w    = Math.min(mTileW, mW - left)
         const h    = Math.min(mTileH, mH - top)
-        const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles_medium/${col}_${row}.jpg`
+        const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles_medium/${col}_${row}.webp`
         mediumJobs.push(async () => {
           const buf = await mediumImage
             .clone()
             .extract({ left, top, width: w, height: h })
-            .jpeg({ quality: 90 })
+            .webp({ quality: 85, effort: 4 })
             .toBuffer()
           let lastErr: unknown
           for (let attempt = 0; attempt < 3; attempt++) {
@@ -267,7 +265,7 @@ export async function processTileScene(
                 Bucket: bucket,
                 Key: key,
                 Body: buf,
-                ContentType: 'image/jpeg',
+                ContentType: 'image/webp',
                 CacheControl: 'public, max-age=31536000, immutable',
               }))
               return
