@@ -71,13 +71,14 @@ export default async function tilesRoutes(fastify: FastifyInstance) {
     // 2. Fetch from R2
     const bucket = process.env.R2_BUCKET_NAME!
     const folder = isMedium ? 'tiles_medium' : 'tiles'
-    const s3Key = `spaces/${spaceId}/scenes/${sceneId}/${folder}/${col}_${row}.${ext}`
+    const r2Key = `spaces/${spaceId}/scenes/${sceneId}/${folder}/${col}_${row}.jpg`
 
     try {
-      const { Body, ContentType } = await fastify.s3.send(new GetObjectCommand({
+      const response = await fastify.s3.send(new GetObjectCommand({
         Bucket: bucket,
-        Key: s3Key,
+        Key: r2Key,
       }))
+      const { Body, ContentType } = response
 
       if (!Body) {
         return reply.code(404).send({ statusMessage: 'Tile not found in storage' })
@@ -101,7 +102,7 @@ export default async function tilesRoutes(fastify: FastifyInstance) {
       if (err.name === 'NoSuchKey') {
         return reply.code(404).send({ statusMessage: 'Tile not found' })
       }
-      fastify.log.error({ err, s3Key }, 'Failed to fetch tile from R2')
+      fastify.log.error({ err, r2Key }, 'Failed to fetch tile from R2')
       return reply.code(500).send({ statusMessage: 'Failed to fetch tile' })
     }
   }
