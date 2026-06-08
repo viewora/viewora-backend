@@ -284,9 +284,8 @@ export async function processTileScene(
       await Promise.all(mediumJobs.slice(i, i + BATCH).map(fn => fn()))
     }
 
-    const apiBase = process.env.API_URL || 'https://api.viewora.software'
-    const tileBase = `${apiBase}/tiles/${sceneId}`
-    const mediumTileBase = `${apiBase}/tiles-medium/${sceneId}`
+    const tileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles`
+    const mediumTileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles_medium`
 
     // 6. Update BOTH tables to unlock publishing
     await Promise.all([
