@@ -1,4 +1,5 @@
 process.stdout.write('🚀 Node.js process started - evaluating src/index.ts\n')
+process.stdout.write(`📦 Build timestamp: ${new Date().toISOString()}\n`)
 
 import Fastify, { FastifyError } from 'fastify'
 import cors from '@fastify/cors'
