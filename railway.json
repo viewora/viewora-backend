@@ -7,7 +7,7 @@
   "deploy": {
     "startCommand": "sh start.sh",
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 61,
+    "healthcheckTimeout": 60,
     "restartPolicyType": "ON_FAILURE",
     "drainingSeconds": 30,
     "overlapSeconds": 0,
