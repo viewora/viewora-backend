@@ -1,4 +1,7 @@
 import sharp from 'sharp'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
+const execFileAsync = promisify(execFile)
 // Disable sharp cache to prevent OOM on large panoramas
 sharp.cache(false)
 // Limit sharp to 1 CPU thread to save memory overhead per tile
@@ -287,20 +290,77 @@ export async function processTileScene(
     const tileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles`
     const mediumTileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles_medium`
 
+    // 5c. Generate KTX2 tiles (GPU-compressed) from the medium WebP tiles.
+    // Requires the 'basisu' CLI on PATH. Gracefully skipped if not available.
+    let ktx2TileBase: string | null = null
+    try {
+      await execFileAsync('basisu', ['--version'])
+      const ktx2Dir = path.join(tempDir, 'tiles_medium_ktx2')
+      await fs.mkdir(ktx2Dir, { recursive: true })
+
+      const ktx2Jobs: Array<() => Promise<void>> = []
+      for (let row = 0; row < mRows; row++) {
+        for (let col = 0; col < mCols; col++) {
+          const left = col * mTileW
+          const top  = row * mTileH
+          const w    = Math.min(mTileW, mW - left)
+          const h    = Math.min(mTileH, mH - top)
+          const tmpPng  = path.join(ktx2Dir, `${col}_${row}.png`)
+          const tmpKtx2 = path.join(ktx2Dir, `${col}_${row}.ktx2`)
+          const r2Key   = `spaces/${spaceId}/scenes/${sceneId}/tiles_medium_ktx2/${col}_${row}.ktx2`
+
+          ktx2Jobs.push(async () => {
+            await mediumImage.clone()
+              .extract({ left, top, width: w, height: h })
+              .png()
+              .toFile(tmpPng)
+            await execFileAsync('basisu', [
+              '-ktx2', '-uastc', '-uastc_level', '2',
+              '-file', tmpPng, '-output_file', tmpKtx2,
+            ])
+            const buf = await fs.readFile(tmpKtx2)
+            await s3.send(new PutObjectCommand({
+              Bucket: bucket,
+              Key: r2Key,
+              Body: buf,
+              ContentType: 'image/ktx2',
+              CacheControl: 'public, max-age=31536000, immutable',
+            }))
+            await fs.rm(tmpPng, { force: true })
+            await fs.rm(tmpKtx2, { force: true })
+          })
+        }
+      }
+
+      console.log(`[TILE] Generating ${ktx2Jobs.length} KTX2 tiles for scene ${sceneId}`)
+      for (let i = 0; i < ktx2Jobs.length; i += BATCH) {
+        await Promise.all(ktx2Jobs.slice(i, i + BATCH).map(fn => fn()))
+      }
+      ktx2TileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles_medium_ktx2`
+      console.log(`[TILE] KTX2 tiles ready for scene ${sceneId}`)
+    } catch (ktx2Err: any) {
+      if (ktx2Err.code === 'ENOENT') {
+        console.warn(`[TILE] basisu not found — skipping KTX2 generation for scene ${sceneId}. Install basisu to enable.`)
+      } else {
+        console.warn(`[TILE] KTX2 generation failed for scene ${sceneId}: ${ktx2Err.message}`)
+      }
+    }
+
     // 6. Update BOTH tables to unlock publishing
     await Promise.all([
       // Update the scene itself
       supabase.from('scenes').update({
-        tile_manifest_url:        tileBase,
-        width:                    imgW,
-        height:                   imgH,
-        tile_cols:                cols,
-        tile_rows:                rows,
-        tile_medium_manifest_url: mediumTileBase,
-        tile_medium_cols:         mCols,
-        tile_medium_rows:         mRows,
-        tiles_ready:              true,
-        status:                   'ready'
+        tile_manifest_url:              tileBase,
+        width:                          imgW,
+        height:                         imgH,
+        tile_cols:                      cols,
+        tile_rows:                      rows,
+        tile_medium_manifest_url:       mediumTileBase,
+        tile_medium_cols:               mCols,
+        tile_medium_rows:               mRows,
+        ...(ktx2TileBase ? { tile_medium_ktx2_manifest_url: ktx2TileBase } : {}),
+        tiles_ready:                    true,
+        status:                         'ready'
       }).eq('id', sceneId),
 
       // Update the media record so the 'Publish' button is unlocked

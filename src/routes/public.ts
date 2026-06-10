@@ -47,6 +47,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
           tile_medium_manifest_url,
           tile_medium_cols,
           tile_medium_rows,
+          tile_medium_ktx2_manifest_url,
           thumbnail_url,
           status,
           initial_yaw,
