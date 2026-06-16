@@ -354,14 +354,17 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     return reply.send({ orphansRemoved, reordered, stuckReset })
   })
 
-  // ── REPROCESS FAILED SCENES ───────────────────────────────
-  // Resets all failed/stuck scenes in a space back to pending and re-queues
-  // their tile-scene jobs. Call this after the worker service is deployed
-  // to recover scenes that were marked failed while the worker was down.
+  // ── REPROCESS SCENES ─────────────────────────────────────
+  // Re-queues tile-scene jobs for scenes in a space.
+  // Default: only picks up failed/stuck scenes (status = failed/pending/processing).
+  // With ?ktx2=true: also includes ready scenes that are missing KTX2 tiles —
+  // use this to backfill KTX2 after deploying a worker build that has basisu.
   fastify.post('/spaces/:spaceId/reprocess', { preHandler: [fastify.authenticate] }, async (req, reply) => {
     const userId = (req.user as any).sub
     const params = parseWithSchema(reply, spaceParamsSchema, (req as any).params)
     if (!params) return
+
+    const ktx2Mode = (req.query as any).ktx2 === 'true'
 
     const { data: space } = await fastify.supabase
       .from('properties')
@@ -375,24 +378,32 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       return reply.code(503).send({ statusMessage: 'Worker queue unavailable — ensure REDIS_URL is set and the worker service is deployed.' })
     }
 
-    const { data: failedScenes } = await fastify.supabase
+    let query = fastify.supabase
       .from('scenes')
       .select('id, space_id, raw_image_url')
       .eq('space_id', params.spaceId)
-      .in('status', ['failed', 'pending', 'processing'])
       .not('raw_image_url', 'is', null)
 
-    if (!failedScenes?.length) {
-      return reply.send({ requeued: 0, message: 'No scenes need reprocessing.' })
+    if (ktx2Mode) {
+      // KTX2 backfill: pick up ready scenes missing KTX2, plus any stuck scenes
+      query = query.or('status.in.(failed,pending,processing),tile_medium_ktx2_manifest_url.is.null')
+    } else {
+      query = query.in('status', ['failed', 'pending', 'processing'])
+    }
+
+    const { data: scenesToProcess } = await query
+
+    if (!scenesToProcess?.length) {
+      return reply.send({ requeued: 0, message: ktx2Mode ? 'All scenes already have KTX2 tiles.' : 'No scenes need reprocessing.' })
     }
 
     await fastify.supabase
       .from('scenes')
       .update({ status: 'pending', updated_at: new Date().toISOString() })
-      .in('id', failedScenes.map(s => s.id))
+      .in('id', scenesToProcess.map(s => s.id))
 
     let requeued = 0
-    for (const scene of failedScenes) {
+    for (const scene of scenesToProcess) {
       try {
         await purgeSceneTiles(fastify, scene.id)
         await fastify.uploadQueue.add('tile-scene', {
@@ -411,7 +422,7 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     }
 
     await invalidateSpaceCache(fastify, params.spaceId)
-    fastify.log.info({ spaceId: params.spaceId, requeued }, '[reprocess] scenes re-queued')
+    fastify.log.info({ spaceId: params.spaceId, requeued, ktx2Mode }, '[reprocess] scenes re-queued')
     return reply.send({ requeued, message: `${requeued} scene(s) queued for reprocessing.` })
   })
 }
