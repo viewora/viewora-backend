@@ -19,7 +19,7 @@ RUN npm run build
 # ── Stage 3: Production runtime ───────────────────────────────────────────────
 FROM node:22-slim
 WORKDIR /app
-COPY --from=basisu-builder /tmp/bu/basisu /usr/local/bin/basisu
+COPY --from=basisu-builder /tmp/bu/bin/basisu /usr/local/bin/basisu
 COPY --from=app-builder /app/dist ./dist
 COPY --from=app-builder /app/node_modules ./node_modules
 COPY package.json start.sh ./
