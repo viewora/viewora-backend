@@ -6,7 +6,9 @@ RUN apt-get update && \
 RUN git clone --depth 1 https://github.com/BinomialLLC/basis_universal.git /tmp/bu && \
     cd /tmp/bu && \
     cmake -DCMAKE_BUILD_TYPE=Release . && \
-    make -j$(nproc) basisu
+    make -j$(nproc) basisu && \
+    find /tmp/bu -name basisu -type f ! -type d -exec cp {} /usr/local/bin/basisu \; && \
+    /usr/local/bin/basisu --version
 
 # ── Stage 2: Build the Node.js app ───────────────────────────────────────────
 FROM node:22 AS app-builder
@@ -19,7 +21,7 @@ RUN npm run build
 # ── Stage 3: Production runtime ───────────────────────────────────────────────
 FROM node:22-slim
 WORKDIR /app
-COPY --from=basisu-builder /tmp/bu/basisu /usr/local/bin/basisu
+COPY --from=basisu-builder /usr/local/bin/basisu /usr/local/bin/basisu
 COPY --from=app-builder /app/dist ./dist
 COPY --from=app-builder /app/node_modules ./node_modules
 COPY package.json start.sh ./
