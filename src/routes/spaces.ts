@@ -40,24 +40,28 @@ const slugSchema = z.string().trim().min(3).max(120).regex(/^[a-z0-9-]+$/, 'Slug
 // predate these columns; "must have a price to appear in the Home feed" is
 // enforced at the query level, not here.
 const listingFactsSchema = {
-  price_kes: z.number().int().positive().max(999_999_999_999).optional(),
-  listing_status: z.enum(['available', 'sold', 'rented']).optional(),
+  price_kes: z.number().int().positive().max(999_999_999_999).nullable().optional(),
+  listing_status: z.enum(['available', 'sold', 'rented']).nullable().optional(),
   // Orthogonal to listing_status (which tracks current state) — this is the
   // fundamental nature of the listing. Without it, a price alone is
   // ambiguous (is KES 50,000 a sale price or monthly rent?). price_period
   // only means anything when transaction_type is 'rent'.
-  transaction_type: z.enum(['sale', 'rent']).optional(),
-  price_period: z.enum(['day', 'week', 'month', 'year']).optional(),
-  bedrooms: z.number().int().min(0).max(50).optional(),
-  bathrooms: z.number().int().min(0).max(50).optional(),
-  area_sqm: z.number().int().min(0).max(1_000_000).optional(),
-  vehicle_year: z.number().int().min(1900).max(2100).optional(),
-  vehicle_mileage_km: z.number().int().min(0).max(10_000_000).optional(),
-  vehicle_transmission: z.enum(['manual', 'automatic']).optional(),
-  vehicle_fuel_type: z.enum(['petrol', 'diesel', 'electric', 'hybrid']).optional(),
-  land_acres: z.number().min(0).max(1_000_000).optional(),
-  land_type: z.enum(['agricultural', 'commercial', 'residential']).optional(),
-  amenities: z.array(z.string().trim().min(1).max(60)).max(30).optional(),
+  // Nullable — the editor always sends this key (null when unset, e.g.
+  // "Listing Type" left unpicked), not omitted, so a bare .optional() here
+  // rejected every save with a VALIDATION_ERROR on transaction_type/
+  // price_period even when the user never touched those fields.
+  transaction_type: z.enum(['sale', 'rent']).nullable().optional(),
+  price_period: z.enum(['day', 'week', 'month', 'year']).nullable().optional(),
+  bedrooms: z.number().int().min(0).max(50).nullable().optional(),
+  bathrooms: z.number().int().min(0).max(50).nullable().optional(),
+  area_sqm: z.number().int().min(0).max(1_000_000).nullable().optional(),
+  vehicle_year: z.number().int().min(1900).max(2100).nullable().optional(),
+  vehicle_mileage_km: z.number().int().min(0).max(10_000_000).nullable().optional(),
+  vehicle_transmission: z.enum(['manual', 'automatic']).nullable().optional(),
+  vehicle_fuel_type: z.enum(['petrol', 'diesel', 'electric', 'hybrid']).nullable().optional(),
+  land_acres: z.number().min(0).max(1_000_000).nullable().optional(),
+  land_type: z.enum(['agricultural', 'commercial', 'residential']).nullable().optional(),
+  amenities: z.array(z.string().trim().min(1).max(60)).max(30).nullable().optional(),
 }
 
 const createSpaceBodySchema = z.object({
