@@ -36,6 +36,8 @@ export default async function (fastify: FastifyInstance) {
     const { data: plans, error } = await fastify.supabase
       .from('plans')
       .select('*')
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true })
       .order('price_monthly_kes', { ascending: true })
 
     if (error) return reply.code(500).send({ statusMessage: 'Failed to fetch plans' })
@@ -73,9 +75,13 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(400).send({ statusMessage: 'Invalid plan' })
     }
 
+    if (plan.is_custom_pricing) {
+      return reply.code(400).send({ statusMessage: 'This plan uses custom pricing — contact sales instead of self-serve checkout.' })
+    }
+
     const amountKES = billingCycle === 'yearly' ? plan.price_yearly_kes : plan.price_monthly_kes
-    if (amountKES === 0) {
-      return reply.code(400).send({ statusMessage: 'Cannot initialize payment for free plan' })
+    if (!amountKES || amountKES <= 0) {
+      return reply.code(400).send({ statusMessage: 'Cannot initialize payment for a free or unpriced plan' })
     }
 
     // 2. Get User Email — use JWT claim (always fresh, no extra DB round-trip)
@@ -348,7 +354,7 @@ export default async function (fastify: FastifyInstance) {
 
     let responsePlan: any = sub?.plans || null
     if (!responsePlan) {
-      const { data: freePlan } = await fastify.supabase.from('plans').select('*').eq('name', 'Free').single()
+      const { data: freePlan } = await fastify.supabase.from('plans').select('*').eq('slug', 'free').single()
       responsePlan = freePlan
     }
 

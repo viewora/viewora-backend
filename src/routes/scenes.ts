@@ -3,6 +3,7 @@ import { DeleteObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from 
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { invalidateCacheBySceneId, invalidateSpaceCache, purgeSceneTiles } from '../utils/cache.js'
+import { checkUserQuota, canCreateScene, quotaLimitMessage } from '../utils/quotas.js'
 
 // ── Param schemas ─────────────────────────────────────────────
 const sceneParamsSchema = z.object({ sceneId: z.string().uuid() })
@@ -67,6 +68,24 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       .single()
 
     if (!space) return reply.code(404).send({ statusMessage: 'Space not found' })
+
+    // Subscription + scenes-per-tour quota check
+    const quotaCtx = await checkUserQuota(fastify, userId)
+    if (quotaCtx.isGrace) {
+      return reply.code(403).send({ statusMessage: 'Scene creation is disabled during the grace period. Please renew your subscription.' })
+    }
+    if (!quotaCtx.canWrite) {
+      return reply.code(403).send({ statusMessage: 'Your subscription is not active. Please check your billing status.' })
+    }
+    const allowed = await canCreateScene(fastify, params.spaceId, quotaCtx.plan)
+    if (!allowed) {
+      return reply.code(403).send({
+        statusMessage: quotaLimitMessage(quotaCtx.plan, 'scenes'),
+        code: 'SCENE_LIMIT_REACHED',
+        limit: quotaCtx.plan.max_scenes_per_tour,
+        plan: quotaCtx.plan.name,
+      })
+    }
 
     // Auto-assign next order_index if not supplied.
     // Fetch the current max and insert; if a concurrent create produces a duplicate

@@ -1085,7 +1085,9 @@ export default async function (fastify: FastifyInstance) {
   fastify.get('/plans', async (_request, reply) => {
     try {
       const { data: plans } = await fastify.supabase
-        .from('plans').select('*').order('price_monthly_kes', { ascending: true })
+        .from('plans').select('*')
+        .order('sort_order', { ascending: true })
+        .order('price_monthly_kes', { ascending: true })
 
       // Add subscriber count per plan
       const plansWithCounts = await Promise.all((plans ?? []).map(async (plan: any) => {
@@ -1103,12 +1105,24 @@ export default async function (fastify: FastifyInstance) {
     }
   })
 
-  const PLAN_FIELDS = [
-    'name', 'price_monthly_kes', 'price_yearly_kes',
-    'max_active_properties', 'max_storage_bytes', 'max_upload_bytes', 'max_team_members',
+  // Display/marketing configuration — safe for an admin to tweak without billing risk
+  const PLAN_DISPLAY_FIELDS = [
+    'name', 'slug', 'description', 'cta_label', 'is_active', 'is_popular', 'is_legacy', 'sort_order',
+  ] as const
+
+  // Billing/entitlement configuration — changing these affects what customers are charged
+  // or what they're entitled to. Kept in a separate list so the admin UI can visually
+  // separate "safe to edit" from "affects billing" and warn accordingly.
+  const PLAN_BILLING_FIELDS = [
+    'price_monthly_kes', 'price_yearly_kes', 'is_custom_pricing', 'paystack_plan_code',
+    'max_active_properties', 'max_scenes_per_tour', 'max_storage_bytes', 'max_upload_bytes',
+    'max_team_members', 'shoot_allowance',
     'qr_download_enabled', 'qr_svg_enabled', 'embeds_enabled', 'advanced_embeds_enabled',
     'lead_capture_enabled', 'advanced_analytics_enabled', 'branding_customization_enabled',
+    'features',
   ] as const
+
+  const PLAN_FIELDS = [...PLAN_DISPLAY_FIELDS, ...PLAN_BILLING_FIELDS] as const
 
   function pickPlanFields(body: any) {
     const out: Record<string, any> = {}
@@ -1118,9 +1132,67 @@ export default async function (fastify: FastifyInstance) {
     return out
   }
 
+  const NON_NEGATIVE_NUMERIC_FIELDS = [
+    'price_monthly_kes', 'price_yearly_kes', 'max_active_properties', 'max_scenes_per_tour',
+    'max_storage_bytes', 'max_upload_bytes', 'max_team_members', 'sort_order', 'shoot_allowance',
+  ] as const
+  const BOOLEAN_FIELDS = [
+    'is_active', 'is_popular', 'is_legacy', 'is_custom_pricing',
+    'qr_download_enabled', 'qr_svg_enabled', 'embeds_enabled', 'advanced_embeds_enabled',
+    'lead_capture_enabled', 'advanced_analytics_enabled', 'branding_customization_enabled',
+  ] as const
+  const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
+
+  function validatePlanBody(body: Record<string, any>, isCreate: boolean): string[] {
+    const errors: string[] = []
+
+    if (isCreate && !String(body.name ?? '').trim()) errors.push('name is required')
+    if (body.name !== undefined && !String(body.name).trim()) errors.push('name cannot be empty')
+
+    if (isCreate && body.slug === undefined) errors.push('slug is required')
+    if (body.slug !== undefined && !SLUG_PATTERN.test(String(body.slug))) {
+      errors.push('slug must be lowercase-kebab-case (e.g. "creator")')
+    }
+
+    for (const key of NON_NEGATIVE_NUMERIC_FIELDS) {
+      const v = body[key]
+      if (v === undefined || v === null) continue // null = unlimited/custom, allowed
+      if (typeof v !== 'number' || Number.isNaN(v) || v < 0) errors.push(`${key} must be a non-negative number or null`)
+    }
+
+    for (const key of BOOLEAN_FIELDS) {
+      const v = body[key]
+      if (v === undefined || v === null) continue
+      if (typeof v !== 'boolean') errors.push(`${key} must be a boolean`)
+    }
+
+    if (body.is_custom_pricing !== true && body.price_monthly_kes === null) {
+      errors.push('price_monthly_kes cannot be null unless is_custom_pricing is true')
+    }
+
+    if (body.features !== undefined && body.features !== null && typeof body.features !== 'object') {
+      errors.push('features must be an object or array')
+    }
+
+    return errors
+  }
+
+  async function assertSlugUnique(fastify: FastifyInstance, slug: string, excludeId?: string) {
+    let q = fastify.supabase.from('plans').select('id').eq('slug', slug)
+    if (excludeId) q = q.neq('id', excludeId)
+    const { data } = await q.maybeSingle()
+    return !data
+  }
+
   fastify.post('/plans', async (request, reply) => {
     try {
       const body = pickPlanFields(request.body as any)
+      const errors = validatePlanBody(body, true)
+      if (errors.length) return reply.code(400).send({ statusMessage: errors.join('; '), errors })
+      if (!(await assertSlugUnique(fastify, body.slug))) {
+        return reply.code(409).send({ statusMessage: `A plan with slug "${body.slug}" already exists` })
+      }
+
       const { data, error } = await fastify.supabase.from('plans').insert(body).select().single()
       if (error) throw error
       await auditLog(fastify, request, 'create_plan', 'plan', data.id, body)
@@ -1135,11 +1207,29 @@ export default async function (fastify: FastifyInstance) {
     try {
       const { id } = request.params as any
       const body = pickPlanFields(request.body as any)
+      const errors = validatePlanBody(body, false)
+      if (errors.length) return reply.code(400).send({ statusMessage: errors.join('; '), errors })
+      if (body.slug !== undefined && !(await assertSlugUnique(fastify, body.slug, id))) {
+        return reply.code(409).send({ statusMessage: `A plan with slug "${body.slug}" already exists` })
+      }
+
+      // Warn (non-blocking) when billing-relevant fields change on a plan with active
+      // subscribers — the change applies to them too since we don't do proration/versioning.
+      let billingChangeWarning: string | undefined
+      if (PLAN_BILLING_FIELDS.some((k) => body[k] !== undefined)) {
+        const { count } = await fastify.supabase
+          .from('subscriptions').select('id', { count: 'exact', head: true })
+          .eq('plan_id', id).in('status', ['active', 'trialing', 'trial'])
+        if ((count ?? 0) > 0) {
+          billingChangeWarning = `This plan has ${count} active subscriber(s) — billing/limit changes apply to them immediately, there is no proration.`
+        }
+      }
+
       const { data, error } = await fastify.supabase
         .from('plans').update({ ...body, updated_at: new Date().toISOString() }).eq('id', id).select().single()
       if (error) throw error
       await auditLog(fastify, request, 'update_plan', 'plan', id, body)
-      return reply.send({ success: true, data })
+      return reply.send({ success: true, data, warning: billingChangeWarning })
     } catch (error: any) {
       fastify.log.error(error, 'Failed to update plan')
       return reply.code(500).send({ statusMessage: error?.message || 'Failed to update plan' })

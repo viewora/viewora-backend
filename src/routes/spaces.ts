@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { DeleteObjectsCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { z } from 'zod'
-import { canCreateSpace, checkUserQuota } from '../utils/quotas.js'
+import { canCreateSpace, checkUserQuota, quotaLimitMessage } from '../utils/quotas.js'
 import { parseWithSchema } from '../utils/validation.js'
 import { sendTourPublishedEmail } from '../email/index.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
@@ -232,7 +232,12 @@ export default async function (fastify: FastifyInstance) {
     }
     const allowed = await canCreateSpace(fastify, userId, quotaCtx)
     if (!allowed) {
-      return reply.code(403).send({ statusMessage: 'Space creation limit reached for your current plan.' })
+      return reply.code(403).send({
+        statusMessage: quotaLimitMessage(quotaCtx.plan, 'tours'),
+        code: 'TOUR_LIMIT_REACHED',
+        limit: quotaCtx.plan.max_active_spaces,
+        plan: quotaCtx.plan.name,
+      })
     }
 
     // 2. Create space

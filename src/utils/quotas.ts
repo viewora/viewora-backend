@@ -54,7 +54,7 @@ export async function checkUserQuota(fastify: FastifyInstance, userId: string): 
     const { data: freePlan, error: planError } = await fastify.supabase
       .from('plans')
       .select('*')
-      .eq('name', 'Free')
+      .eq('slug', 'free')
       .single()
 
     if (planError || !freePlan) throw new Error('Free plan not found in database')
@@ -102,6 +102,9 @@ export async function checkUserQuota(fastify: FastifyInstance, userId: string): 
 export async function canCreateSpace(fastify: FastifyInstance, userId: string, quota?: QuotaContext): Promise<boolean> {
   const { plan } = quota ?? await checkUserQuota(fastify, userId)
 
+  // NULL/0 max_active_spaces means unlimited (used for custom/Enterprise plans)
+  if (plan.max_active_spaces === null || plan.max_active_spaces === undefined) return true
+
   const { data: counter } = await fastify.supabase
     .from('usage_counters')
     .select('active_properties_count')
@@ -110,6 +113,52 @@ export async function canCreateSpace(fastify: FastifyInstance, userId: string, q
 
   const currentCount = counter?.active_properties_count || 0
   return currentCount < plan.max_active_spaces
+}
+
+/** Scenes-per-tour quota. NULL max_scenes_per_tour means unlimited (custom/Enterprise plans). */
+export async function canCreateScene(fastify: FastifyInstance, spaceId: string, plan: Record<string, any>): Promise<boolean> {
+  const max = plan.max_scenes_per_tour
+  if (max === null || max === undefined) return true
+
+  const { count } = await fastify.supabase
+    .from('scenes')
+    .select('id', { count: 'exact', head: true })
+    .eq('space_id', spaceId)
+
+  return (count ?? 0) < max
+}
+
+/** Slug → display name of the next tier up, for upgrade-nudge copy in quota-rejection errors. */
+export const UPGRADE_PATH: Record<string, string> = {
+  free: 'Creator',
+  creator: 'Professional',
+  professional: 'Business',
+  business: 'Enterprise',
+}
+
+export function quotaLimitMessage(plan: Record<string, any>, dimension: 'tours' | 'scenes'): string {
+  const upgrade = plan.slug ? UPGRADE_PATH[plan.slug] : undefined
+  if (dimension === 'scenes') {
+    const base = `You've reached the ${plan.max_scenes_per_tour}-scene limit for the ${plan.name} plan.`
+    return upgrade ? `${base} Upgrade to ${upgrade} for more scenes per tour.` : base
+  }
+  const base = `You've reached the ${plan.max_active_spaces}-active-tour limit for the ${plan.name} plan.`
+  return upgrade ? `${base} Upgrade to ${upgrade} for more active tours.` : base
+}
+
+/**
+ * Checks a plan entitlement. Boolean columns on `plans` (e.g. lead_capture_enabled) take
+ * precedence; falls back to the `features` jsonb column (array of keys, or {key: bool} map)
+ * for entitlements that don't have a dedicated column.
+ */
+export function planHasFeature(plan: Record<string, any>, feature: string): boolean {
+  if (Object.prototype.hasOwnProperty.call(plan, feature) && plan[feature] !== null) {
+    return Boolean(plan[feature])
+  }
+  const features = plan.features
+  if (Array.isArray(features)) return features.includes(feature)
+  if (features && typeof features === 'object') return Boolean(features[feature])
+  return false
 }
 
 export async function checkStorageQuota(

@@ -5,15 +5,6 @@ import { sanitizeLeadText } from '../utils/sanitize.js'
 import { sendCaptureRequestEmail } from '../email/index.js'
 import { checkUserQuota } from '../utils/quotas.js'
 
-// Monthly free shoot allowance per plan name
-const PLAN_SHOOT_ALLOWANCES: Record<string, number> = {
-  Free:    0,
-  Starter: 0,
-  Plus:    1,
-  Pro:     2,
-  Elite:   4,
-}
-
 const captureRequestBodySchema = z.object({
   name:          z.string().trim().min(1).max(100),
   email:         z.string().trim().email().max(254),
@@ -123,7 +114,7 @@ export default async function captureRoutes(fastify: FastifyInstance) {
     const user = request.user as any
 
     const { plan } = await checkUserQuota(fastify, user.sub)
-    const allowed = PLAN_SHOOT_ALLOWANCES[plan?.name ?? 'Free'] ?? 0
+    const allowed = Number(plan?.shoot_allowance ?? 0)
 
     // Count free claims this calendar month
     const monthStart = new Date()
@@ -153,10 +144,10 @@ export default async function captureRoutes(fastify: FastifyInstance) {
 
     // Check plan allowance
     const { plan } = await checkUserQuota(fastify, user.sub)
-    const allowed = PLAN_SHOOT_ALLOWANCES[plan?.name ?? 'Free'] ?? 0
+    const allowed = Number(plan?.shoot_allowance ?? 0)
 
     if (allowed === 0) {
-      return reply.code(403).send({ statusMessage: 'Free shoots are not included in your current plan. Upgrade to Plus or higher.' })
+      return reply.code(403).send({ statusMessage: 'Free shoots are not included in your current plan. Upgrade to a higher plan for monthly free shoots.' })
     }
 
     // Check monthly usage
