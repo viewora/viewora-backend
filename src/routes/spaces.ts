@@ -96,10 +96,6 @@ const updateSpaceBodySchema = z.object({
   cta_button_text: z.string().max(80).nullable().optional(),
   cta_action: z.enum(['link', 'email', 'phone']).nullable().optional(),
   cta_destination: z.string().max(2048).nullable().optional(),
-  // When true, small /embed/[slug] iframes show a minimal fullscreen-only
-  // control chrome and rely on the scene dock instead of in-panorama arrow
-  // hotspots for navigation, until the viewer enters fullscreen.
-  compact_embed_nav: z.boolean().optional(),
   ...listingFactsSchema,
 })
 
@@ -141,7 +137,7 @@ export default async function (fastify: FastifyInstance) {
 
     const { data, error, count } = await fastify.supabase
       .from('properties')
-      .select('id, title, slug, description, property_type, location_text, location_lat, location_lng, logo_url, floorplan_url, phone, email, cover_image_url, has_360, has_gallery, is_published, visibility, lead_form_enabled, branding_enabled, compact_embed_nav, price_kes, listing_status, transaction_type, price_period, bedrooms, bathrooms, area_sqm, vehicle_year, vehicle_mileage_km, vehicle_transmission, vehicle_fuel_type, land_acres, land_type, amenities, view_count, claim_state, created_via, created_at, updated_at, scenes ( thumbnail_url, order_index ), property_media ( public_url, media_type, sort_order, is_primary, processing_status )', { count: 'exact' })
+      .select('id, title, slug, description, property_type, location_text, location_lat, location_lng, logo_url, floorplan_url, phone, email, cover_image_url, has_360, has_gallery, is_published, visibility, lead_form_enabled, branding_enabled, price_kes, listing_status, transaction_type, price_period, bedrooms, bathrooms, area_sqm, vehicle_year, vehicle_mileage_km, vehicle_transmission, vehicle_fuel_type, land_acres, land_type, amenities, view_count, claim_state, created_via, created_at, updated_at, scenes ( thumbnail_url, order_index ), property_media ( public_url, media_type, sort_order, is_primary, processing_status )', { count: 'exact' })
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
       .range(from, to)
@@ -191,7 +187,7 @@ export default async function (fastify: FastifyInstance) {
       .select(`
         id, title, slug, description, property_type, location_text, location_lat, location_lng,
         logo_url, floorplan_url, phone, email, cover_image_url, has_360, has_gallery, is_published, published_at,
-        visibility, lead_form_enabled, branding_enabled, compact_embed_nav,
+        visibility, lead_form_enabled, branding_enabled,
         cta_enabled, cta_button_text, cta_action, cta_destination,
         claim_state, created_via,
         price_kes, listing_status, transaction_type, price_period,
@@ -333,7 +329,6 @@ export default async function (fastify: FastifyInstance) {
     if (body.space_type !== undefined) updates.property_type = body.space_type
     if (body.lead_form_enabled !== undefined) updates.lead_form_enabled = body.lead_form_enabled
     if (body.branding_enabled !== undefined) updates.branding_enabled = body.branding_enabled
-    if (body.compact_embed_nav !== undefined) updates.compact_embed_nav = body.compact_embed_nav
     if (body.slug !== undefined) updates.slug = body.slug
     if (body.price_kes !== undefined) updates.price_kes = body.price_kes
     if (body.listing_status !== undefined) updates.listing_status = body.listing_status
@@ -669,7 +664,7 @@ export default async function (fastify: FastifyInstance) {
       .update(updates)
       .eq('id', id)
       .eq('user_id', userId)
-      .select('id, title, slug, description, property_type, location_text, location_lat, location_lng, logo_url, phone, email, cover_image_url, has_360, has_gallery, is_published, published_at, visibility, lead_form_enabled, branding_enabled, compact_embed_nav, created_at, updated_at')
+      .select('id, title, slug, description, property_type, location_text, location_lat, location_lng, logo_url, phone, email, cover_image_url, has_360, has_gallery, is_published, published_at, visibility, lead_form_enabled, branding_enabled, created_at, updated_at')
       .single()
 
     if (error) {
