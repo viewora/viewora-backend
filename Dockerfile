@@ -2,7 +2,10 @@
 # basisu is NOT built here — this Dockerfile only builds the API service, which
 # never calls the basisu binary (only src/worker.ts does, via tile-processor.ts,
 # and the worker deploys separately through nixpacks.toml's aptPkgs).
-FROM node:22 AS app-builder
+# Official Docker Hub "node" images via AWS's public mirror — Railway's shared
+# builders were hitting Docker Hub's anonymous pull limit (429 Too Many
+# Requests), failing every deploy before the build even started.
+FROM public.ecr.aws/docker/library/node:22 AS app-builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -10,7 +13,7 @@ COPY . .
 RUN npm run build
 
 # ── Stage 2: Production runtime ───────────────────────────────────────────────
-FROM node:22-slim
+FROM public.ecr.aws/docker/library/node:22-slim
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
