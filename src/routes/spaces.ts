@@ -66,7 +66,7 @@ const listingFactsSchema = {
 
 const createSpaceBodySchema = z.object({
   title: z.string().trim().min(1).max(120),
-  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'other']),
+  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'land', 'other']),
   description: z.string().max(2000).optional(),
   location_text: z.string().max(200).optional(),
   slug: slugSchema.optional(),
@@ -89,7 +89,7 @@ const updateSpaceBodySchema = z.object({
   phone: z.string().max(50).nullable().optional(),
   email: z.string().email().max(255).nullable().optional(),
   slug: slugSchema.nullable().optional(),
-  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'other']).optional(),
+  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'land', 'other']).optional(),
   lead_form_enabled: z.boolean().optional(),
   branding_enabled: z.boolean().optional(),
   cta_enabled: z.boolean().optional(),
@@ -105,7 +105,7 @@ const updateSpaceBodySchema = z.object({
 // description should reflect what's on screen, not stale saved values.
 const generateDescriptionBodySchema = z.object({
   title: z.string().max(120).optional(),
-  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'other']).optional(),
+  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'land', 'other']).optional(),
   location_text: z.string().max(200).optional(),
   ...listingFactsSchema,
 })
@@ -779,6 +779,8 @@ export default async function (fastify: FastifyInstance) {
         vehicle_mileage_km: body.vehicle_mileage_km ?? null,
         vehicle_transmission: body.vehicle_transmission ?? null,
         vehicle_fuel_type: body.vehicle_fuel_type ?? null,
+        land_acres: body.land_acres ?? null,
+        land_type: body.land_type ?? null,
         amenities: body.amenities ?? null,
         listing_status: body.listing_status ?? null,
         transaction_type: body.transaction_type ?? null,

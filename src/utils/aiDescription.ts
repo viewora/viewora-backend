@@ -17,6 +17,8 @@ type SpaceForDescription = {
   vehicle_mileage_km: number | null
   vehicle_transmission: string | null
   vehicle_fuel_type: string | null
+  land_acres?: number | null
+  land_type?: string | null
   amenities: string[] | null
   listing_status: string | null
   transaction_type: string | null
@@ -45,6 +47,9 @@ function buildFactLines(space: SpaceForDescription): string[] {
     if (space.vehicle_mileage_km != null) lines.push(`Mileage: ${space.vehicle_mileage_km.toLocaleString('en-KE')} km`)
     if (space.vehicle_transmission) lines.push(`Transmission: ${space.vehicle_transmission}`)
     if (space.vehicle_fuel_type) lines.push(`Fuel type: ${space.vehicle_fuel_type}`)
+  } else if (space.property_type === 'land') {
+    if (space.land_acres != null) lines.push(`Land size: ${space.land_acres} acres`)
+    if (space.land_type) lines.push(`Land use / zoning: ${space.land_type}`)
   } else if (space.area_sqm != null) {
     lines.push(`Floor area: ${space.area_sqm} m²`)
   }
@@ -55,7 +60,7 @@ function buildFactLines(space: SpaceForDescription): string[] {
   return lines
 }
 
-const SYSTEM_PROMPT = `You write short listing descriptions for a Kenyan property/vehicle marketplace.
+const SYSTEM_PROMPT = `You write short listing descriptions for a Kenyan property/land/vehicle marketplace.
 
 Rules:
 - Base the description ONLY on the facts given. Never invent amenities, features, distances, condition claims, or numbers that aren't listed.

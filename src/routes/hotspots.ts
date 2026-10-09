@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
-import { invalidateCacheBySceneId } from '../utils/cache.js'
+import { invalidateTourCache } from '../utils/cache.js'
 
 // ── Param schemas ─────────────────────────────────────────────
 const hotspotParamsSchema = z.object({ hotspotId: z.string().uuid() })
@@ -9,23 +9,51 @@ const sceneParamsSchema   = z.object({ sceneId:   z.string().uuid() })
 
 const safeUrl = z.string().url().refine(u => /^https?:\/\//i.test(u), { message: 'URL must use http or https' })
 
+// Hotspot links may also be phone/email — the editor's "Call" and "Email"
+// shortcuts produce tel:/mailto: values, which safeUrl rejected, so those
+// hotspots failed to save. javascript:/data: etc. stay blocked.
+const linkUrl = z.string().max(2000).refine(u => {
+  if (/^https?:\/\//i.test(u)) { try { new URL(u); return true } catch { return false } }
+  return /^(tel:\+?[0-9\s\-()]{3,}|mailto:[^\s@]+@[^\s@]+)$/i.test(u)
+}, { message: 'Link must be an http(s), tel: or mailto: URL' })
+
+const sphericalPoint = z.object({ yaw: z.number(), pitch: z.number() })
+
+// Shared by create + update. Land listings reuse the `info` hotspot type and
+// put their shape in `content.kind`, so no DB constraint or RPC change is
+// needed — get_tour_data() already passes `content` through untouched.
+const HotspotContentSchema = z.object({
+  text: z.string().max(500).optional(),
+  image_url: safeUrl.optional(),
+  url: linkUrl.optional(),
+  icon: z.string().max(40).optional(),
+  label_color: z.string().max(20).optional(),
+  label_bold: z.boolean().optional(),
+  scale: z.number().min(0.1).max(5).optional(),
+  hoverScale: z.number().min(1).max(5).optional(),
+  strokeScale: z.number().min(0.1).max(5).optional(),
+  corners: z.array(sphericalPoint).length(4).optional(),
+  button_label: z.string().max(40).optional(),
+  // ── Land ──
+  kind: z.enum(['plot', 'beacon', 'road']).optional(),
+  points: z.array(sphericalPoint).min(3).max(64).optional(),
+  plot_status: z.enum(['available', 'reserved', 'sold']).optional(),
+  plot_price: z.string().max(40).optional(),
+  plot_size: z.string().max(40).optional(),
+}).refine(c => c.kind !== 'plot' || (c.points?.length ?? 0) >= 3, {
+  message: 'A plot needs at least 3 boundary points',
+  path: ['points'],
+})
+
+const HotspotTypeSchema = z.enum(['info', 'scene_link', 'url', 'video', 'youtube'])
+
 const CreateHotspotBodySchema = z.object({
-  type: z.enum(['info', 'scene_link', 'url', 'video', 'youtube']),
+  type: HotspotTypeSchema,
   yaw: z.number().min(-180).max(180),
   pitch: z.number().min(-90).max(90),
   label: z.string().max(60).optional(),
   target_scene_id: z.string().uuid().optional().nullable(),
-  content: z.object({
-    text: z.string().max(500).optional(),
-    image_url: safeUrl.optional(),
-    url: safeUrl.optional(),
-    icon: z.string().max(40).optional(),
-    scale: z.number().min(0.1).max(5).optional(),
-    hoverScale: z.number().min(1).max(5).optional(),
-    strokeScale: z.number().min(0.1).max(5).optional(),
-    corners: z.array(z.object({ yaw: z.number(), pitch: z.number() })).length(4).optional(),
-    button_label: z.string().max(40).optional(),
-  }).optional(),
+  content: HotspotContentSchema.optional(),
 }).refine(data => {
   if (data.type === 'scene_link' && !data.target_scene_id) return false
   if (data.type === 'url' && !data.content?.url) return false
@@ -37,35 +65,48 @@ const CreateHotspotBodySchema = z.object({
 // Standalone partial schema — avoids inheriting the .refine() from CreateHotspotBodySchema
 // which would force scene_link/url constraints even on unrelated partial updates.
 const UpdateHotspotBodySchema = z.object({
-  type: z.enum(['info', 'scene_link', 'url', 'video', 'youtube']).optional(),
+  type: HotspotTypeSchema.optional(),
   yaw: z.number().min(-180).max(180).optional(),
   pitch: z.number().min(-90).max(90).optional(),
   label: z.string().max(60).optional().nullable(),
   target_scene_id: z.string().uuid().optional().nullable(),
-  content: z.object({
-    text: z.string().max(500).optional(),
-    image_url: safeUrl.optional(),
-    url: safeUrl.optional(),
-    icon: z.string().max(40).optional(),
-    scale: z.number().min(0.1).max(5).optional(),
-    hoverScale: z.number().min(1).max(5).optional(),
-    strokeScale: z.number().min(0.1).max(5).optional(),
-    corners: z.array(z.object({ yaw: z.number(), pitch: z.number() })).length(4).optional(),
-    button_label: z.string().max(40).optional(),
-  }).optional().nullable(),
+  content: HotspotContentSchema.optional().nullable(),
 })
 
 export default async function hotspotsRoutes(fastify: FastifyInstance) {
 
   // Single atomic query — verifies scene exists AND caller owns its parent space.
+  // Also returns the space's slug so cache invalidation needs no extra lookups.
   async function verifySceneOwnership(sceneId: string, userId: string) {
     const { data: scene } = await fastify.supabase
       .from('scenes')
-      .select('id, space_id, properties!inner(user_id)')
+      .select('id, space_id, properties!inner(user_id, slug)')
       .eq('id', sceneId)
       .eq('properties.user_id', userId)
       .single()
     return scene ?? null
+  }
+
+  // Single query for PATCH/DELETE — hotspot → scene → space ownership in one
+  // round trip (previously: hotspot lookup, then scene ownership, then two more
+  // queries inside the cache invalidation helper). Non-owners get 404, which
+  // also avoids confirming that someone else's hotspot id exists.
+  async function verifyHotspotOwnership(hotspotId: string, userId: string) {
+    const { data } = await fastify.supabase
+      .from('hotspots')
+      .select('id, scene_id, scenes!inner(space_id, properties!inner(user_id, slug))')
+      .eq('id', hotspotId)
+      .eq('scenes.properties.user_id', userId)
+      .single()
+    if (!data) return null
+    const scene: any = Array.isArray((data as any).scenes) ? (data as any).scenes[0] : (data as any).scenes
+    const property: any = Array.isArray(scene?.properties) ? scene.properties[0] : scene?.properties
+    return { sceneId: data.scene_id as string, spaceId: scene?.space_id as string, slug: (property?.slug ?? null) as string | null }
+  }
+
+  function slugOf(scene: any): string | null {
+    const property = Array.isArray(scene?.properties) ? scene.properties[0] : scene?.properties
+    return property?.slug ?? null
   }
 
   // ── LIST HOTSPOTS FOR A SCENE ──────────────────────────────
@@ -116,7 +157,7 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
     }
     
     // Invalidate public cache
-    await invalidateCacheBySceneId(fastify, params.sceneId)
+    await invalidateTourCache(fastify, scene.space_id, slugOf(scene))
 
     return reply.code(201).send({ hotspot })
   })
@@ -129,21 +170,14 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
     const body = parseWithSchema(reply, UpdateHotspotBodySchema, req.body)
     if (!body) return
 
-    const { data: hotspot } = await fastify.supabase
-      .from('hotspots')
-      .select('scene_id')
-      .eq('id', params.hotspotId)
-      .single()
-    if (!hotspot) return reply.code(404).send({ statusMessage: 'Hotspot not found' })
-
-    const scene = await verifySceneOwnership(hotspot.scene_id, userId)
-    if (!scene) return reply.code(403).send({ statusMessage: 'Forbidden' })
+    const owned = await verifyHotspotOwnership(params.hotspotId, userId)
+    if (!owned) return reply.code(404).send({ statusMessage: 'Hotspot not found' })
 
     // Mirror the CREATE check: if target_scene_id is being set, verify it's in the same space
     if (body.type === 'scene_link' && body.target_scene_id) {
       const { data: targetScene } = await fastify.supabase
         .from('scenes').select('space_id').eq('id', body.target_scene_id).single()
-      if (!targetScene || targetScene.space_id !== scene.space_id) {
+      if (!targetScene || targetScene.space_id !== owned.spaceId) {
         return reply.code(400).send({ statusMessage: 'Target scene must be in the same space' })
       }
     }
@@ -160,7 +194,7 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
     }
 
     // Invalidate public cache
-    await invalidateCacheBySceneId(fastify, hotspot.scene_id)
+    await invalidateTourCache(fastify, owned.spaceId, owned.slug)
 
     return reply.send({ hotspot: updated })
   })
@@ -171,21 +205,14 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
     const params = parseWithSchema(reply, hotspotParamsSchema, (req as any).params)
     if (!params) return
 
-    const { data: hotspot } = await fastify.supabase
-      .from('hotspots')
-      .select('scene_id')
-      .eq('id', params.hotspotId)
-      .single()
-    if (!hotspot) return reply.code(404).send({ statusMessage: 'Hotspot not found' })
-
-    const scene = await verifySceneOwnership(hotspot.scene_id, userId)
-    if (!scene) return reply.code(403).send({ statusMessage: 'Forbidden' })
+    const owned = await verifyHotspotOwnership(params.hotspotId, userId)
+    if (!owned) return reply.code(404).send({ statusMessage: 'Hotspot not found' })
 
     const { error: deleteErr } = await fastify.supabase.from('hotspots').delete().eq('id', params.hotspotId)
     if (deleteErr) return reply.code(500).send({ statusMessage: 'Failed to delete hotspot' })
     
     // Invalidate public cache
-    await invalidateCacheBySceneId(fastify, hotspot.scene_id)
+    await invalidateTourCache(fastify, owned.spaceId, owned.slug)
 
     return reply.code(204).send()
   })

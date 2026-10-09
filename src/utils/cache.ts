@@ -1,28 +1,41 @@
 import { FastifyInstance } from 'fastify'
 
 /**
+ * Deletes the cached public tour payload for a space. GET /p/:slug accepts
+ * either the slug or the space UUID and caches under whichever was requested,
+ * so both keys are cleared — clearing only `tour:<slug>` left tours opened by
+ * id serving stale scenes/hotspots for up to the 1h TTL.
+ * Pass the slug when the caller already has it to skip the lookup query.
+ */
+export async function invalidateTourCache(fastify: FastifyInstance, spaceId: string, slug?: string | null) {
+  if (!fastify.redis) return
+
+  try {
+    let resolvedSlug = slug
+    if (resolvedSlug === undefined) {
+      const { data: space } = await fastify.supabase
+        .from('properties')
+        .select('slug')
+        .eq('id', spaceId)
+        .single()
+      resolvedSlug = space?.slug ?? null
+    }
+
+    const keys = [`tour:${spaceId}`]
+    if (resolvedSlug) keys.push(`tour:${resolvedSlug}`)
+    await fastify.redis.del(keys).catch(() => {})
+    fastify.log.info({ spaceId, slug: resolvedSlug }, 'Invalidated public tour cache')
+  } catch (err: any) {
+    fastify.log.warn({ err: err?.message, spaceId }, 'Failed to invalidate space cache')
+  }
+}
+
+/**
  * Invalidates the public tour cache in Redis for a specific space.
  * This ensures that updates to scenes, hotspots, or settings are visible immediately.
  */
 export async function invalidateSpaceCache(fastify: FastifyInstance, spaceId: string) {
-  if (!fastify.redis) return
-
-  try {
-    // 1. Fetch the slug for this space
-    const { data: space } = await fastify.supabase
-      .from('properties')
-      .select('slug')
-      .eq('id', spaceId)
-      .single()
-
-    if (space?.slug) {
-      const cacheKey = `tour:${space.slug}`
-      await fastify.redis.del(cacheKey).catch(() => {})
-      fastify.log.info({ spaceId, slug: space.slug }, 'Invalidated public tour cache')
-    }
-  } catch (err: any) {
-    fastify.log.warn({ err: err?.message, spaceId }, 'Failed to invalidate space cache')
-  }
+  await invalidateTourCache(fastify, spaceId)
 }
 
 /**

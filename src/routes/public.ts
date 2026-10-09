@@ -14,7 +14,7 @@ const idParamsSchema = z.object({
 const listingsQuerySchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  type: z.enum(['all', 'residential', 'commercial', 'hospitality', 'education', 'automotive', 'other']).optional(),
+  type: z.enum(['all', 'residential', 'commercial', 'hospitality', 'education', 'automotive', 'land', 'other']).optional(),
   status: z.enum(['all', 'available', 'sold', 'rented']).optional(),
   transaction: z.enum(['all', 'sale', 'rent']).optional(),
   sort: z.enum(['newest', 'price_asc', 'price_desc']).optional(),
