@@ -641,7 +641,12 @@ export default async function (fastify: FastifyInstance) {
       const hasGalleryPhoto = currentSpace.property_media?.some(
         (item: any) => item.media_type === 'gallery_image' && item.processing_status === 'complete'
       )
-      if (!hasPanorama && !hasGalleryPhoto) {
+      // Aerial plot-map photos (uploaded as 'floor_plan' media) count too —
+      // a land listing can be just drone photos with plots drawn on them.
+      const hasAerialPhoto = currentSpace.property_media?.some(
+        (item: any) => item.media_type === 'floor_plan' && item.processing_status === 'complete'
+      )
+      if (!hasPanorama && !hasGalleryPhoto && !hasAerialPhoto) {
         return reply.code(400).send({ statusMessage: 'Add at least one processed 360° scene or photo before publishing.' })
       }
     }
