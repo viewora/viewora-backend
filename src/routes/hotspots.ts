@@ -87,21 +87,21 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
     return scene ?? null
   }
 
-  // Single query for PATCH/DELETE — hotspot → scene → space ownership in one
-  // round trip (previously: hotspot lookup, then scene ownership, then two more
-  // queries inside the cache invalidation helper). Non-owners get 404, which
-  // also avoids confirming that someone else's hotspot id exists.
+  // PATCH/DELETE ownership: hotspot → its scene → scene's space owner.
+  // Deliberately two queries: `hotspots` has TWO foreign keys to `scenes`
+  // (scene_id and target_scene_id), so a single embedded
+  // `scenes!inner(...)` select is ambiguous — PostgREST errors and every
+  // edit/move/delete 404'd. Non-owners also get 404.
   async function verifyHotspotOwnership(hotspotId: string, userId: string) {
-    const { data } = await fastify.supabase
+    const { data: hotspot } = await fastify.supabase
       .from('hotspots')
-      .select('id, scene_id, scenes!inner(space_id, properties!inner(user_id, slug))')
+      .select('scene_id')
       .eq('id', hotspotId)
-      .eq('scenes.properties.user_id', userId)
       .single()
-    if (!data) return null
-    const scene: any = Array.isArray((data as any).scenes) ? (data as any).scenes[0] : (data as any).scenes
-    const property: any = Array.isArray(scene?.properties) ? scene.properties[0] : scene?.properties
-    return { sceneId: data.scene_id as string, spaceId: scene?.space_id as string, slug: (property?.slug ?? null) as string | null }
+    if (!hotspot?.scene_id) return null
+    const scene = await verifySceneOwnership(hotspot.scene_id, userId)
+    if (!scene) return null
+    return { sceneId: hotspot.scene_id as string, spaceId: (scene as any).space_id as string, slug: slugOf(scene) }
   }
 
   function slugOf(scene: any): string | null {
