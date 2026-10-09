@@ -35,13 +35,15 @@ const HotspotContentSchema = z.object({
   corners: z.array(sphericalPoint).length(4).optional(),
   button_label: z.string().max(40).optional(),
   // ── Land ──
-  kind: z.enum(['plot', 'beacon', 'road']).optional(),
-  points: z.array(sphericalPoint).min(3).max(64).optional(),
+  // zone = estate/phase outline; road may carry a 2+ point path drawn as a ground arrow
+  kind: z.enum(['plot', 'beacon', 'road', 'zone']).optional(),
+  points: z.array(sphericalPoint).min(2).max(64).optional(),
+  arrow_width: z.number().min(0.1).max(5).optional(),
   plot_status: z.enum(['available', 'reserved', 'sold']).optional(),
   plot_price: z.string().max(40).optional(),
   plot_size: z.string().max(40).optional(),
-}).refine(c => c.kind !== 'plot' || (c.points?.length ?? 0) >= 3, {
-  message: 'A plot needs at least 3 boundary points',
+}).refine(c => (c.kind !== 'plot' && c.kind !== 'zone') || (c.points?.length ?? 0) >= 3, {
+  message: 'A plot or estate outline needs at least 3 boundary points',
   path: ['points'],
 })
 
@@ -71,6 +73,14 @@ const UpdateHotspotBodySchema = z.object({
   label: z.string().max(60).optional().nullable(),
   target_scene_id: z.string().uuid().optional().nullable(),
   content: HotspotContentSchema.optional().nullable(),
+})
+
+// Grid tool: one block split into many plots is saved in a single request and
+// a single INSERT (instead of N round trips + N cache invalidations).
+const BatchCreateHotspotsBodySchema = z.object({
+  hotspots: z.array(CreateHotspotBodySchema).min(1).max(200),
+}).refine(b => b.hotspots.every(h => h.type !== 'scene_link'), {
+  message: 'Batch create does not support scene links',
 })
 
 export default async function hotspotsRoutes(fastify: FastifyInstance) {
@@ -160,6 +170,33 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
     await invalidateTourCache(fastify, scene.space_id, slugOf(scene))
 
     return reply.code(201).send({ hotspot })
+  })
+
+  // ── BATCH CREATE HOTSPOTS (land plot grids) ─────────────
+  fastify.post('/scenes/:sceneId/hotspots/batch', {
+    preHandler: [fastify.authenticate],
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, sceneParamsSchema, (req as any).params)
+    if (!params) return
+    const body = parseWithSchema(reply, BatchCreateHotspotsBodySchema, req.body)
+    if (!body) return
+    const scene = await verifySceneOwnership(params.sceneId, userId)
+    if (!scene) return reply.code(404).send({ statusMessage: 'Scene not found' })
+
+    const rows = body.hotspots.map(h => ({ scene_id: params.sceneId, ...h }))
+    const { data: hotspots, error } = await fastify.supabase
+      .from('hotspots')
+      .insert(rows)
+      .select()
+    if (error) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to create plots' })
+    }
+
+    await invalidateTourCache(fastify, scene.space_id, slugOf(scene))
+    return reply.code(201).send({ hotspots: hotspots ?? [] })
   })
 
   // ── UPDATE HOTSPOT ────────────────────────────────────────
