@@ -627,8 +627,8 @@ export async function sendLeadNotification(params: {
 
       <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
         This lead came from your tour at
-        <a href="https://viewora.software/p/${safeSpaceSlug}" style="color: #0066cc;">
-          viewora.software/p/${safeSpaceSlug}
+        <a href="${APP_URL}/p/${safeSpaceSlug}" style="color: #0066cc;">
+          app.viewora.software/p/${safeSpaceSlug}
         </a>
       </p>
     `),
@@ -723,7 +723,8 @@ export async function sendTourPublishedEmail(params: {
   const { ownerEmail, spaceName, spaceSlug } = params
   const safeSpaceName = escapeHtml(spaceName)
   const safeSpaceSlug = escapeHtml(spaceSlug)
-  const tourUrl = `https://viewora.software/p/${safeSpaceSlug}`
+  // Tours live on the app domain — viewora.software (marketing) has no /p pages.
+  const tourUrl = `${APP_URL}/p/${safeSpaceSlug}`
 
   await resend.emails.send({
     from: FROM,
