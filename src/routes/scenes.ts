@@ -27,6 +27,8 @@ const UpdateSceneBodySchema = z.object({
   initial_yaw:   z.number().min(-180).max(180).optional(),
   initial_pitch: z.number().min(-90).max(90).optional(),
   position_x:    z.number().optional(),
+  // Category ("Kitchen", "Phase 2 plots"…). Empty string / null clears it.
+  group_name:    z.string().trim().max(40).transform(v => (v ? v : null)).nullable().optional(),
   position_y:    z.number().optional(),
 })
 

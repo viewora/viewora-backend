@@ -47,11 +47,14 @@ const CreateBody = z.object({
 
 const UpdateBody = z.object({
   title: z.string().trim().min(1).max(80).optional(),
+  group_name: z.string().trim().max(40).transform(v => (v ? v : null)).nullable().optional(),
   order_index: z.number().int().min(0).max(1000).optional(),
   shapes: z.array(ShapeSchema).max(400).optional(),
 })
 
-const COLUMNS = 'id, space_id, media_id, title, image_url, width, height, order_index, shapes, created_at, updated_at'
+// '*' rather than a column list: optional columns added by later migrations
+// (e.g. group_name) must not break reads on databases that haven't run them.
+const COLUMNS = '*'
 
 export default async function aerialRoutes(fastify: FastifyInstance) {
   async function ownsSpace(spaceId: string, userId: string) {
@@ -168,11 +171,23 @@ export default async function aerialRoutes(fastify: FastifyInstance) {
 export async function publicAerialMaps(fastify: FastifyInstance, spaceId: string) {
   const { data, error } = await fastify.supabase
     .from('aerial_maps')
-    .select('id, title, image_url, width, height, order_index, shapes')
+    .select('*')
     .eq('space_id', spaceId)
     .order('order_index', { ascending: true })
     .order('created_at', { ascending: true })
   // Missing table (migration not run yet) must not break the public tour.
   if (error) return []
-  return data ?? []
+  return (data ?? []).map(({ space_id, media_id, ...rest }: any) => rest)
+}
+
+/**
+ * Merges scenes.group_name into scene rows that came from get_tour_data()
+ * (whose column list can't be changed from here). Missing column → no-op.
+ */
+export async function mergeSceneGroups(fastify: FastifyInstance, spaceId: string, scenes: any[] | null | undefined) {
+  if (!Array.isArray(scenes) || !scenes.length) return
+  const { data, error } = await fastify.supabase.from('scenes').select('id, group_name').eq('space_id', spaceId)
+  if (error || !data) return
+  const byId = new Map(data.map((r: any) => [r.id, r.group_name ?? null]))
+  for (const s of scenes) if (byId.has(s.id)) s.group_name = byId.get(s.id)
 }
