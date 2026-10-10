@@ -45,7 +45,15 @@ const CreateBody = z.object({
   height: z.number().int().min(1).max(20000).optional().nullable(),
 })
 
+const IntroView = z.object({
+  cx: z.number().min(-0.5).max(1.5),
+  cy: z.number().min(-0.5).max(1.5),
+  zoom: z.number().min(0.5).max(20),
+})
+
 const UpdateBody = z.object({
+  // Buyer intro glide: start → end camera views (null = automatic).
+  intro: z.object({ start: IntroView.optional(), end: IntroView.optional() }).nullable().optional(),
   title: z.string().trim().min(1).max(80).optional(),
   group_name: z.string().trim().max(40).transform(v => (v ? v : null)).nullable().optional(),
   order_index: z.number().int().min(0).max(1000).optional(),

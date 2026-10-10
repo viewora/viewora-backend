@@ -643,11 +643,16 @@ export default async function (fastify: FastifyInstance) {
       )
       // Aerial plot-map photos (uploaded as 'floor_plan' media) count too —
       // a land listing can be just drone photos with plots drawn on them.
-      const hasAerialPhoto = currentSpace.property_media?.some(
-        (item: any) => item.media_type === 'floor_plan' && item.processing_status === 'complete'
+      let hasAerialPhoto = currentSpace.property_media?.some(
+        (item: any) => item.media_type === 'floor_plan' && item.processing_status !== 'failed'
       )
+      if (!hasAerialPhoto) {
+        const { count } = await fastify.supabase
+          .from('aerial_maps').select('id', { count: 'exact', head: true }).eq('space_id', currentSpace.id)
+        hasAerialPhoto = (count ?? 0) > 0 // errors (table not created yet) → count null → false
+      }
       if (!hasPanorama && !hasGalleryPhoto && !hasAerialPhoto) {
-        return reply.code(400).send({ statusMessage: 'Add at least one processed 360° scene or photo before publishing.' })
+        return reply.code(400).send({ statusMessage: 'Add a 360° scene, a photo or an aerial plot map before publishing.' })
       }
     }
     
