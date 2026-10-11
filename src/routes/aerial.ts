@@ -22,7 +22,8 @@ const point = z.object({ x: z.number().min(-0.5).max(1.5), y: z.number().min(-0.
 
 const ShapeSchema = z.object({
   id: z.string().min(1).max(64),
-  kind: z.enum(['plot', 'zone', 'road', 'beacon']),
+  // 'scene' = a 360 pin: where a 360 photo was taken; buyers tap it to stand there.
+  kind: z.enum(['plot', 'zone', 'road', 'beacon', 'scene']),
   label: z.string().max(60).optional(),
   text: z.string().max(500).optional(),
   points: z.array(point).min(1).max(64),
@@ -31,11 +32,13 @@ const ShapeSchema = z.object({
   size: z.string().max(40).optional(),
   url: linkUrl.optional(),
   arrow_width: z.number().min(0.1).max(5).optional(),
+  scene_id: z.string().uuid().optional(),
 }).refine(s => {
+  if (s.kind === 'scene') return !!s.scene_id
   if (s.kind === 'plot' || s.kind === 'zone') return s.points.length >= 3
   if (s.kind === 'road') return s.points.length >= 2
   return true
-}, { message: 'Plots/outlines need 3+ points, roads 2+' })
+}, { message: 'Plots/outlines need 3+ points, roads 2+, 360 pins a linked 360' })
 
 const CreateBody = z.object({
   title: z.string().trim().min(1).max(80).optional(),
