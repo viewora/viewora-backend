@@ -194,6 +194,10 @@ export function isValidFileType(contentType: string, mediaType: string): boolean
     return allowedImages.includes(contentType)
   }
 
+  if (mediaType === 'floor_plan_image') {
+    return ['image/jpeg', 'image/jpg', 'image/png'].includes(contentType)
+  }
+
   if (mediaType === 'audio') {
     return ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/mp4'].includes(contentType)
   }

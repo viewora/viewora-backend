@@ -10,6 +10,9 @@ const idParamsSchema = z.object({
   id: z.string().uuid(),
 })
 
+// Floor plans are flat drawings — far smaller than panoramas.
+const MAX_FLOOR_PLAN_IMAGE_BYTES = 15 * 1048576
+
 const uploadMediaTypeSchema = z.enum([
   'panorama',
   'gallery',
@@ -18,6 +21,9 @@ const uploadMediaTypeSchema = z.enum([
   'thumbnail',
   'logo',
   'floor_plan',
+  // Uploaded floor-plan image for a floor (floor_plans table). Separate from
+  // 'floor_plan', which aerial maps use and the publish check counts.
+  'floor_plan_image',
   'branding_logo',
   'audio',
   'avatar',
@@ -95,7 +101,13 @@ export default async function (fastify: FastifyInstance) {
 
     // 1. Validate File Type
     if (!isValidFileType(contentType, mediaType)) {
+      if (mediaType === 'floor_plan_image') {
+        return reply.code(400).send({ statusMessage: 'Invalid file type. Floor plans must be PNG or JPG.' })
+      }
       return reply.code(400).send({ statusMessage: 'Invalid file type. Only JPEG, PNG, and WebP are allowed.' })
+    }
+    if (mediaType === 'floor_plan_image' && Number(fileSize) > MAX_FLOOR_PLAN_IMAGE_BYTES) {
+      return reply.code(413).send({ statusMessage: `File too large. Floor plans can be up to ${MAX_FLOOR_PLAN_IMAGE_BYTES / 1048576} MB.` })
     }
 
     // 2. Check subscription status and quotas
@@ -141,6 +153,7 @@ export default async function (fastify: FastifyInstance) {
     else if (mediaType === 'gallery' || mediaType === 'gallery_image') folder = 'gallery'
     else if (mediaType === 'thumb' || mediaType === 'thumbnail') folder = 'thumb'
     else if (mediaType === 'floor_plan') folder = 'floor_plan'
+    else if (mediaType === 'floor_plan_image') folder = 'floor_plan_image'
     else if (mediaType === 'audio') folder = 'audio'
     else if (mediaType === 'logo' || mediaType === 'branding_logo') folder = 'branding'
     else if (mediaType === 'avatar') folder = 'avatar'
