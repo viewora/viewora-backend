@@ -30,6 +30,11 @@ const UpdateSceneBodySchema = z.object({
   // Category ("Kitchen", "Phase 2 plots"…). Empty string / null clears it.
   group_name:    z.string().trim().max(40).transform(v => (v ? v : null)).nullable().optional(),
   position_y:    z.number().optional(),
+  // Floor-plan pin. x/y are fractions of the plan image; null unplaces the scene.
+  floor_plan_id: z.string().uuid().nullable().optional(),
+  plan_x:        z.number().min(0).max(1).nullable().optional(),
+  plan_y:        z.number().min(0).max(1).nullable().optional(),
+  north_offset:  z.number().min(-180).max(180).nullable().optional(),
 })
 
 export default async function scenesRoutes(fastify: FastifyInstance) {
@@ -183,12 +188,23 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     const { data: scene } = await fastify.supabase
       .from('scenes')
-      .select('id, properties!inner(user_id)')
+      .select('id, space_id, properties!inner(user_id)')
       .eq('id', params.sceneId)
       .eq('properties.user_id', userId)
       .single()
 
     if (!scene) return reply.code(404).send({ statusMessage: 'Scene not found' })
+
+    // A scene can only be pinned on a floor plan of its own space.
+    if (body.floor_plan_id) {
+      const { data: floorPlan } = await fastify.supabase
+        .from('floor_plans')
+        .select('id')
+        .eq('id', body.floor_plan_id)
+        .eq('space_id', (scene as any).space_id)
+        .maybeSingle()
+      if (!floorPlan) return reply.code(400).send({ statusMessage: 'Floor plan not found for this space' })
+    }
 
     const { data: updated, error: updateError } = await fastify.supabase
       .from('scenes')

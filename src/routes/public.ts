@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { LISTING_SELECT_FRAGMENT, mapListingRow } from '../utils/listingMapper.js'
 import { mergeSceneGroups, publicAerialMaps } from './aerial.js'
+import { mergeScenePlanPins, publicFloorPlans } from './floorPlans.js'
 
 const tourParamsSchema = z.object({
   slug: z.string().min(3).max(120).regex(/^[a-z0-9-]+$/, 'Invalid slug'),
@@ -130,8 +131,10 @@ export default async function publicRoutes(fastify: FastifyInstance) {
 
     const aerial_maps = await publicAerialMaps(fastify, params.id)
     await mergeSceneGroups(fastify, params.id, formattedData.scenes)
+    const floor_plans = await publicFloorPlans(fastify, params.id)
+    if (floor_plans.length) await mergeScenePlanPins(fastify, params.id, formattedData.scenes)
     reply.header('X-Cache', 'BYPASS')
-    return reply.send({ tour: { ...formattedData, aerial_maps } })
+    return reply.send({ tour: { ...formattedData, aerial_maps, floor_plans } })
   })
 
   // ── SITEMAP DATA ──────────────────────────────────────────
@@ -328,10 +331,14 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       data.aerial_maps = await publicAerialMaps(fastify, data.space.id)
       // Scene categories — merged fresh like gallery/aerial (not in the cached RPC blob).
       await mergeSceneGroups(fastify, data.space.id, data.scenes)
+      // Floor plans + scene pins — fetched fresh like aerial maps.
+      data.floor_plans = await publicFloorPlans(fastify, data.space.id)
+      if (data.floor_plans.length) await mergeScenePlanPins(fastify, data.space.id, data.scenes)
     } else {
       data.gallery = []
       data.seller = null
       data.aerial_maps = []
+      data.floor_plans = []
     }
 
     reply.header('X-Cache', cacheStatus)

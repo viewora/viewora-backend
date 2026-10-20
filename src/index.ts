@@ -28,6 +28,7 @@ import adminRoutes from './routes/admin.js'
 import scenesRoutes from './routes/scenes.js'
 import hotspotsRoutes from './routes/hotspots.js'
 import aerialRoutes from './routes/aerial.js'
+import floorPlanRoutes from './routes/floorPlans.js'
 import publicRoutes from './routes/public.js'
 import sellersRoutes from './routes/sellers.js'
 import cronRoutes from './routes/cron.js'
@@ -379,6 +380,7 @@ fastify.register(adminRoutes, { prefix: '/admin' })
 fastify.register(scenesRoutes)
 fastify.register(hotspotsRoutes)
 fastify.register(aerialRoutes)
+fastify.register(floorPlanRoutes)
 fastify.register(publicRoutes)
 fastify.register(sellersRoutes, { prefix: '/sellers' })
 fastify.register(cronRoutes)
