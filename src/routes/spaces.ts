@@ -6,7 +6,6 @@ import { canCreateSpace, checkUserQuota, quotaLimitMessage } from '../utils/quot
 import { parseWithSchema } from '../utils/validation.js'
 import { sendTourPublishedEmail } from '../email/index.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
-import { generateSpaceFloorPlan } from '../utils/floor-plan-generator.js'
 import { generateListingDescription } from '../utils/aiDescription.js'
 
 // Converts a space title into a URL-safe slug.
@@ -85,7 +84,6 @@ const updateSpaceBodySchema = z.object({
   location_lat: z.number().min(-90).max(90).nullable().optional(),
   location_lng: z.number().min(-180).max(180).nullable().optional(),
   logo_url: z.string().url().max(2048).nullable().optional(),
-  floorplan_url: z.string().url().max(2048).nullable().optional(),
   phone: z.string().max(50).nullable().optional(),
   email: z.string().email().max(255).nullable().optional(),
   slug: slugSchema.nullable().optional(),
@@ -137,7 +135,7 @@ export default async function (fastify: FastifyInstance) {
 
     const { data, error, count } = await fastify.supabase
       .from('properties')
-      .select('id, title, slug, description, property_type, location_text, location_lat, location_lng, logo_url, floorplan_url, phone, email, cover_image_url, has_360, has_gallery, is_published, visibility, lead_form_enabled, branding_enabled, price_kes, listing_status, transaction_type, price_period, bedrooms, bathrooms, area_sqm, vehicle_year, vehicle_mileage_km, vehicle_transmission, vehicle_fuel_type, land_acres, land_type, amenities, view_count, claim_state, created_via, created_at, updated_at, scenes ( thumbnail_url, order_index ), property_media ( public_url, media_type, sort_order, is_primary, processing_status )', { count: 'exact' })
+      .select('id, title, slug, description, property_type, location_text, location_lat, location_lng, logo_url, phone, email, cover_image_url, has_360, has_gallery, is_published, visibility, lead_form_enabled, branding_enabled, price_kes, listing_status, transaction_type, price_period, bedrooms, bathrooms, area_sqm, vehicle_year, vehicle_mileage_km, vehicle_transmission, vehicle_fuel_type, land_acres, land_type, amenities, view_count, claim_state, created_via, created_at, updated_at, scenes ( thumbnail_url, order_index ), property_media ( public_url, media_type, sort_order, is_primary, processing_status )', { count: 'exact' })
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
       .range(from, to)
@@ -186,7 +184,7 @@ export default async function (fastify: FastifyInstance) {
       .from('properties')
       .select(`
         id, title, slug, description, property_type, location_text, location_lat, location_lng,
-        logo_url, floorplan_url, phone, email, cover_image_url, has_360, has_gallery, is_published, published_at,
+        logo_url, phone, email, cover_image_url, has_360, has_gallery, is_published, published_at,
         visibility, lead_form_enabled, branding_enabled,
         cta_enabled, cta_button_text, cta_action, cta_destination,
         claim_state, created_via,
@@ -319,7 +317,6 @@ export default async function (fastify: FastifyInstance) {
     if (body.location_lat !== undefined) updates.location_lat = body.location_lat
     if (body.location_lng !== undefined) updates.location_lng = body.location_lng
     if (body.logo_url !== undefined) updates.logo_url = body.logo_url
-    if (body.floorplan_url !== undefined) updates.floorplan_url = body.floorplan_url
     if (body.phone !== undefined) updates.phone = body.phone
     if (body.email !== undefined) updates.email = body.email
     if (body.cta_enabled !== undefined) updates.cta_enabled = body.cta_enabled
@@ -508,55 +505,6 @@ export default async function (fastify: FastifyInstance) {
     }
   })
 
-  // FLOOR PLAN upload — returns a presigned PUT URL; client PUTs the file, then PATCHes /spaces/:id with floorplan_url
-  fastify.post('/:id/floorplan-url', { preHandler: fastify.authenticate }, async (request, reply) => {
-    const user = request.user as any
-    const userId = user.sub
-    const params = parseWithSchema(reply, idParamsSchema, request.params)
-    if (!params) return
-    const { id } = params
-
-    const floorplanUploadBodySchema = z.object({
-      fileName: z.string().trim().min(1).max(255),
-      contentType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']),
-    })
-    const body = parseWithSchema(reply, floorplanUploadBodySchema, request.body)
-    if (!body) return
-
-    const { data: space } = await fastify.supabase
-      .from('properties')
-      .select('id')
-      .eq('id', id)
-      .eq('user_id', userId)
-      .single()
-
-    if (!space) return reply.code(404).send({ statusMessage: 'Space not found' })
-
-    const bucketName = process.env.R2_BUCKET_NAME
-    if (!bucketName) return reply.code(500).send({ statusMessage: 'Storage configuration error' })
-
-    const rawExt = (body.fileName.split('.').pop() ?? '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
-    const fileExt = rawExt || 'jpg'
-    const objectKey = `spaces/${id}/floorplan/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${fileExt}`
-
-    const command = new PutObjectCommand({
-      Bucket: bucketName,
-      Key: objectKey,
-      ContentType: body.contentType,
-      CacheControl: 'public, max-age=31536000, immutable',
-    })
-
-    try {
-      const uploadUrl = await getSignedUrl(fastify.s3, command, { expiresIn: 900 })
-      const customDomain = process.env.MEDIA_DOMAIN || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
-      const publicUrl = `${customDomain}/${objectKey}`
-      return reply.send({ uploadUrl, publicUrl })
-    } catch (err) {
-      fastify.log.error(err)
-      return reply.code(500).send({ statusMessage: 'Failed to generate upload URL' })
-    }
-  })
-
   // UPDATE viewer settings (property_360_settings)
   fastify.patch('/:id/settings', { preHandler: fastify.authenticate }, async (request, reply) => {
     const user = request.user as any
@@ -701,46 +649,6 @@ export default async function (fastify: FastifyInstance) {
     await invalidateSpaceCache(fastify, id)
 
     return reply.send(space)
-  })
-
-  // REGENERATE FLOOR PLAN — manually triggers floor-plan generation for a space.
-  // Use this for spaces that were tiled before the auto-generation feature shipped,
-  // or any time you want to refresh the floor plan after editing hotspots.
-  fastify.post('/:id/regenerate-floor-plan', { preHandler: fastify.authenticate }, async (request, reply) => {
-    const user = request.user as any
-    const userId = user.sub
-    const params = parseWithSchema(reply, idParamsSchema, request.params)
-    if (!params) return
-    const { id } = params
-
-    // Verify ownership
-    const { data: space } = await fastify.supabase
-      .from('properties')
-      .select('id')
-      .eq('id', id)
-      .eq('user_id', userId)
-      .single()
-
-    if (!space) return reply.code(404).send({ statusMessage: 'Space not found' })
-
-    const cdnBase = process.env.MEDIA_DOMAIN
-      || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
-
-    const floorplanUrl = await generateSpaceFloorPlan(
-      fastify.s3,
-      fastify.supabase,
-      id,
-      cdnBase,
-      fastify.redis ?? null,
-    )
-
-    if (!floorplanUrl) {
-      return reply.code(422).send({
-        statusMessage: 'Floor plan could not be generated. Make sure the space has at least one scene with hotspots.',
-      })
-    }
-
-    return reply.send({ floorplanUrl })
   })
 
   // GENERATE DESCRIPTION — AI-drafted listing description from whatever
