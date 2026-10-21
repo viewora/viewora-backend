@@ -1,6 +1,10 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
+import { generateGemini, parseGeminiJson, GEMINI_MODEL, type GeminiPart } from '../utils/gemini.js'
+import { industryBrief } from '../utils/industry.js'
+import { consumeAi, AiLimitError } from '../utils/aiUsage.js'
+import { renderPanoViews, viewPointToYawPitch, yawPitchToViewPoint, VIEW_YAWS_DEG } from '../utils/panoViews.js'
 
 const spaceParamsSchema = z.object({ spaceId: z.string().uuid() })
 
@@ -10,14 +14,14 @@ const DEG_TO_RAD           = Math.PI / 180
 const DEFAULT_PITCH_RAD    = -8 * DEG_TO_RAD
 const DEDUP_MIN_ANGLE_RAD  = 0.18   // ~10° — closer than this = duplicate
 
-// Two-tier: Haiku does doorways + naming (fast, cheap).
-// Sonnet does info hotspots + deletion review (needs real visual reasoning).
-const MODEL_FAST     = 'claude-haiku-4-5-20251001'
-const MODEL_ACCURATE = 'claude-sonnet-4-6'
+type DoorwayKind = 'door' | 'archway' | 'stairs_up' | 'stairs_down' | 'outdoor'
+type InfoCategory = 'feature' | 'view' | 'highlight'
 
 type Doorway = {
   position_pct: number
   pitch_deg:    number
+  size_deg:     number   // angular height of the opening — drives arrow size
+  kind:         DoorwayKind
   leads_to:     string
   confidence:   number
 }
@@ -25,17 +29,49 @@ type Doorway = {
 type InfoHotspot = {
   position_pct: number
   pitch_deg:    number
+  size_deg:     number
+  category:     InfoCategory
   label:        string
   description:  string
 }
 
+type HotspotFix = {
+  id:            string
+  position_pct?: number
+  pitch_deg?:    number
+  label?:        string
+}
+
 type SceneAnalysis = {
-  room_type:    string
-  new_name:     string
-  doorways:     Doorway[]
-  info_hotspots: InfoHotspot[]
-  remove_ids:   string[]   // IDs of existing hotspots the AI says should be removed
-  model_used:   string
+  room_type:      string
+  new_name:       string
+  doorways:       Doorway[]
+  info_hotspots:  InfoHotspot[]
+  remove_ids:     string[]   // IDs of existing hotspots the AI says should be removed
+  fixes:          HotspotFix[]
+  start_view_pct: number | null   // best opening direction, panorama %
+  group:          string
+  model_used:     string
+}
+
+const EMPTY_ANALYSIS: Omit<SceneAnalysis, 'model_used'> = {
+  room_type: 'room', new_name: '', doorways: [], info_hotspots: [], remove_ids: [],
+  fixes: [], start_view_pct: null, group: '',
+}
+
+// ── Hotspot styling — mirrors the editor's icon set (viewora-app shared/utils/hotspotIcons.ts)
+const NAV_ICON = 'nav-up'
+const INFO_ICON: Record<InfoCategory, string> = {
+  feature:   'info-3d-light',
+  view:      'camera-3d-light',
+  highlight: 'star-yellow',
+}
+
+// Apparent size → marker scale, so near doorways get bigger arrows than far ones
+function scaleFor(sizeDeg: number, kind: 'nav' | 'info'): number {
+  const raw = kind === 'nav' ? sizeDeg / 40 : 0.8 + sizeDeg / 100
+  const [lo, hi] = kind === 'nav' ? [0.7, 1.4] : [0.8, 1.2]
+  return Math.round(Math.min(hi, Math.max(lo, raw)) * 20) / 20
 }
 
 // ── Room vocabulary per property type ─────────────────────────────────────
@@ -44,8 +80,20 @@ const ROOM_VOCAB: Record<string, string> = {
   commercial:   'open office, private office, executive office, meeting room, conference room, boardroom, reception, lobby, corridor, server room, break room, kitchen, bathroom, staircase, storage room, print room, co-working space',
   hospitality:  'standard room, deluxe room, superior room, suite, junior suite, lobby, reception, restaurant, bar, gym, spa, pool area, corridor, conference room, meeting room, business centre, rooftop terrace, event hall',
   education:    'classroom, lecture hall, laboratory, science lab, library, computer lab, staffroom, principal office, reception, corridor, gymnasium, sports hall, canteen, dining hall, storage room, toilet, art room, music room',
-  automotive:   'showroom floor, service bay, reception, customer waiting area, parts room, detail bay, sales office, toilet, car wash bay, tyre bay',
-  other:        'room, space, area, corridor, entrance, outdoor area, common area',
+  automotive:   'showroom floor, service bay, reception, customer waiting area, parts room, detail bay, sales office, toilet, car wash bay, tyre bay, vehicle interior, vehicle exterior, front seats, rear seats, boot, engine bay',
+  land:         'plot, access road, entrance gate, boundary, beacon, open land, farmland, vegetation, viewpoint, neighbouring area',
+  other:        'room, space, area, corridor, entrance, outdoor area, common area, reception, main hall, gym floor, studio, treatment room, sanctuary, workshop, waiting area (pick what fits the business)',
+}
+
+// ── Scene categories (scenes.group_name) per property type ─────────────────
+const GROUP_VOCAB: Record<string, string> = {
+  residential: 'Entrance, Living Areas, Kitchen & Dining, Bedrooms, Bathrooms, Outdoor, Other',
+  commercial:  'Reception, Workspaces, Meeting Rooms, Facilities, Outdoor, Other',
+  hospitality: 'Lobby, Rooms & Suites, Dining, Leisure, Meeting & Events, Outdoor, Other',
+  education:   'Classrooms, Labs, Library, Sports, Facilities, Outdoor, Other',
+  automotive:  'Showroom, Service, Customer Areas, Exterior, Interior, Other',
+  land:        'Plots, Access, Surroundings, Other',
+  other:       'Indoor, Outdoor, Other',
 }
 
 // ── Info hotspot content guide per property type ───────────────────────────
@@ -75,7 +123,11 @@ const INFO_GUIDE: Record<string, string> = {
   education: `
     "Seats X Students", "Interactive Whiteboard", "Lab Equipment",
     "Natural Ventilation", "Computer Stations", "Projection System"`,
+  land: `
+    "Tarmac Access Road", "Corner Plot", "Boundary Beacon", "Gentle Slope", "Red Soil",
+    "Mature Trees", "Mountain View", "Power Line Nearby", "Fenced Boundary"`,
   automotive: `
+    "Leather Seats", "Touchscreen Infotainment", "Sunroof", "Alloy Wheels", "Spacious Boot",
     "Display Capacity X Vehicles", "4-Post Lift", "2-Post Lift",
     "Wheel Alignment Bay", "Paint Booth", "Diagnostic Equipment"`,
   other: `Notable features visible in the image that add real value for visitors.`,
@@ -83,30 +135,33 @@ const INFO_GUIDE: Record<string, string> = {
 
 // ── Cached static instruction ──────────────────────────────────────────────
 const STATIC_INSTRUCTION = `<role>
-You are an expert virtual tour editor. You work exactly like a skilled human editor who:
-1. Reviews panoramic images to identify walkable passages and place precise navigation arrows
-2. Spots notable room features and adds informative labels that help buyers/guests
-3. Reviews any existing hotspots and removes ones that are wrong, misplaced, or duplicate
-4. Names every scene with a professional, specific label
+You are a senior virtual tour editor. You do every job a skilled human editor does on a 360° tour:
+1. Place precise navigation arrows on every walkable passage, and say what kind of passage it is
+2. Add info hotspots on the features this tour's viewers (see <industry>) would genuinely want pointed out
+3. Audit existing hotspots: delete wrong ones, move misplaced ones, rewrite weak labels
+4. Name the scene, put it in the right category, and choose its best opening view
 
 Your output must be production-ready — a human editor would be proud to sign off on it.
 </role>
 
-<projection>
-The image is EQUIRECTANGULAR (2:1 aspect ratio):
-• Horizontal: 0% = far-left (behind camera, left) | 50% = directly in front | 100% = far-right (behind camera, right)
-• LEFT EDGE = RIGHT EDGE = same physical point. A door at 2% and 98% is ONE door.
-• Vertical: top = ceiling | centre = eye level (horizon) | bottom = floor
-• Objects near the vertical centre are least distorted. Distortion increases toward top/bottom.
-• A wide door or archway — mark its GEOMETRIC CENTRE, not the left or right frame.
-</projection>
+<views>
+You receive ONE 360° panorama as ${VIEW_YAWS_DEG.length} flat perspective photos taken from the same spot,
+numbered view 1..${VIEW_YAWS_DEG.length}, each 90° wide, turning clockwise ${VIEW_YAWS_DEG[1] - VIEW_YAWS_DEG[0]}° per view.
+• View 1 faces the front. View ${VIEW_YAWS_DEG.length} wraps around to view 1.
+• Adjacent views OVERLAP by 30°, so the same object can appear in two views.
+  Report each object ONCE, in the view where it is most centred and fully visible.
+• Locate things with box_2d = [ymin, xmin, ymax, xmax], normalised 0-1000 within that view.
+• Doorway box: tightly around the walkable opening (floor to top of opening, frame to frame).
+• Feature box: tightly around the feature itself.
+</views>
 
 <navigation_rules>
-INCLUDE: open doorways, open archways, open corridors, open sliding/double doors
+INCLUDE: open doorways, open archways, open corridors, open sliding/double doors, staircases, exits outside
 EXCLUDE: closed doors, windows, mirrors, decorative arches, glass partitions without gaps,
          dark corners where nothing is visible, the same opening counted twice
-PRECISION: position_pct ±2%. pitch_deg = centre of the doorway opening height.
-  Standard door at eye level: -5 to -12°. Camera tilted up: 0 to +8°. Camera tilted down: -15 to -25°.
+PRECISION: box_2d must hug the opening — the arrow is placed at the box centre.
+  For a staircase, box the first few steps you would walk onto.
+KIND: "door" (doorway/sliding door) | "archway" (open arch or corridor) | "stairs_up" | "stairs_down" | "outdoor" (leads outside)
 CONFIDENCE: 90-100 = crystal clear | 75-89 = clear, minor uncertainty | 60-74 = probable | <58 = OMIT
 
 CRITICAL — REACHABILITY RULE:
@@ -115,34 +170,50 @@ If you cannot see a clear open doorway, you MUST still suggest the MOST LIKELY e
   • The direction the previous/next scene seems to be (use scene names as clues)
   • The brightest or most open-looking area of the image
   • The area with the least furniture obstruction
-  • Default to position_pct=50 (front) with confidence=60 only if truly nothing is visible
+  • Default to the centre of view 1 with confidence=60 only if truly nothing is visible
 A scene with zero doorways = a dead end = the tour is broken. This is the worst possible outcome.
 It is ALWAYS better to suggest a low-confidence doorway at a reasonable position than to leave
 a scene with no navigation at all.
 </navigation_rules>
 
 <info_hotspot_rules>
-Add info hotspots ONLY for features that genuinely help a buyer/guest understand or choose the property.
-Quality over quantity: MAX 3 info hotspots per scene.
-SKIP: plain walls, standard furniture, ordinary items found in every room.
-POSITION: place the hotspot ON the feature (pointing at the appliance, window, etc).
-FORMAT: label = 2-4 words | description = one sentence, max 12 words.
+Add info hotspots ONLY for features that genuinely help this tour's viewers (see <industry>) understand or choose the place.
+Quality over quantity: MAX 3 info hotspots per scene. Never duplicate an existing info hotspot.
+SKIP: plain walls, standard furniture, ordinary items found in every room, the camera tripod/operator.
+POSITION: box_2d around the feature (the appliance, window, etc) — the hotspot goes at its centre.
+CATEGORY: "feature" (fixture, appliance, finish, storage) | "view" (window or outdoor view worth looking at)
+  | "highlight" (THE standout selling point of this scene — at most ONE per scene, often none)
+LABEL: 2-4 words, Title Case, specific ("Granite Kitchen Island", not "Kitchen Feature").
+DESCRIPTION: one or two natural sentences, max 25 words, written like a friendly agent pointing it out
+  on a viewing — concrete and visual, no hype words (stunning, luxurious, boasts, nestled).
+  Only state what you can see; never invent brands, sizes or specs.
 </info_hotspot_rules>
 
-<deletion_rules>
-Review each existing hotspot listed in the context. Flag for removal if:
+<audit_rules>
+Review each existing hotspot listed in the context (its view and x/y position are given).
+REMOVE (remove_ids) if you are >80% sure it is wrong:
   • A navigation arrow points at a wall, window, mirror, or closed door (no passage there)
-  • Two navigation arrows from the same scene are within 10° of each other (duplicate)
-  • An info hotspot label does not match what is visible at that position
-Only flag hotspots you are highly confident (>80%) are wrong. When in doubt, keep it.
-</deletion_rules>
+  • Two navigation arrows from the same scene sit on the same opening (duplicate)
+  • An info hotspot describes something that is not there
+FIX (fix_hotspots) if it is right in spirit but needs correcting:
+  • It is on the right object but visibly off-centre or floating beside it → give the corrected box_2d
+  • Its label is vague, misspelt or generic ("Info hotspot", "Go to next room") → give a better label
+  Only include the fields that change. Never both remove and fix the same id.
+When in doubt, leave it alone.
+</audit_rules>
+
+<scene_rules>
+new_name: precise room name from the vocabulary. Empty string if the current name is already correct.
+group: the category this scene belongs in, from the category list.
+start_view: where the tour should face when the scene opens — the most flattering, informative
+  direction: looking INTO the space, showing its best side and natural light. Never a blank wall,
+  a corner, a bathroom toilet, or the camera operator. Give the view and the x (0-1000) to centre on.
+</scene_rules>
 
 <output_format>
 Return ONLY valid compact JSON — zero markdown, zero explanation:
-{"room_type":"<type>","new_name":"<name or empty string>","doorways":[{"position_pct":<int>,"pitch_deg":<int>,"leads_to":"<1-3 words>","confidence":<int>}],"info_hotspots":[{"position_pct":<int>,"pitch_deg":<int>,"label":"<2-4 words>","description":"<max 12 words>"}],"remove_ids":[<"existing_id",...>]}
-
-new_name: precise room name from vocabulary. Empty string if current name is already correct.
-remove_ids: array of hotspot ID strings to delete. Empty array [] if all existing are fine.
+{"room_type":"<type>","new_name":"<name or empty string>","group":"<category>","start_view":{"view":<1-${VIEW_YAWS_DEG.length}>,"x":<0-1000>},"doorways":[{"view":<1-${VIEW_YAWS_DEG.length}>,"box_2d":[<ymin>,<xmin>,<ymax>,<xmax>],"kind":"<kind>","leads_to":"<1-3 words>","confidence":<int>}],"info_hotspots":[{"view":<1-${VIEW_YAWS_DEG.length}>,"box_2d":[<ymin>,<xmin>,<ymax>,<xmax>],"category":"<category>","label":"<2-4 words>","description":"<max 25 words>"}],"remove_ids":[<"existing_id",...>],"fix_hotspots":[{"id":"<existing_id>","view":<optional>,"box_2d":<optional>,"label":"<optional>"}]}
+Use [] for empty lists.
 </output_format>`
 
 // ── Per-scene context (not cached — changes per scene) ─────────────────────
@@ -153,6 +224,7 @@ function buildSceneContext(opts: {
   totalScenes:      number
   sceneIndex:       number
   sceneName:        string
+  sceneGroup:       string | null
   prevSceneName:    string | null
   nextSceneName:    string | null
   existingHotspots: Array<{ id: string; type: string; label: string; yaw: number; pitch: number }>
@@ -160,6 +232,7 @@ function buildSceneContext(opts: {
   const vocab     = ROOM_VOCAB[opts.spaceType]     || ROOM_VOCAB.other
   const infoGuide = INFO_GUIDE[opts.spaceType]     || INFO_GUIDE.other
   const lines     = [
+    industryBrief(opts.spaceType, opts.spaceTitle),
     '<scene_context>',
     `Property: "${opts.spaceTitle}" | type: ${opts.spaceType}${opts.locationText ? ` | location: ${opts.locationText}` : ''}`,
     `Scene: ${opts.sceneIndex + 1} of ${opts.totalScenes} — current name: "${opts.sceneName}"`,
@@ -167,15 +240,18 @@ function buildSceneContext(opts: {
   if (opts.prevSceneName) lines.push(`Previous scene: "${opts.prevSceneName}"`)
   if (opts.nextSceneName) lines.push(`Next scene: "${opts.nextSceneName}"`)
   lines.push(`Allowed room_type / new_name vocabulary: ${vocab}`)
+  lines.push(`Category list for group: ${GROUP_VOCAB[opts.spaceType] || GROUP_VOCAB.other}${opts.sceneGroup ? ` (currently "${opts.sceneGroup}")` : ''}`)
   lines.push(`Relevant info hotspot examples for this property type: ${infoGuide}`)
 
   if (opts.existingHotspots.length) {
     lines.push('')
     lines.push('Existing hotspots in this scene (review each for accuracy):')
     for (const h of opts.existingHotspots) {
-      const pct   = Math.round((h.yaw / (2 * Math.PI) + 0.5) * 100)
-      const pitch = Math.round(h.pitch / DEG_TO_RAD)
-      lines.push(`  - id:"${h.id}" type:${h.type} label:"${h.label}" position:${pct}% horiz, ${pitch}° vert`)
+      const at = yawPitchToViewPoint(h.yaw, h.pitch)
+      const where = at
+        ? `view ${at.view + 1} at x:${at.x} y:${at.y}`
+        : `outside the views (${Math.round(h.pitch / DEG_TO_RAD)}° vertical)`
+      lines.push(`  - id:"${h.id}" type:${h.type} label:"${h.label}" ${where}`)
     }
   } else {
     lines.push('No existing hotspots in this scene yet.')
@@ -186,117 +262,164 @@ function buildSceneContext(opts: {
 }
 
 // ── Core API call ──────────────────────────────────────────────────────────
-async function callClaude(
-  thumbnailUrl: string,
-  sceneContext: string,
-  apiKey:       string,
-  model:        string,
-): Promise<SceneAnalysis> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method:  'POST',
-    headers: {
-      'x-api-key':         apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-beta':    'prompt-caching-2024-07-31',
-      'content-type':      'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 600,
-      messages: [{
-        role:    'user',
-        content: [
-          // Block 1: static instruction — cached (90% cheaper on repeat calls)
-          { type: 'text', text: STATIC_INSTRUCTION, cache_control: { type: 'ephemeral' } },
-          // Block 2: per-scene context — NOT cached (changes per scene)
-          { type: 'text', text: sceneContext },
-          // Block 3: the panorama image — fetched directly from CDN, no base64 overhead
-          { type: 'image', source: { type: 'url', url: thumbnailUrl } },
-        ],
-      }],
-    }),
-  })
+type BoxPoint = { position_pct: number; pitch_deg: number; size_deg: number }
 
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`Anthropic ${res.status}: ${body.slice(0, 200)}`)
-  }
+const DOORWAY_KINDS: DoorwayKind[]  = ['door', 'archway', 'stairs_up', 'stairs_down', 'outdoor']
+const INFO_CATEGORIES: InfoCategory[] = ['feature', 'view', 'highlight']
 
-  const data = await res.json() as any
-  const text: string = data.content?.[0]?.text ?? '{}'
+function isView(view: unknown): view is number {
+  return typeof view === 'number' && Number.isInteger(view) && view >= 1 && view <= VIEW_YAWS_DEG.length
+}
 
-  try {
-    const clean  = text.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim()
-    const parsed = JSON.parse(clean)
+function toPct(yaw: number): number {
+  return (yaw / (2 * Math.PI) + 0.5) * 100
+}
 
-    return {
-      room_type: typeof parsed.room_type === 'string'
-        ? parsed.room_type.toLowerCase().trim()
-        : 'room',
-      new_name: typeof parsed.new_name === 'string' ? parsed.new_name.trim() : '',
-      doorways: Array.isArray(parsed.doorways)
-        ? parsed.doorways
-            .filter((d: any) =>
-              typeof d.position_pct === 'number' &&
-              typeof d.pitch_deg    === 'number' &&
-              typeof d.confidence   === 'number' &&
-              d.position_pct >= 0 && d.position_pct <= 100 &&
-              d.confidence   >= CONFIDENCE_THRESHOLD,
-            )
-            .sort((a: any, b: any) => b.confidence - a.confidence)
-        : [],
-      info_hotspots: Array.isArray(parsed.info_hotspots)
-        ? parsed.info_hotspots.filter((h: any) =>
-            typeof h.position_pct === 'number' &&
-            typeof h.pitch_deg    === 'number' &&
-            typeof h.label        === 'string' &&
-            h.label.length > 0,
-          )
-        : [],
-      remove_ids: Array.isArray(parsed.remove_ids)
-        ? parsed.remove_ids.filter((id: any) => typeof id === 'string')
-        : [],
-      model_used: model,
-    }
-  } catch {
-    return { room_type: 'room', new_name: '', doorways: [], info_hotspots: [], remove_ids: [], model_used: model }
+// Gemini box_2d ([ymin, xmin, ymax, xmax], 0-1000 in a view) → panorama position + apparent size
+function boxToPoint(view: unknown, box: unknown): BoxPoint | null {
+  if (!isView(view)) return null
+  if (!Array.isArray(box) || box.length !== 4 || !box.every(n => typeof n === 'number' && n >= 0 && n <= 1000)) return null
+  const [ymin, xmin, ymax, xmax] = box as number[]
+  if (ymax <= ymin || xmax <= xmin) return null
+  const cx = (xmin + xmax) / 2
+  const { yaw, pitch } = viewPointToYawPitch(view - 1, cx, (ymin + ymax) / 2)
+  const top    = viewPointToYawPitch(view - 1, cx, ymin).pitch
+  const bottom = viewPointToYawPitch(view - 1, cx, ymax).pitch
+  return {
+    position_pct: toPct(yaw),
+    pitch_deg:    pitch / DEG_TO_RAD,
+    size_deg:     (top - bottom) / DEG_TO_RAD,
   }
 }
 
-// ── Two-tier analysis ──────────────────────────────────────────────────────
-// Haiku: fast doorway + naming pass. Sonnet: adds info hotspots + deletion review.
-// Both run per scene. Haiku result feeds Sonnet so it doesn't re-detect doorways.
-async function analyzeScene(
+// Overlapping views can yield the same object twice — keep the first (best-ranked) one
+function dedupeByAngle<T extends { position_pct: number; pitch_deg: number }>(items: T[]): T[] {
+  const kept: T[] = []
+  for (const it of items) {
+    const yaw = pctToYawRad(it.position_pct), pitch = it.pitch_deg * DEG_TO_RAD
+    const dup = kept.some(k =>
+      angularDist(pctToYawRad(k.position_pct), yaw) < DEDUP_MIN_ANGLE_RAD &&
+      Math.abs(k.pitch_deg * DEG_TO_RAD - pitch) < DEDUP_MIN_ANGLE_RAD,
+    )
+    if (!dup) kept.push(it)
+  }
+  return kept
+}
+
+function cleanText(v: unknown, max: number): string {
+  return typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : ''
+}
+
+async function callGemini(
   thumbnailUrl: string,
   sceneContext: string,
   apiKey:       string,
+  existingIds:  Set<string>,
 ): Promise<SceneAnalysis> {
-  // Phase 1 — Haiku (navigation + naming, cheap)
-  const fast = await callClaude(thumbnailUrl, sceneContext, apiKey, MODEL_FAST)
+  const views = await renderPanoViews(thumbnailUrl)
 
-  // Phase 2 — Sonnet (info hotspots + deletion review, always runs for the full editor experience)
-  // Even if Haiku found good doorways, Sonnet is needed for feature detection + hotspot audit.
+  const parts: GeminiPart[] = [
+    { text: STATIC_INSTRUCTION },
+    { text: sceneContext },
+  ]
+  for (const v of views) {
+    parts.push({ text: `View ${v.index + 1}:` })
+    parts.push({ inline_data: { mime_type: 'image/jpeg', data: v.jpegB64 } })
+  }
+
+  const text = await generateGemini({ apiKey, parts, json: true })
+
+  let parsed: any
   try {
-    const accurate = await callClaude(thumbnailUrl, sceneContext, apiKey, MODEL_ACCURATE)
-    return {
-      // Use Sonnet's doorways if it's more confident, else keep Haiku's
-      room_type:     accurate.room_type !== 'room' ? accurate.room_type : fast.room_type,
-      new_name:      accurate.new_name  || fast.new_name,
-      doorways:      accurate.doorways.length > 0
-        ? accurate.doorways
-        : fast.doorways,
-      info_hotspots: accurate.info_hotspots,    // Sonnet is better at feature detection
-      remove_ids:    accurate.remove_ids,        // Sonnet is better at spatial audit
-      model_used:    `${MODEL_FAST}+${MODEL_ACCURATE}`,
-    }
+    parsed = parseGeminiJson(text)
   } catch {
-    return { ...fast }   // Sonnet failed — use Haiku result without info hotspots
+    return { ...EMPTY_ANALYSIS, model_used: GEMINI_MODEL }
+  }
+
+  const doorways: Doorway[] = Array.isArray(parsed.doorways)
+    ? parsed.doorways.flatMap((d: any) => {
+        const pt = boxToPoint(d.view, d.box_2d)
+        if (!pt || typeof d.confidence !== 'number' || d.confidence < CONFIDENCE_THRESHOLD) return []
+        return [{
+          ...pt,
+          kind:       DOORWAY_KINDS.includes(d.kind) ? d.kind : 'door',
+          leads_to:   cleanText(d.leads_to, 40),
+          confidence: d.confidence,
+        }]
+      })
+    : []
+
+  const infoHotspots: InfoHotspot[] = Array.isArray(parsed.info_hotspots)
+    ? parsed.info_hotspots.flatMap((h: any) => {
+        const pt    = boxToPoint(h.view, h.box_2d)
+        const label = cleanText(h.label, 60)
+        if (!pt || !label) return []
+        return [{
+          ...pt,
+          category:    INFO_CATEGORIES.includes(h.category) ? h.category : 'feature',
+          label,
+          description: cleanText(h.description, 500),
+        }]
+      })
+    : []
+  // At most one highlight — demote any extras to plain features
+  let highlightSeen = false
+  for (const h of infoHotspots) {
+    if (h.category !== 'highlight') continue
+    if (highlightSeen) h.category = 'feature'
+    highlightSeen = true
+  }
+
+  const removeIds: string[] = Array.isArray(parsed.remove_ids)
+    ? parsed.remove_ids.filter((id: any) => typeof id === 'string' && existingIds.has(id))
+    : []
+
+  const fixes: HotspotFix[] = Array.isArray(parsed.fix_hotspots)
+    ? parsed.fix_hotspots.flatMap((f: any) => {
+        if (typeof f?.id !== 'string' || !existingIds.has(f.id) || removeIds.includes(f.id)) return []
+        const pt    = boxToPoint(f.view, f.box_2d)
+        const label = cleanText(f.label, 60)
+        if (!pt && !label) return []
+        return [{
+          id: f.id,
+          ...(pt ? { position_pct: pt.position_pct, pitch_deg: pt.pitch_deg } : {}),
+          ...(label ? { label } : {}),
+        }]
+      })
+    : []
+
+  const sv = parsed.start_view
+  const startViewPct = isView(sv?.view) && typeof sv?.x === 'number' && sv.x >= 0 && sv.x <= 1000
+    ? toPct(viewPointToYawPitch(sv.view - 1, sv.x, 500).yaw)
+    : null
+
+  return {
+    room_type: typeof parsed.room_type === 'string'
+      ? parsed.room_type.toLowerCase().trim()
+      : 'room',
+    new_name:       cleanText(parsed.new_name, 100),
+    doorways:       dedupeByAngle(doorways.sort((a, b) => b.confidence - a.confidence)),
+    // Highlights first so they survive the cap
+    info_hotspots:  dedupeByAngle(infoHotspots.sort((a, b) =>
+      Number(b.category === 'highlight') - Number(a.category === 'highlight'))).slice(0, 3),
+    remove_ids:     removeIds,
+    fixes,
+    start_view_pct: startViewPct,
+    group:          cleanText(parsed.group, 40),
+    model_used:     GEMINI_MODEL,
   }
 }
 
 // ── Coordinate helpers ─────────────────────────────────────────────────────
 function titleCase(s: string): string {
   return s.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+}
+
+// Stairs read better with direction: "Up to Bedroom", "Down to Lounge"
+function navLabel(targetLabel: string, door: Doorway | null): string {
+  if (door?.kind === 'stairs_up')   return `Up to ${targetLabel}`
+  if (door?.kind === 'stairs_down') return `Down to ${targetLabel}`
+  return targetLabel
 }
 
 function pctToYawRad(pct: number): number {
@@ -345,6 +468,7 @@ type NavSuggestion = {
   toSceneId:   string; toSceneName:   string
   yaw: number; pitch: number
   label: string; doorwayDescription: string
+  icon: string; scale: number
   confidence_hint: number
 }
 
@@ -400,6 +524,8 @@ function ensureFullConnectivity(
           confidence_hint:    40,                // marked low so it sorts last
           label:              titleCase(target.name || 'Next Room'),
           doorwayDescription: 'Continue tour →',
+          icon:               NAV_ICON,
+          scale:              1,
         })
         outgoing.get(scene.id)?.add(target.id)
         incoming.get(target.id)?.add(scene.id)
@@ -420,6 +546,8 @@ function ensureFullConnectivity(
           confidence_hint:    40,
           label:              titleCase(scene.name || 'Return'),
           doorwayDescription: '← Return',
+          icon:               NAV_ICON,
+          scale:              1,
         })
         outgoing.get(source.id)?.add(scene.id)
         incoming.get(scene.id)?.add(source.id)
@@ -471,10 +599,10 @@ export default async function (fastify: FastifyInstance) {
     const params = parseWithSchema(reply, spaceParamsSchema, (req as any).params)
     if (!params) return
 
-    const apiKey = process.env.ANTHROPIC_API_KEY
+    const apiKey = process.env.GEMINI_API_KEY
     if (!apiKey) {
       return reply.code(503).send({
-        statusMessage: 'AI auto-link requires ANTHROPIC_API_KEY to be configured on the server.',
+        statusMessage: 'AI auto-link requires GEMINI_API_KEY to be configured on the server.',
       })
     }
 
@@ -492,7 +620,7 @@ export default async function (fastify: FastifyInstance) {
 
     const { data: scenes, error: scenesErr } = await fastify.supabase
       .from('scenes')
-      .select('id, name, thumbnail_url, order_index, captured_at')
+      .select('id, name, thumbnail_url, order_index, captured_at, initial_yaw, initial_pitch, group_name')
       .eq('space_id', params.spaceId)
       .eq('status', 'ready')
       .order('captured_at', { ascending: true, nullsFirst: false })
@@ -503,6 +631,15 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(400).send({ statusMessage: 'No ready scenes found for this tour.' })
     if (scenes.length < 2)
       return reply.code(400).send({ statusMessage: 'You need at least 2 ready scenes to auto-link.' })
+
+    // One auto-link run = one AI request against the plan's monthly allowance
+    let refundAi: () => Promise<void>
+    try {
+      refundAi = await consumeAi(fastify, userId, 'prompts')
+    } catch (err: any) {
+      if (err instanceof AiLimitError) return reply.code(429).send({ statusMessage: err.message })
+      throw err
+    }
 
     // ── Switch to SSE streaming ────────────────────────────────────────────
     // Takes over the raw socket so Fastify's onSend hooks don't interfere.
@@ -576,7 +713,7 @@ export default async function (fastify: FastifyInstance) {
         })
 
         if (!scene.thumbnail_url) {
-          analyses.push({ sceneId: scene.id, room_type: 'room', new_name: '', doorways: [], info_hotspots: [], remove_ids: [], model_used: 'none' })
+          analyses.push({ sceneId: scene.id, ...EMPTY_ANALYSIS, model_used: 'none' })
           continue
         }
 
@@ -595,13 +732,14 @@ export default async function (fastify: FastifyInstance) {
           totalScenes:      scenes.length,
           sceneIndex:       i,
           sceneName:        scene.name || `Scene ${i + 1}`,
+          sceneGroup:       scene.group_name || null,
           prevSceneName:    i > 0               ? (scenes[i - 1].name || null) : null,
           nextSceneName:    i < scenes.length-1 ? (scenes[i + 1].name || null) : null,
           existingHotspots: existing,
         })
 
         try {
-          const result = await analyzeScene(scene.thumbnail_url, context, apiKey)
+          const result = await callGemini(scene.thumbnail_url, context, apiKey, new Set(existing.map(h => h.id)))
           analyses.push({ sceneId: scene.id, ...result })
           fastify.log.info({
             sceneId:      scene.id,
@@ -610,15 +748,19 @@ export default async function (fastify: FastifyInstance) {
             doorways:     result.doorways.length,
             info_hs:      result.info_hotspots.length,
             remove_count: result.remove_ids.length,
+            fix_count:    result.fixes.length,
             model_used:   result.model_used,
           }, '[autolink] scene analysed')
         } catch (err: any) {
           fastify.log.warn({ err: err.message, sceneId: scene.id }, '[autolink] scene analysis failed')
-          analyses.push({ sceneId: scene.id, room_type: 'room', new_name: '', doorways: [], info_hotspots: [], remove_ids: [], model_used: 'error' })
+          analyses.push({ sceneId: scene.id, ...EMPTY_ANALYSIS, model_used: 'error' })
         }
 
         if (i < scenes.length - 1) await new Promise(r => setTimeout(r, 250))
       }
+
+    // Nothing came back at all (quota/outage) — don't charge the run
+    if (analyses.every(a => a.model_used === 'error' || a.model_used === 'none')) await refundAi().catch(() => {})
 
     const byId = Object.fromEntries(analyses.map(a => [a.sceneId, a]))
 
@@ -629,6 +771,7 @@ export default async function (fastify: FastifyInstance) {
       yaw: number; pitch: number
       confidence_hint: number
       label: string; doorwayDescription: string
+      icon: string; scale: number
     }> = []
 
     for (let i = 0; i < scenes.length - 1; i++) {
@@ -646,7 +789,8 @@ export default async function (fastify: FastifyInstance) {
           toSceneId: b.id, toSceneName: b.name,
           yaw: parseFloat(yawAB.toFixed(4)), pitch: parseFloat(pitchAB.toFixed(4)),
           confidence_hint: doorAB?.confidence ?? 50,
-          label: labelB, doorwayDescription: doorAB?.leads_to ?? `Leads to ${labelB}`,
+          label: navLabel(labelB, doorAB), doorwayDescription: doorAB?.leads_to ?? `Leads to ${labelB}`,
+          icon: NAV_ICON, scale: doorAB ? scaleFor(doorAB.size_deg, 'nav') : 1,
         })
       }
 
@@ -660,7 +804,8 @@ export default async function (fastify: FastifyInstance) {
           toSceneId: a.id, toSceneName: a.name,
           yaw: parseFloat(yawBA.toFixed(4)), pitch: parseFloat(pitchBA.toFixed(4)),
           confidence_hint: doorBA?.confidence ?? 50,
-          label: labelA, doorwayDescription: doorBA?.leads_to ?? `Back to ${labelA}`,
+          label: navLabel(labelA, doorBA), doorwayDescription: doorBA?.leads_to ?? `Back to ${labelA}`,
+          icon: NAV_ICON, scale: doorBA ? scaleFor(doorBA.size_deg, 'nav') : 1,
         })
       }
     }
@@ -685,7 +830,59 @@ export default async function (fastify: FastifyInstance) {
         pitch:      parseFloat((h.pitch_deg * DEG_TO_RAD).toFixed(4)),
         label:      h.label,
         description: h.description || '',
+        category:   h.category,
+        icon:       INFO_ICON[h.category],
+        scale:      scaleFor(h.size_deg, 'info'),
+        labelBold:  h.category === 'highlight',
       }))
+    })
+
+    // ── Fixes to existing hotspots (move / relabel) ─────────────────────────
+    const MIN_MOVE_RAD = 3 * DEG_TO_RAD   // smaller nudges aren't worth a review row
+    const hotspotFixes = analyses.flatMap(a =>
+      a.fixes.flatMap(f => {
+        const h = (allHotspots ?? []).find((x: any) => x.id === f.id) as any
+        if (!h) return []
+        const fix: Record<string, any> = {}
+        if (f.position_pct != null && f.pitch_deg != null) {
+          const yaw   = pctToYawRad(f.position_pct)
+          const pitch = f.pitch_deg * DEG_TO_RAD
+          const moved = Math.hypot(angularDist(yaw, Number(h.yaw || 0)), pitch - Number(h.pitch || 0))
+          if (moved >= MIN_MOVE_RAD) {
+            fix.yaw     = parseFloat(yaw.toFixed(4))
+            fix.pitch   = parseFloat(pitch.toFixed(4))
+            fix.moveDeg = Math.round(moved / DEG_TO_RAD)
+          }
+        }
+        if (f.label && f.label !== (h.label || '')) fix.newLabel = f.label
+        if (!Object.keys(fix).length) return []
+        return [{
+          _id:       `fix_${f.id}`,
+          hotspotId: f.id,
+          sceneId:   h.scene_id,
+          sceneName: scenes.find(s => s.id === h.scene_id)?.name || '',
+          label:     h.label || (h.type === 'scene_link' ? 'Navigation' : 'Info'),
+          type:      h.type,
+          ...fix,
+        }]
+      }),
+    )
+
+    // ── Scene settings: opening view + category ─────────────────────────────
+    // Only fills what the owner hasn't set, so a hand-picked start view is never overridden.
+    const sceneSettings = scenes.flatMap(s => {
+      const a = byId[s.id]
+      if (!a) return []
+      const setting: Record<string, any> = {}
+      const hasStartView = Number(s.initial_yaw || 0) !== 0 || Number(s.initial_pitch || 0) !== 0
+      if (!hasStartView && a.start_view_pct != null) {
+        // scenes.initial_yaw is stored in DEGREES (see viewora-app domain/scene resolveStartView)
+        const yawDeg = Math.round(pctToYawRad(a.start_view_pct) / DEG_TO_RAD)
+        if (yawDeg !== 0) setting.initialYawDeg = yawDeg
+      }
+      if (!s.group_name && a.group && a.group.toLowerCase() !== 'other') setting.group = a.group
+      if (!Object.keys(setting).length) return []
+      return [{ _id: `set_${s.id}`, sceneId: s.id, sceneName: s.name || '', ...setting }]
     })
 
     // ── Hotspot deletion suggestions ────────────────────────────────────────
@@ -726,7 +923,9 @@ export default async function (fastify: FastifyInstance) {
         suggestions,
         infoHotspots,
         hotspotDeletions,
+        hotspotFixes,
         sceneRenames,
+        sceneSettings,
         sceneCount: scenes.length,
       })
     } catch (err: any) {

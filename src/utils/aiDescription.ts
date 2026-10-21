@@ -4,6 +4,14 @@
 // PRODUCT_SPEC.md's honesty principle: no fabricated stats/ratings/badges)
 // — this text becomes public (detail page, brochure, WhatsApp link preview),
 // so it's held to the same bar as anything else shown to a buyer.
+//
+// When the tour has 360° scenes, their thumbnails are shown to the model so it
+// can describe what is genuinely visible (finishes, light, layout) — the
+// photos are evidence too, but typed facts always win over what it sees.
+
+import sharp from 'sharp'
+import { generateGemini, type GeminiPart } from './gemini.js'
+import { industryBrief } from './industry.js'
 
 type SpaceForDescription = {
   title: string | null
@@ -24,8 +32,6 @@ type SpaceForDescription = {
   transaction_type: string | null
   price_period: string | null
 }
-
-const MODEL = 'claude-haiku-4-5-20251001'
 
 function buildFactLines(space: SpaceForDescription): string[] {
   const lines: string[] = []
@@ -60,44 +66,69 @@ function buildFactLines(space: SpaceForDescription): string[] {
   return lines
 }
 
-const SYSTEM_PROMPT = `You write short listing descriptions for a Kenyan property/land/vehicle marketplace.
+export type SceneForDescription = { name: string | null; thumbnailUrl: string }
 
-Rules:
-- Base the description ONLY on the facts given. Never invent amenities, features, distances, condition claims, or numbers that aren't listed.
-- Never use trust-signal or verification language ("Verified", "Trusted seller", "won't last long", response-time claims) — none of that exists on this platform.
-- No emojis, no bullet points, no markdown, no hashtags.
-- 2 to 4 sentences, natural and appealing but factual — like a good real, honest classifieds ad, not marketing copy.
-- If very few facts are given, write a short, honest description anyway rather than padding with vague filler.
-- Output ONLY the description text itself — no preamble, no quotes, no labels.`
+// Enough to recognise rooms and finishes; keeps the request small for the free tier
+const MAX_SCENE_IMAGES   = 8
+const SCENE_IMAGE_WIDTH  = 1024
+
+const SYSTEM_PROMPT = `You write the public description for a Viewora listing. Viewora hosts 360° tours for many industries — homes, hotels and restaurants, schools, offices and shops, car dealerships and vehicles, land, gyms, churches, clinics and other venues. The <industry> block tells you which one this is and who reads it. Write the way a trusted local expert in THAT industry talks to a serious customer: warm, specific, plain-spoken, confident without hype. A hotel description speaks to guests, a school to parents, a dealership to car buyers — only homes and land speak to buyers or tenants.
+
+Sources of truth, in order:
+1. LISTING FACTS — always correct. Every number (price, bedrooms, size, year, mileage) comes only from here.
+2. TOUR PHOTOS (360° panoramas, if provided) — you may describe what is clearly visible: the rooms that exist, finishes (tiles, wooden floors, granite tops), natural light, ceiling height, the garden, gate, parking, views, layout and flow between spaces. Only describe what you can actually see; if unsure what something is, leave it out.
+
+Never:
+- Invent numbers, brands, distances, nearby landmarks, schools, security claims, water/power reliability, ratings, capacities, or condition claims you cannot see.
+- Contradict the facts (e.g. photos showing 2 bedrooms do not override "Bedrooms: 3" — you may just have not seen them all).
+- Use trust-signal or urgency language ("verified", "trusted seller", "won't last long", "rare opportunity").
+- Use these tired phrases: nestled, boasts, stunning, breathtaking, dream home, look no further, oasis, haven, must-see, immaculate, luxurious living.
+- Use emojis, bullet points, markdown, hashtags, headings, or exclamation marks.
+
+Style:
+- British/Kenyan English spelling. Natural rhythm — mix short and longer sentences. Concrete details over adjectives.
+- Walk the reader through the place in a sensible order for its industry (a home: arrival → living → kitchen → bedrooms → outside; a hotel: arrival → rooms → dining → leisure; a car: exterior → cabin → features), as if showing them around.
+- Open with what makes this place worth a look; close with who it suits (a young family, a team of ten, weekend travellers, a first car…) based only on the facts and photos.
+- Length: two short paragraphs, 90–170 words total. With very few facts and no photos, write 2–3 honest sentences instead of padding.
+- Output ONLY the description text — no preamble, no quotes, no labels.`
+
+async function loadSceneImage(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return null
+    const jpeg = await sharp(Buffer.from(await res.arrayBuffer()))
+      .resize(SCENE_IMAGE_WIDTH, SCENE_IMAGE_WIDTH / 2, { fit: 'fill' })
+      .jpeg({ quality: 80 })
+      .toBuffer()
+    return jpeg.toString('base64')
+  } catch {
+    return null
+  }
+}
 
 export async function generateListingDescription(
   space: SpaceForDescription,
   apiKey: string,
+  scenes: SceneForDescription[] = [],
 ): Promise<string> {
   const facts = buildFactLines(space).join('\n')
+  const parts: GeminiPart[] = [
+    { text: industryBrief(space.property_type, space.title) },
+    { text: `LISTING FACTS:\n${facts}` },
+  ]
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 220,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: `Listing facts:\n${facts}` }],
-    }),
-  })
-
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`Anthropic ${res.status}: ${body.slice(0, 200)}`)
+  const picked = scenes.slice(0, MAX_SCENE_IMAGES)
+  const images = await Promise.all(picked.map(s => loadSceneImage(s.thumbnailUrl)))
+  const seen   = picked.flatMap((s, i) => images[i] ? [{ name: s.name, data: images[i]! }] : [])
+  if (seen.length) {
+    parts.push({ text: `TOUR PHOTOS: ${seen.length} equirectangular 360° panoramas (the left and right edges join up). Scene names were typed by the owner and may be generic.` })
+    seen.forEach((s, i) => {
+      parts.push({ text: `Scene ${i + 1}${s.name ? ` — "${s.name}"` : ''}:` })
+      parts.push({ inline_data: { mime_type: 'image/jpeg', data: s.data } })
+    })
   }
 
-  const data = await res.json() as any
-  const text: string = (data.content?.[0]?.text ?? '').trim()
-  if (!text) throw new Error('Empty response from Anthropic')
-  return text
+  const text = await generateGemini({ apiKey, systemText: SYSTEM_PROMPT, parts, maxOutputTokens: 4096 })
+  if (!text) throw new Error('Empty response from Gemini')
+  return text.replace(/^["“]|["”]$/g, '').trim().slice(0, 2000)
 }

@@ -274,20 +274,22 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     const { data: scene } = await fastify.supabase
       .from('scenes')
-      .select('id, space_id, raw_image_url, properties!inner(user_id)')
+      .select('id, space_id, raw_image_url, original_raw_image_url, properties!inner(user_id)')
       .eq('id', params.sceneId)
       .eq('properties.user_id', userId)
       .single()
 
     if (!scene) return reply.code(404).send({ statusMessage: 'Scene not found' })
 
-    // Find the associated property_media record before deleting so we can free storage
-    const { data: mediaRecord } = scene.raw_image_url
+    // Find the associated property_media record before deleting so we can free storage.
+    // After an AI photo edit raw_image_url points at the edited copy — the upload is the original.
+    const uploadedUrl = scene.original_raw_image_url ?? scene.raw_image_url
+    const { data: mediaRecord } = uploadedUrl
       ? await fastify.supabase
           .from('property_media')
           .select('id, storage_key, file_size_bytes')
           .eq('property_id', scene.space_id)
-          .eq('public_url', scene.raw_image_url)
+          .eq('public_url', uploadedUrl)
           .maybeSingle()
       : { data: null }
 
@@ -316,11 +318,16 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     if (bucketName) {
       const tilesPrefix = `spaces/${scene.space_id}/scenes/${params.sceneId}/`
       try {
-        const listed = await fastify.s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: tilesPrefix }))
-        const objects = (listed.Contents ?? []).filter(o => o.Key).map(o => ({ Key: o.Key as string }))
-        if (objects.length > 0) {
-          await fastify.s3.send(new DeleteObjectsCommand({ Bucket: bucketName, Delete: { Objects: objects } }))
-        }
+        // Paged: AI-edited scenes keep one tile set per version, easily >1000 objects
+        let token: string | undefined
+        do {
+          const listed = await fastify.s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: tilesPrefix, ContinuationToken: token }))
+          const objects = (listed.Contents ?? []).filter(o => o.Key).map(o => ({ Key: o.Key as string }))
+          if (objects.length > 0) {
+            await fastify.s3.send(new DeleteObjectsCommand({ Bucket: bucketName, Delete: { Objects: objects } }))
+          }
+          token = listed.IsTruncated ? listed.NextContinuationToken : undefined
+        } while (token)
       } catch (err) {
         fastify.log.error(err, `Failed to delete R2 tiles for scene ${params.sceneId}`)
       }

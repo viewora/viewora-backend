@@ -7,6 +7,7 @@ import { parseWithSchema } from '../utils/validation.js'
 import { sendTourPublishedEmail } from '../email/index.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
 import { generateListingDescription } from '../utils/aiDescription.js'
+import { consumeAi, AiLimitError } from '../utils/aiUsage.js'
 
 // Converts a space title into a URL-safe slug.
 // "Modern 3-Bed Villa, Westlands" → "modern-3-bed-villa-westlands"
@@ -668,10 +669,10 @@ export default async function (fastify: FastifyInstance) {
     const body = parseWithSchema(reply, generateDescriptionBodySchema, request.body)
     if (!body) return
 
-    const apiKey = process.env.ANTHROPIC_API_KEY
+    const apiKey = process.env.GEMINI_API_KEY
     if (!apiKey) {
       return reply.code(503).send({
-        statusMessage: 'AI description generation requires ANTHROPIC_API_KEY to be configured on the server.',
+        statusMessage: 'AI description generation requires GEMINI_API_KEY to be configured on the server.',
       })
     }
 
@@ -683,6 +684,24 @@ export default async function (fastify: FastifyInstance) {
       .single()
 
     if (!space) return reply.code(404).send({ statusMessage: 'Space not found.' })
+
+    let refundAi: () => Promise<void>
+    try {
+      refundAi = await consumeAi(fastify, userId, 'prompts')
+    } catch (err: any) {
+      if (err instanceof AiLimitError) return reply.code(429).send({ statusMessage: err.message })
+      throw err
+    }
+
+    // Tour photos let the model describe what is actually there (finishes, light, layout)
+    const { data: scenes } = await fastify.supabase
+      .from('scenes')
+      .select('name, thumbnail_url')
+      .eq('space_id', id)
+      .eq('status', 'ready')
+      .not('thumbnail_url', 'is', null)
+      .order('order_index', { ascending: true })
+      .limit(8)
 
     try {
       const description = await generateListingDescription({
@@ -703,10 +722,11 @@ export default async function (fastify: FastifyInstance) {
         listing_status: body.listing_status ?? null,
         transaction_type: body.transaction_type ?? null,
         price_period: body.price_period ?? null,
-      }, apiKey)
+      }, apiKey, (scenes ?? []).map(s => ({ name: s.name, thumbnailUrl: s.thumbnail_url })))
       return reply.send({ description })
     } catch (err: any) {
       fastify.log.warn({ err: err.message, spaceId: id }, '[generate-description] failed')
+      await refundAi().catch(() => {})
       return reply.code(502).send({ statusMessage: 'Could not generate a description right now — try again shortly.' })
     }
   })

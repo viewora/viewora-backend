@@ -33,6 +33,7 @@ import publicRoutes from './routes/public.js'
 import sellersRoutes from './routes/sellers.js'
 import cronRoutes from './routes/cron.js'
 import autolinkRoutes from './routes/autolink.js'
+import aiAssistantRoutes from './routes/aiAssistant.js'
 import captureRoutes from './routes/capture.js'
 import tilesRoutes from './routes/tiles.js'
 import whatsappRoutes from './routes/whatsapp.js'
@@ -385,6 +386,7 @@ fastify.register(publicRoutes)
 fastify.register(sellersRoutes, { prefix: '/sellers' })
 fastify.register(cronRoutes)
 fastify.register(autolinkRoutes)
+fastify.register(aiAssistantRoutes)
 fastify.register(captureRoutes, { prefix: '/capture' })
 fastify.register(tilesRoutes)
 fastify.register(whatsappRoutes, { prefix: '/whatsapp' })

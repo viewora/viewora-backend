@@ -40,10 +40,13 @@ function parseExifCaptureDate(exifBuf: Buffer): Date | null {
 export async function processTileScene(
   s3: S3Client,
   supabase: any,
-  job: { sceneId: string; rawImageUrl: string; spaceId: string },
+  // variant: set when re-tiling an existing scene (AI photo edit / revert). Tiles are cached
+  // as immutable, so a new version must live at new URLs or viewers keep the old image.
+  job: { sceneId: string; rawImageUrl: string; spaceId: string; variant?: string },
   redis?: { del: (key: string) => Promise<any> } | null,
 ) {
-  const { sceneId, rawImageUrl, spaceId } = job
+  const { sceneId, rawImageUrl, spaceId, variant } = job
+  const sceneKey = `spaces/${spaceId}/scenes/${sceneId}${variant ? `/v/${variant}` : ''}`
   const tempDir       = path.join(TEMP_DIR, sceneId)
   const inputPath     = path.join(tempDir, 'input.jpg')
   const cleanPath     = path.join(tempDir, 'input.clean.jpg')
@@ -114,7 +117,7 @@ export async function processTileScene(
       .toFile(thumbPath)
     console.log(`[TILE] >>> STEP 7: Thumbnail generated`);
 
-    const thumbKey = `spaces/${spaceId}/scenes/${sceneId}/thumbnail.jpg`
+    const thumbKey = `${sceneKey}/thumbnail.jpg`
     await s3.send(new PutObjectCommand({
       Bucket: bucket,
       Key: thumbKey,
@@ -191,7 +194,7 @@ export async function processTileScene(
         const top  = row * tileH
         const w    = Math.min(tileW, imgW - left)
         const h    = Math.min(tileH, imgH - top)
-        const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles/${col}_${row}.webp`
+        const key  = `${sceneKey}/tiles/${col}_${row}.webp`
 
         tileJobs.push(async () => {
           const buf = await image
@@ -254,7 +257,7 @@ export async function processTileScene(
         const top  = row * mTileH
         const w    = Math.min(mTileW, mW - left)
         const h    = Math.min(mTileH, mH - top)
-        const key  = `spaces/${spaceId}/scenes/${sceneId}/tiles_medium/${col}_${row}.webp`
+        const key  = `${sceneKey}/tiles_medium/${col}_${row}.webp`
         mediumJobs.push(async () => {
           const buf = await mediumImage
             .clone()
@@ -287,8 +290,8 @@ export async function processTileScene(
       await Promise.all(mediumJobs.slice(i, i + BATCH).map(fn => fn()))
     }
 
-    const tileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles`
-    const mediumTileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles_medium`
+    const tileBase = `${cdnBase}/${sceneKey}/tiles`
+    const mediumTileBase = `${cdnBase}/${sceneKey}/tiles_medium`
 
     // 5c. Generate KTX2 tiles (GPU-compressed) from the medium WebP tiles.
     // Requires the 'basisu' CLI on PATH. Gracefully skipped if not available.
@@ -307,7 +310,7 @@ export async function processTileScene(
           const h    = Math.min(mTileH, mH - top)
           const tmpPng  = path.join(ktx2Dir, `${col}_${row}.png`)
           const tmpKtx2 = path.join(ktx2Dir, `${col}_${row}.ktx2`)
-          const r2Key   = `spaces/${spaceId}/scenes/${sceneId}/tiles_medium_ktx2/${col}_${row}.ktx2`
+          const r2Key   = `${sceneKey}/tiles_medium_ktx2/${col}_${row}.ktx2`
 
           ktx2Jobs.push(async () => {
             await mediumImage.clone()
@@ -336,7 +339,7 @@ export async function processTileScene(
       for (let i = 0; i < ktx2Jobs.length; i += BATCH) {
         await Promise.all(ktx2Jobs.slice(i, i + BATCH).map(fn => fn()))
       }
-      ktx2TileBase = `${cdnBase}/spaces/${spaceId}/scenes/${sceneId}/tiles_medium_ktx2`
+      ktx2TileBase = `${cdnBase}/${sceneKey}/tiles_medium_ktx2`
       console.log(`[TILE] KTX2 tiles ready for scene ${sceneId}`)
     } catch (ktx2Err: any) {
       if (ktx2Err.code === 'ENOENT') {
@@ -358,7 +361,8 @@ export async function processTileScene(
         tile_medium_manifest_url:       mediumTileBase,
         tile_medium_cols:               mCols,
         tile_medium_rows:               mRows,
-        ...(ktx2TileBase ? { tile_medium_ktx2_manifest_url: ktx2TileBase } : {}),
+        // A re-tiled scene must not keep KTX2 tiles of the previous image
+        ...(ktx2TileBase ? { tile_medium_ktx2_manifest_url: ktx2TileBase } : variant ? { tile_medium_ktx2_manifest_url: null } : {}),
         tiles_ready:                    true,
         status:                         'ready'
       }).eq('id', sceneId),

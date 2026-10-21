@@ -9,6 +9,7 @@ import s3Plugin from './plugins/s3.js'
 import { processMedia } from './utils/media-processor.js'
 import { updateUploadStatus } from './utils/uploads.js'
 import { processTileScene } from './utils/tile-processor.js'
+import { applyEdit, editPanoramaUrl } from './utils/aiImageEdit.js'
 import {
   recordJobSuccess,
   recordJobFailure,
@@ -87,8 +88,31 @@ async function processUploadJob(job: any) {
 
   // Route tile-scene jobs to the tile processor
   if (job.name === 'tile-scene') {
-    const { sceneId, rawImageUrl, spaceId } = job.data
-    await processTileScene(fastify.s3, fastify.supabase, { sceneId, rawImageUrl, spaceId }, redis)
+    const { sceneId, rawImageUrl, spaceId, variant } = job.data
+    await processTileScene(fastify.s3, fastify.supabase, { sceneId, rawImageUrl, spaceId, variant }, redis)
+    return
+  }
+
+  // AI photo edit approved by the owner: blend it into the full-resolution
+  // panorama, point the scene at the new image (keeping the original for undo)
+  // and re-tile into a fresh folder. Runs here, not in the API, because the
+  // full-size panorama needs ~1 GB of memory to re-encode.
+  if (job.name === 'ai-apply-edit') {
+    const { sceneId, spaceId, editId } = job.data as { sceneId: string; spaceId: string; editId: string }
+    const { data: scene } = await fastify.supabase
+      .from('scenes').select('raw_image_url, original_raw_image_url').eq('id', sceneId).single()
+    if (!scene) return   // scene deleted meanwhile
+
+    // Idempotent on retry: the composite may already be uploaded and saved
+    let newRaw = editPanoramaUrl(spaceId, sceneId, editId)
+    if (scene.raw_image_url !== newRaw) {
+      newRaw = await applyEdit({ s3: fastify.s3, spaceId, sceneId, editId, currentRaw: scene.raw_image_url })
+      await fastify.supabase.from('scenes').update({
+        raw_image_url:          newRaw,
+        original_raw_image_url: scene.original_raw_image_url ?? scene.raw_image_url,
+      }).eq('id', sceneId)
+    }
+    await processTileScene(fastify.s3, fastify.supabase, { sceneId, rawImageUrl: newRaw, spaceId, variant: editId }, redis)
     return
   }
 
