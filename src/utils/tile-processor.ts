@@ -23,6 +23,11 @@ function nextPowerOfTwo(n: number): number {
   return Math.pow(2, Math.ceil(Math.log2(n)))
 }
 
+function prevPowerOfTwo(n: number): number {
+  if (n < 2) return 1
+  return Math.pow(2, Math.floor(Math.log2(n)))
+}
+
 // Pull DateTimeOriginal from raw EXIF bytes without an external parser.
 // Camera EXIF embeds dates as ASCII "YYYY:MM:DD HH:MM:SS" — a regex scan is
 // reliable enough for all major 360 cameras (Insta360, GoPro, Ricoh Theta).
@@ -177,10 +182,13 @@ export async function processTileScene(
     }
 
     // PSV EquirectangularTilesAdapter requires cols and rows to be powers of 2.
-    // We snap up to the next power of 2, then compute even tile dimensions so
+    // Full-res tiles use the largest power-of-2 grid whose tiles are still at
+    // least TILE_SIZE (16×8 of ~744px for a 12K panorama). Snapping up instead
+    // gave 32×16 tiles of ~372px — 2–20 KB each, so loading a zoomed-in view was
+    // bound by round trips, not bandwidth. Tile dimensions are rounded up so
     // every tile fits the grid without fractional pixels.
-    const cols  = nextPowerOfTwo(Math.ceil(imgW / TILE_SIZE))
-    const rows  = nextPowerOfTwo(Math.ceil(imgH / TILE_SIZE))
+    const cols  = prevPowerOfTwo(Math.floor(imgW / TILE_SIZE))
+    const rows  = prevPowerOfTwo(Math.floor(imgH / TILE_SIZE))
     const tileW = Math.ceil(imgW / cols)
     const tileH = Math.ceil(imgH / rows)
 
