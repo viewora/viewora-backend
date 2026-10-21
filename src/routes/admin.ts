@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
-import { randomUUID, timingSafeEqual } from 'crypto'
+import { timingSafeEqual } from 'crypto'
 import { getCleanupDashboardState } from '../utils/metrics.js'
+import { queueRetileScenes } from '../utils/retile.js'
 import { sendWelcomeEmail } from '../email/index.js'
 import { DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3'
 
@@ -691,56 +692,21 @@ export default async function (fastify: FastifyInstance) {
   })
 
   // ── Re-tile scenes onto the coarser full-res grid ─────────────────────────
-  // Scenes tiled before the grid change have 32×16 full-res tiles of ~372px.
-  // Re-queues them so tile-processor cuts the new grid (16×8 of ~744px for 12K).
-  // Each job writes into a fresh `v/retile-…` folder: tiles are immutable-cached
-  // and the old/new grids share file names, so overwriting in place would mix
-  // stale tiles into the new grid. The scene keeps serving its old tiles until
-  // the job flips tile_manifest_url at the end.
+  // See utils/retile.ts. The worker can also run this on boot (RETILE_ON_BOOT).
   //   ?dryRun=true  → only count/list what would be queued
-  //   ?limit=N      → batch size (default 100, max 1000); safe to run again —
-  //                   re-tiled scenes no longer match, queued ones are deduped
+  //   ?limit=N      → batch size (default 100, max 1000); safe to run again
   fastify.post('/scenes/retile', async (request, reply) => {
     try {
       const { dryRun, limit } = request.query as { dryRun?: string; limit?: string }
       const limitNum = Math.min(Math.max(parseInt(limit || '100', 10) || 100, 1), 1000)
 
-      const { data: scenes, count, error } = await fastify.supabase
-        .from('scenes')
-        .select('id, space_id, raw_image_url, tile_cols', { count: 'exact' })
-        .gt('tile_cols', 16)
-        .eq('tiles_ready', true)
-        .not('raw_image_url', 'is', null)
-        .order('created_at', { ascending: true })
-        .limit(limitNum)
-      if (error) throw error
-
+      const result = await queueRetileScenes(fastify.supabase, getQueue(), { limit: limitNum, dryRun: dryRun === 'true' })
       if (dryRun === 'true') {
-        return reply.send({ success: true, data: { matching: count ?? 0, batch: scenes?.map(s => s.id) ?? [] } })
+        return reply.send({ success: true, data: { matching: result.matching, batch: result.sceneIds } })
       }
 
-      const queue = getQueue()
-      let queued = 0
-      for (const scene of scenes ?? []) {
-        // Fixed jobId: running this again while a job is still waiting is a no-op
-        // (completed jobs are removed, so a failed re-tile can be retried later).
-        // Lowest priority so customers' new uploads are never stuck behind a backfill.
-        await queue.add('tile-scene', {
-          sceneId: scene.id,
-          rawImageUrl: scene.raw_image_url,
-          spaceId: scene.space_id,
-          variant: `retile-${randomUUID()}`,
-        }, {
-          jobId: `retile-${scene.id}`,
-          priority: 100,
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 5000 },
-        })
-        queued++
-      }
-
-      await auditLog(fastify, request, 'retile_scenes', 'scene', 'batch', { queued, matching: count ?? 0 })
-      return reply.send({ success: true, data: { queued, matching: count ?? 0, remaining: Math.max((count ?? 0) - queued, 0) } })
+      await auditLog(fastify, request, 'retile_scenes', 'scene', 'batch', { queued: result.queued, matching: result.matching })
+      return reply.send({ success: true, data: { queued: result.queued, matching: result.matching, remaining: Math.max(result.matching - result.queued, 0) } })
     } catch (error: any) {
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: 'Failed to queue re-tile' })

@@ -9,6 +9,7 @@ import s3Plugin from './plugins/s3.js'
 import { processMedia } from './utils/media-processor.js'
 import { updateUploadStatus } from './utils/uploads.js'
 import { processTileScene } from './utils/tile-processor.js'
+import { queueRetileScenes } from './utils/retile.js'
 import { applyEdit, editPanoramaUrl } from './utils/aiImageEdit.js'
 import {
   recordJobSuccess,
@@ -223,6 +224,15 @@ await metricsQueue.add('expire-subscriptions', {} as any, {
   repeat: { pattern: '5 0 * * *' }, // 00:05 UTC daily
   jobId: 'expire-subscriptions-cron',
 })
+
+// One-off backfill: with RETILE_ON_BOOT=true, queue every scene still on the old
+// full-res grid (see utils/retile.ts). Idempotent, so leaving the flag on across
+// restarts only costs a DB query — but unset it once the backfill is done.
+if (process.env.RETILE_ON_BOOT === 'true') {
+  queueRetileScenes(fastify.supabase, metricsQueue)
+    .then(({ matching, queued }) => fastify.log.info({ matching, queued }, '[RETILE] Queued scenes for re-tiling'))
+    .catch((err: any) => fastify.log.error({ error: err?.message }, '[RETILE] Failed to queue scenes'))
+}
 
 // BullMQ emits 'error' for Redis connection issues; without a listener
 // Node.js converts them to uncaughtException which kills the process.
