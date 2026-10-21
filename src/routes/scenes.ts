@@ -37,6 +37,12 @@ const UpdateSceneBodySchema = z.object({
   north_offset:  z.number().min(-180).max(180).nullable().optional(),
 })
 
+const BulkCategoryBodySchema = z.object({
+  scene_ids:  z.array(z.string().uuid()).min(1).max(500),
+  // Same rules as group_name above: empty string / null clears the category.
+  group_name: z.string().trim().max(40).transform(v => (v ? v : null)).nullable(),
+})
+
 export default async function scenesRoutes(fastify: FastifyInstance) {
 
   // ── LIST SCENES FOR A SPACE ────────────────────────────────
@@ -221,6 +227,41 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     // Invalidate public cache only after confirmed success
     await invalidateCacheBySceneId(fastify, params.sceneId)
     return reply.send({ scene: updated })
+  })
+
+  // ── SET CATEGORY FOR MANY SCENES ─────────────────────────
+  // The editor's Organize tab categorises 100+ photos at once; one request
+  // instead of one PATCH per scene keeps it well under the per-user rate limit.
+  // Only scenes in this space are touched; ids from elsewhere are ignored.
+  fastify.patch('/spaces/:spaceId/scenes/category', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, spaceParamsSchema, (req as any).params)
+    if (!params) return
+    const body = parseWithSchema(reply, BulkCategoryBodySchema, req.body)
+    if (!body) return
+
+    const { data: space } = await fastify.supabase
+      .from('properties')
+      .select('id')
+      .eq('id', params.spaceId)
+      .eq('user_id', userId)
+      .maybeSingle()
+    if (!space) return reply.code(404).send({ statusMessage: 'Space not found' })
+
+    const { data: updated, error } = await fastify.supabase
+      .from('scenes')
+      .update({ group_name: body.group_name })
+      .in('id', [...new Set(body.scene_ids)])
+      .eq('space_id', params.spaceId)
+      .select('id')
+    if (error) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to update categories' })
+    }
+
+    await invalidateSpaceCache(fastify, params.spaceId)
+    const ids = (updated ?? []).map((s: any) => s.id)
+    return reply.send({ updated: ids.length, scene_ids: ids, group_name: body.group_name })
   })
 
   // ── DELETE SCENE ──────────────────────────────────────────
