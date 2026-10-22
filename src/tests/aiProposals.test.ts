@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { toProposals, type Ctx } from '../utils/aiProposals.js'
 import { viewForRegion } from '../utils/aiImageEdit.js'
 
-const kitchen = { id: 'scene-kitchen', name: 'Kitchen', group_name: null }
+const kitchen = { id: 'scene-kitchen', name: 'Kitchen', group_name: null as string | null }
 const lounge  = { id: 'scene-lounge',  name: 'Lounge',  group_name: 'Living Areas' }
 const infoHs  = { id: 'hs-1', scene_id: kitchen.id, type: 'info', label: 'Info hotspot', yaw: 0, pitch: 0, content: { text: 'Old', icon: 'info-3d-light', scale: 1 } }
 
