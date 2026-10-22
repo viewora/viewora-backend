@@ -2,10 +2,21 @@ import { randomUUID } from 'crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Queue } from 'bullmq'
 
-// Scenes tiled before the grid change have 32×16 full-res tiles of ~372px;
-// tile-processor now cuts 16×8 (~744px for 12K). Anything above 16 cols is old.
-const OLD_GRID_MIN_COLS = 16
+import { fullResGrid } from './tileGrid.js'
+
+// Scenes tiled before the grid change have full-res tiles of ~360–372px (32×16
+// for 12K, 16×8 for 5.7K). A scene is "old" when its grid is finer than what
+// fullResGrid() — the rule tile-processor now cuts with — gives for its size,
+// so re-tiled scenes (and new uploads) match exactly and are never picked again.
 const PAGE = 1000
+
+type SceneRow = { id: string; space_id: string; raw_image_url: string; width: number | null; height: number | null; tile_cols: number | null; tile_rows: number | null }
+
+function isOldGrid(s: SceneRow): boolean {
+  if (!s.width || !s.height || !s.tile_cols || !s.tile_rows) return false
+  const { cols, rows } = fullResGrid(s.width, s.height)
+  return s.tile_cols > cols || s.tile_rows > rows
+}
 
 export interface RetileResult {
   matching: number
@@ -29,24 +40,23 @@ export async function queueRetileScenes(
   opts: { limit?: number; dryRun?: boolean } = {},
 ): Promise<RetileResult> {
   const limit = opts.limit ?? Infinity
-  const scenes: Array<{ id: string; space_id: string; raw_image_url: string }> = []
-  let matching = 0
-
-  for (let from = 0; scenes.length < limit; from += PAGE) {
-    const to = from + Math.min(PAGE, limit - scenes.length) - 1
-    const { data, count, error } = await supabase
+  // The grid check needs width/height, so it runs here rather than in the query;
+  // page through every tiled scene and keep the old-grid ones.
+  const old: SceneRow[] = []
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
       .from('scenes')
-      .select('id, space_id, raw_image_url', { count: 'exact' })
-      .gt('tile_cols', OLD_GRID_MIN_COLS)
+      .select('id, space_id, raw_image_url, width, height, tile_cols, tile_rows')
       .eq('tiles_ready', true)
       .not('raw_image_url', 'is', null)
       .order('created_at', { ascending: true })
-      .range(from, to)
+      .range(from, from + PAGE - 1)
     if (error) throw error
-    matching = count ?? 0
-    scenes.push(...(data ?? []))
-    if (!data?.length || to + 1 >= matching) break
+    old.push(...((data ?? []) as SceneRow[]).filter(isOldGrid))
+    if (!data || data.length < PAGE) break
   }
+  const matching = old.length
+  const scenes = old.slice(0, limit)
 
   if (opts.dryRun) return { matching, queued: 0, sceneIds: scenes.map(s => s.id) }
 

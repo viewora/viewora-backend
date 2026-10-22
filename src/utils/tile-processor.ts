@@ -9,8 +9,8 @@ sharp.concurrency(1)
 import path from 'path'
 import fs from 'fs/promises'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import { TILE_SIZE, fullResGrid } from './tileGrid.js'
 
-const TILE_SIZE        = 512
 const MEDIUM_MAX_WIDTH = 4096
 const MEDIUM_MAX_HEIGHT = 2048
 const TEMP_DIR         = process.env.TEMP_DIR ?? '/tmp/viewora-tiles'
@@ -21,11 +21,6 @@ const MAX_HEIGHT       = 6144
 function nextPowerOfTwo(n: number): number {
   if (n <= 1) return 1
   return Math.pow(2, Math.ceil(Math.log2(n)))
-}
-
-function prevPowerOfTwo(n: number): number {
-  if (n < 2) return 1
-  return Math.pow(2, Math.floor(Math.log2(n)))
 }
 
 // Pull DateTimeOriginal from raw EXIF bytes without an external parser.
@@ -181,14 +176,9 @@ export async function processTileScene(
       return
     }
 
-    // PSV EquirectangularTilesAdapter requires cols and rows to be powers of 2.
-    // Full-res tiles use the largest power-of-2 grid whose tiles are still at
-    // least TILE_SIZE (16×8 of ~744px for a 12K panorama). Snapping up instead
-    // gave 32×16 tiles of ~372px — 2–20 KB each, so loading a zoomed-in view was
-    // bound by round trips, not bandwidth. Tile dimensions are rounded up so
-    // every tile fits the grid without fractional pixels.
-    const cols  = prevPowerOfTwo(Math.floor(imgW / TILE_SIZE))
-    const rows  = prevPowerOfTwo(Math.floor(imgH / TILE_SIZE))
+    // Grid rule lives in tileGrid.ts (shared with the re-tile backfill). Tile
+    // dimensions are rounded up so every tile fits without fractional pixels.
+    const { cols, rows } = fullResGrid(imgW, imgH)
     const tileW = Math.ceil(imgW / cols)
     const tileH = Math.ceil(imgH / rows)
 
