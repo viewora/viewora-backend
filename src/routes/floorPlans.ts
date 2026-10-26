@@ -28,6 +28,59 @@ export const UpdateFloorPlanBody = z.object({
   order_index: z.number().int().min(0).max(1000).optional(),
 })
 
+// ── Venue map (mall directory + walkways) for one floor ─────
+// See migration-add-venue-maps.sql for the shape. Coordinates are fractions
+// of the plan image; node indexes must point inside `nodes`.
+export const MAX_VENUE_PLACES = 1500
+export const MAX_VENUE_NODES = 20000
+export const MAX_VENUE_EDGES = 40000
+
+const frac = z.number().finite().min(-0.05).max(1.05)
+const nodeIndex = z.number().int().min(0).max(MAX_VENUE_NODES - 1)
+const shortText = (max: number) => z.string().trim().max(max)
+
+const VenuePlace = z.object({
+  id: z.string().trim().min(1).max(80).regex(/^[\w.-]+$/),
+  name: z.string().trim().min(1).max(120),
+  category: shortText(60).optional(),
+  x: frac,
+  y: frac,
+  entrances: z.array(nodeIndex).max(20).optional(),
+  url: safeUrl.max(500).optional(),
+  logo: safeUrl.max(500).optional(),
+  text: shortText(600).optional(),
+  scene_id: z.string().uuid().optional(),
+})
+
+export const VenueBody = z.object({
+  places: z.array(VenuePlace).max(MAX_VENUE_PLACES),
+  nodes: z.array(z.tuple([frac, frac])).max(MAX_VENUE_NODES),
+  edges: z.array(z.union([z.tuple([nodeIndex, nodeIndex]), z.tuple([nodeIndex, nodeIndex, z.number().int().min(0).max(255)])])).max(MAX_VENUE_EDGES),
+  links: z.array(z.object({
+    node: nodeIndex,
+    group: z.string().trim().min(1).max(80),
+    kind: z.enum(['lift', 'escalator', 'stairs', 'ramp']).optional(),
+  })).max(500),
+}).superRefine((v, ctx) => {
+  const n = v.nodes.length
+  if (v.edges.some(e => e[0] >= n || e[1] >= n)) ctx.addIssue({ code: 'custom', message: 'Walkway segment points to a missing point' })
+  if (v.links.some(l => l.node >= n)) ctx.addIssue({ code: 'custom', message: 'Floor link points to a missing point' })
+  if (v.places.some(p => p.entrances?.some(i => i >= n))) ctx.addIssue({ code: 'custom', message: 'Place entrance points to a missing point' })
+})
+
+/**
+ * Adds each floor's venue map to floor-plan rows. Read separately so a
+ * database without the venue column (migration not run) still serves floors.
+ */
+async function mergeVenues(fastify: FastifyInstance, rows: any[]) {
+  if (!rows.length) return rows
+  const { data, error } = await fastify.supabase
+    .from('floor_plans').select('id, venue').in('id', rows.map(r => r.id))
+  if (error || !data) return rows
+  const byId = new Map(data.map((r: any) => [r.id, r.venue]))
+  return rows.map(r => ({ ...r, venue: byId.get(r.id) ?? null }))
+}
+
 const COLUMNS = 'id, space_id, name, image_url, media_id, width, height, order_index, created_at, updated_at'
 
 export default async function floorPlanRoutes(fastify: FastifyInstance) {
@@ -60,7 +113,7 @@ export default async function floorPlanRoutes(fastify: FastifyInstance) {
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: 'Failed to load floor plans' })
     }
-    return reply.send({ floor_plans: data ?? [] })
+    return reply.send({ floor_plans: await mergeVenues(fastify, data ?? []) })
   })
 
   // ── CREATE ────────────────────────────────────────────────
@@ -126,6 +179,33 @@ export default async function floorPlanRoutes(fastify: FastifyInstance) {
     return reply.send({ floor_plan: data })
   })
 
+  // ── VENUE MAP (directory + walkways), whole floor at once ─
+  fastify.put('/floor-plans/:floorPlanId/venue', { preHandler: [fastify.authenticate], bodyLimit: 4 * 1048576 }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, floorPlanParams, (req as any).params)
+    if (!params) return
+    // { venue: null } clears the floor's venue map.
+    const parsed = parseWithSchema(reply, z.object({ venue: VenueBody.nullable() }), req.body)
+    if (!parsed) return
+    const body = parsed.venue
+    const quota = await checkUserQuota(fastify, userId)
+    if (!quota.canWrite) return reply.code(403).send({ statusMessage: 'Your plan does not allow changes right now. Please renew to continue.' })
+    const owned = await ownedFloorPlan(params.floorPlanId, userId)
+    if (!owned) return reply.code(404).send({ statusMessage: 'Floor plan not found' })
+
+    const { error } = await fastify.supabase
+      .from('floor_plans')
+      .update({ venue: body, updated_at: new Date().toISOString() })
+      .eq('id', params.floorPlanId)
+    if (error) {
+      fastify.log.error(error)
+      const missing = /venue/i.test(error.message || '') && /column/i.test(error.message || '')
+      return reply.code(500).send({ statusMessage: missing ? 'Venue maps are not enabled yet (database migration pending).' : 'Failed to save the venue map' })
+    }
+    await invalidateSpaceCache(fastify, owned.space_id)
+    return reply.send({ venue: body })
+  })
+
   // ── DELETE ────────────────────────────────────────────────
   // Scenes pinned on this floor become unplaced. The image itself is removed
   // by the client via DELETE /uploads/:mediaId, which also frees the quota.
@@ -161,7 +241,7 @@ export async function publicFloorPlans(fastify: FastifyInstance, spaceId: string
     .order('created_at', { ascending: true })
   // Missing table (migration not run yet) must not break the public tour.
   if (error) return []
-  return data ?? []
+  return mergeVenues(fastify, data ?? [])
 }
 
 /**

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Fastify from 'fastify'
 
-import floorPlanRoutes, { mergeScenePlanPins, publicFloorPlans } from '../routes/floorPlans.js'
+import floorPlanRoutes, { mergeScenePlanPins, publicFloorPlans, VenueBody } from '../routes/floorPlans.js'
 import scenesRoutes from '../routes/scenes.js'
 import { isValidFileType } from '../utils/quotas.js'
 
@@ -128,4 +128,65 @@ test('floor plan images must be PNG or JPG', () => {
   assert.equal(isValidFileType('image/svg+xml', 'floor_plan_image'), false)
   // Aerial maps' existing 'floor_plan' type is unchanged.
   assert.equal(isValidFileType('image/webp', 'floor_plan'), true)
+})
+
+// ── Venue maps ──────────────────────────────────────────────
+const VENUE = {
+  places: [{ id: 'gf-shop1', name: 'Shop One', category: 'Fashion', x: 0.4, y: 0.5, entrances: [1] }],
+  nodes: [[0.1, 0.1], [0.4, 0.5], [0.6, 0.5]],
+  edges: [[0, 1], [1, 2, 1]],
+  links: [{ node: 2, group: 'lift-a', kind: 'lift' }],
+}
+
+test('venue schema accepts a floor directory with walkways', () => {
+  assert.equal(VenueBody.safeParse(VENUE).success, true)
+})
+
+test('venue schema rejects walkways pointing at missing points', () => {
+  assert.equal(VenueBody.safeParse({ ...VENUE, edges: [[0, 7]] }).success, false)
+  assert.equal(VenueBody.safeParse({ ...VENUE, links: [{ node: 9, group: 'x' }] }).success, false)
+  assert.equal(VenueBody.safeParse({ ...VENUE, places: [{ ...VENUE.places[0], entrances: [5] }] }).success, false)
+})
+
+test('venue schema rejects unsafe shop links', () => {
+  assert.equal(VenueBody.safeParse({ ...VENUE, places: [{ ...VENUE.places[0], url: 'javascript:alert(1)' }] }).success, false)
+})
+
+test('saving a venue map stores it on the owned floor', async () => {
+  let saved: unknown = undefined
+  const app = await buildApp(supabaseStub((table, op) => {
+    if (table === 'subscriptions') return { data: { status: 'active', plans: {} }, error: null }
+    if (table === 'floor_plans' && op === 'select') return { data: { id: FLOOR_ID, space_id: SPACE_ID }, error: null }
+    if (table === 'floor_plans' && op === 'update') saved = true
+    return { data: null, error: null }
+  }))
+  const res = await app.inject({
+    method: 'PUT',
+    url: `/floor-plans/${FLOOR_ID}/venue`,
+    headers: { authorization: 'Bearer token' },
+    payload: { venue: VENUE },
+  })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(saved, true)
+})
+
+test('publicFloorPlans serves floors without venue when the column is missing', async () => {
+  const fastify: any = {
+    supabase: supabaseStub(() => ({ data: null, error: null })),
+  }
+  let call = 0
+  fastify.supabase = {
+    from() {
+      call++
+      const first = call === 1
+      const b: any = {}
+      for (const m of ['select', 'eq', 'in', 'order']) b[m] = () => b
+      b.then = (res: any) => Promise.resolve(first
+        ? { data: [{ id: FLOOR_ID, name: 'Ground Floor' }], error: null }
+        : { data: null, error: { message: 'column floor_plans.venue does not exist' } }).then(res)
+      return b
+    },
+  }
+  const rows = await publicFloorPlans(fastify, SPACE_ID)
+  assert.deepEqual(rows, [{ id: FLOOR_ID, name: 'Ground Floor' }])
 })
