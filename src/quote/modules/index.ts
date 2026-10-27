@@ -39,9 +39,9 @@ export const homes: IndustryModule = {
     { id: 'purpose', type: 'choice', label: 'Is it for sale?', required: true, drivesPrice: true, default: 'let',
       options: [{ value: 'let', label: 'No, to let or to live in' }, { value: 'sale', label: 'Yes, for sale' }] },
     { id: 'listings', type: 'number', label: 'How many listings in this order?', help: 'Packs of 5, 10 or 20+ listings cost less per home.',
-      min: 1, max: 200, default: 1, drivesPrice: true, clientTypes: ['agent', 'manager', 'developer'] },
+      min: 1, max: 200, default: 1, drivesPrice: true, clientTypes: ['agent', 'manager', 'developer', 'marketer'] },
     { id: 'same_building', type: 'number', label: 'How many of them are in the same building?', min: 1, max: 200, default: 1,
-      drivesPrice: true, clientTypes: ['agent', 'manager', 'developer'] },
+      drivesPrice: true, clientTypes: ['agent', 'manager', 'developer', 'marketer'] },
   ],
   pricing: {
     sector: 'home',

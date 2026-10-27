@@ -53,7 +53,7 @@ export interface RateTable {
 
 // ── Industry modules (config, not code) ─────────────────────────────────────
 
-export type ClientType = 'owner' | 'agent' | 'developer' | 'manager' | 'other'
+export type ClientType = 'owner' | 'agent' | 'developer' | 'manager' | 'marketer' | 'other'
 export type ResultMode = 'instant' | 'range' | 'custom'
 
 export interface ChoiceOption {

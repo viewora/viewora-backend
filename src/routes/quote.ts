@@ -23,7 +23,7 @@ const RESUME_DAYS = Number(process.env.QUOTE_RESUME_DAYS ?? 30)
 
 const hashToken = (token: string) => crypto.createHash('sha256').update(token).digest('hex')
 
-const clientTypeSchema = z.enum(['owner', 'agent', 'developer', 'manager', 'other'])
+const clientTypeSchema = z.enum(['owner', 'agent', 'developer', 'manager', 'marketer', 'other'])
 // Industries on the form that have no pricing module yet. They use the
 // "other" module (staff price them by hand) and are tagged for staff.
 export const PLANNED_INDUSTRIES = ['restaurants', 'developers', 'malls', 'institutions', 'farms'] as const
