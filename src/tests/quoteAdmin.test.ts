@@ -71,7 +71,7 @@ test('alerts: sandbox by default records what would be sent, sends nothing', asy
   const [m] = store.dump().messages
   assert.equal(m.status, 'skipped')
   assert.equal(m.skipReason, 'sandbox')
-  assert.match(m.renderedBody!, /Name: Amina\nIndustry: Homes\nWho: Owner\nSource: instagram\nOpen: https:\/\/admin\.example\.com\/dashboard\/quotes\//)
+  assert.match(m.renderedBody!, /Name: Amina\nIndustry: Homes and real estate\nWho: Owner\nSource: instagram\nOpen: https:\/\/admin\.example\.com\/dashboard\/quotes\//)
 })
 
 test('alerts: live send goes to staff once per new lead, not for a returning number', async () => {
@@ -196,7 +196,7 @@ test('admin: lead page has answers, consent, quote lines and the alert log', asy
   assert.ok(d.requests[0].quotes[0].options[0].lines.length > 0)
   assert.equal(d.messages[0].skipReason, 'sandbox')
   const view = Object.fromEntries(d.requests[0].answersView.map((r: any) => [r.label, r.value]))
-  assert.equal(view['Industry'], 'Homes')
+  assert.equal(view['Industry'], 'Homes and real estate')
   assert.equal(view['Who they are'], 'Owner')
   assert.equal(view['What size is the home?'], '2 bedrooms')
   assert.equal(view['Where'], 'Kilimani, Nairobi')

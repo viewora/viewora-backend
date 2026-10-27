@@ -22,7 +22,7 @@ export function answersView(request: Record<string, any>, itemLabel: (key: strin
   const module = request.moduleKey ? modules[request.moduleKey] : undefined
   const a = request.answers ?? {}
   const rows: Array<{ label: string; value: string }> = [
-    { label: 'Industry', value: industryLabel(module?.label, request.flags ?? []) },
+    { label: 'Industry', value: industryLabel(request.moduleKey, request.flags ?? [], module?.label) },
     { label: 'Who they are', value: request.clientType ? CLIENT_TYPE_LABELS[request.clientType] ?? request.clientType : 'Not given' },
   ]
   for (const q of module?.questions ?? []) {

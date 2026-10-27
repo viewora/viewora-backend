@@ -2,8 +2,14 @@
 // "other" module (staff price them by hand) and are tagged industry:<key>.
 export const PLANNED_INDUSTRIES = ['restaurants', 'developers', 'malls', 'institutions', 'farms'] as const
 
-// Names staff see in alerts; the form has its own (translatable) strings.
-const PLANNED_LABELS: Record<string, string> = {
+// Names staff see in alerts and the admin, the same as the form shows.
+// (The form has its own translatable copy of these.)
+const INDUSTRY_LABELS: Record<string, string> = {
+  homes: 'Homes and real estate',
+  airbnb: 'Airbnb and short-stay',
+  hotels: 'Hotels and lodges',
+  vehicles: 'Car dealers and hire',
+  other: 'Something else',
   restaurants: 'Restaurants and venues',
   developers: 'Developers and land',
   malls: 'Malls and retail',
@@ -18,7 +24,7 @@ export const CLIENT_TYPE_LABELS: Record<string, string> = {
 
 export const industryHint = (flags: string[]) => flags.find(f => f.startsWith('industry:'))?.slice('industry:'.length) ?? null
 
-export function industryLabel(moduleLabel: string | undefined, flags: string[]): string {
-  const hint = industryHint(flags)
-  return (hint && PLANNED_LABELS[hint]) || moduleLabel || 'Unknown'
+export function industryLabel(moduleKey: string | null | undefined, flags: string[], moduleLabel?: string): string {
+  const key = industryHint(flags) ?? moduleKey
+  return (key && INDUSTRY_LABELS[key]) || moduleLabel || 'Unknown'
 }

@@ -296,7 +296,7 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
         const pending = alertNewLead(store, alerts, fastify.log, {
           leadId: lead.id,
           firstName: sanitizeLeadText(body.firstName, 60),
-          industry: industryLabel(req.moduleKey ? modules[req.moduleKey]?.label : undefined, req.flags),
+          industry: industryLabel(req.moduleKey, req.flags, req.moduleKey ? modules[req.moduleKey]?.label : undefined),
           clientType: clientType ? CLIENT_TYPE_LABELS[clientType] ?? clientType : 'Not given',
           source: req.entry.source ?? null,
         }).catch(err => fastify.log.error({ err, leadId: lead.id }, 'quote: new-lead alert crashed'))
