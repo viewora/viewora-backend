@@ -395,6 +395,32 @@ test('desk routes: a discount over the limit waits for an admin', async () => {
   assert.equal(store.dump().quotes.find(x => x.id === q)!.discountApprovedBy, ADMIN)
 })
 
+test('desk routes: check says what a save would do, and saves nothing', async () => {
+  const { fastify, call, store } = await setup()
+  await lead(fastify)
+  const id = await leadId(call)
+  const q = (await call('POST', `/admin/quote/leads/${id}/quotes`, SALES, {})).json().id
+  const editor = (await call('GET', `/admin/quote/quotes/${q}`, SALES)).json()
+  const before = JSON.stringify(store.dump().quotes)
+  const subtotal = editor.quote.options[1].subtotal
+
+  const ok = (await call('POST', `/admin/quote/quotes/${q}/check`, SALES, editable(editor.quote))).json()
+  assert.deepEqual(ok.errors, [])
+  assert.equal(ok.needsApproval, false)
+  assert.deepEqual(ok.options.map((o: any) => o.total), editor.quote.options.map((o: any) => o.total))
+
+  const big = (await call('POST', `/admin/quote/quotes/${q}/check`, SALES, addDiscount(editable(editor.quote), Math.round(subtotal * 0.1)))).json()
+  assert.equal(big.needsApproval, true)
+  assert.deepEqual(big.approvalReasons.map((r: any) => r.code), ['over_limit'])
+  assert.equal(big.options[1].total, editor.quote.options[1].total - Math.round(subtotal * 0.1))
+  assert.equal((await call('POST', `/admin/quote/quotes/${q}/check`, ADMIN, addDiscount(editable(editor.quote), Math.round(subtotal * 0.1)))).json().needsApproval, false, 'admins approve their own')
+
+  const bad = (await call('POST', `/admin/quote/quotes/${q}/check`, SALES, { ...addDiscount(editable(editor.quote), 500, ''), validUntil: '2020-01-01' })).json()
+  assert.deepEqual(bad.errors.map((e: any) => e.code), ['discount_reason_required', 'validity_range'])
+  assert.equal((await call('POST', `/admin/quote/quotes/${q}/check`, NOBODY, editable(editor.quote))).statusCode, 403)
+  assert.equal(JSON.stringify(store.dump().quotes), before, 'nothing saved')
+})
+
 test('desk routes: input is validated', async () => {
   const { fastify, call } = await setup()
   await lead(fastify)

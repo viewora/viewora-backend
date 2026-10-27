@@ -19,7 +19,7 @@ import { DeskError, type DeskStore, type LeadStage } from '../quote/deskStore.js
 import { allowed } from '../quote/staffAuth.js'
 import {
   EDITABLE, VERSION_ON_EDIT, blankDraft, checkDoc, docFromEngine, firmTiers, formatKes, inQuietHours,
-  linkExpiry, nairobiDate, nextDraft, recalc, sendBlocker, type QuoteDoc,
+  linkExpiry, nairobiDate, nextDraft, recalc, sendBlocker, type QuoteDoc, type StaffRole,
 } from '../quote/desk.js'
 import { price } from '../quote/engine/price.js'
 import type { RateTable } from '../quote/engine/types.js'
@@ -263,6 +263,57 @@ export default async function quoteDeskRoutes(fastify: FastifyInstance, opts: De
     }
   })
 
+  // A staff edit as the server will save it: totals recomputed, labels cleaned
+  const editedDoc = (current: QuoteDoc, body: z.infer<typeof quoteBody>, me: { id: string }) => {
+    const inPlace = EDITABLE.includes(current.status)
+    const base = inPlace ? current : nextDraft(current, { version: current.version + 1, createdBy: me.id, validUntil: body.validUntil })
+    return recalc(firmTiers({
+      ...base,
+      vatCharged: body.vatCharged,
+      depositBp: body.depositBp,
+      validUntil: body.validUntil,
+      discountReason: clean(body.discountReason, 300),
+      clientNote: clean(body.clientNote, 1000),
+      options: body.options.map(o => ({
+        tier: o.tier, selected: o.selected, subtotal: 0, discount: 0, discountBp: 0, net: 0, vat: 0, total: 0, deposit: 0,
+        lines: o.lines.map(l => ({ ...l, label: clean(l.label, 120) ?? 'Item', note: clean(l.note, 200), amount: 0 })),
+      })),
+    }))
+  }
+  const checkFor = async (doc: QuoteDoc, me: { role: StaffRole; discountLimitBp: number }) => {
+    const table = await desk.rateTable(doc.rateTableId)
+    const capBp = table?.settings.discountCapBp ?? 2000
+    return { capBp, check: checkDoc(doc, { role: me.role, discountLimitBp: me.discountLimitBp, discountCapBp: capBp, listPrice: listPrice(table) }) }
+  }
+  const validityProblem = (validUntil: string) =>
+    validUntil < nairobiDate(now()) || validUntil > nairobiDate(now(), 180)
+      ? { code: 'VALIDITY_RANGE', statusMessage: 'Pick a "valid until" date between today and 6 months from now.' }
+      : null
+
+  // POST /admin/quote/quotes/:id/check: what a save would do, without saving
+  // (the editor calls it as staff type, so the rules live in one place)
+  fastify.post('/quotes/:id/check', async (request, reply) => {
+    if (!allowed(request, reply, 'quotes:write')) return
+    const params = parseWithSchema(reply, id, request.params)
+    const body = params && parseWithSchema(reply, quoteBody, request.body)
+    if (!params || !body) return
+    const me = request.quoteStaff!
+    const current = await loadQuote(reply, params.id)
+    if (!current) return
+    if (!EDITABLE.includes(current.status) && !VERSION_ON_EDIT.includes(current.status)) return conflict(reply, 'locked')
+    const doc = editedDoc(current, body, me)
+    const { check } = await checkFor(doc, me)
+    const stillApproved = !!current.discountApprovedBy && discountShape(current) === discountShape(doc)
+    const validity = validityProblem(body.validUntil)
+    return {
+      options: doc.options,
+      errors: [...check.errors, ...(validity ? [{ code: 'validity_range' }] : [])],
+      needsApproval: me.role !== 'admin' && check.needsApproval && !stillApproved,
+      approvalReasons: check.approvalReasons,
+      staffDiscountBp: check.staffDiscountBp,
+    }
+  })
+
   // PUT /admin/quote/quotes/:id: save edits (a sent quote becomes a new version)
   fastify.put('/quotes/:id', async (request, reply) => {
     if (!allowed(request, reply, 'quotes:write')) return
@@ -275,32 +326,17 @@ export default async function quoteDeskRoutes(fastify: FastifyInstance, opts: De
     const inPlace = EDITABLE.includes(current.status)
     if (!inPlace && !VERSION_ON_EDIT.includes(current.status)) return conflict(reply, 'locked')
 
-    const today = nairobiDate(now())
-    if (body.validUntil < today || body.validUntil > nairobiDate(now(), 180)) {
-      return reply.code(422).send({ code: 'VALIDITY_RANGE', statusMessage: 'Pick a "valid until" date between today and 6 months from now.' })
-    }
-    const base = inPlace ? current : nextDraft(current, { version: current.version + 1, createdBy: me.id, validUntil: body.validUntil })
-    let doc = recalc(firmTiers({
-      ...base,
-      vatCharged: body.vatCharged,
-      depositBp: body.depositBp,
-      validUntil: body.validUntil,
-      discountReason: clean(body.discountReason, 300),
-      clientNote: clean(body.clientNote, 1000),
-      options: body.options.map(o => ({
-        tier: o.tier, selected: o.selected, subtotal: 0, discount: 0, discountBp: 0, net: 0, vat: 0, total: 0, deposit: 0,
-        lines: o.lines.map(l => ({ ...l, label: clean(l.label, 120) ?? 'Item', note: clean(l.note, 200), amount: 0 })),
-      })),
-    }))
-    const table = await desk.rateTable(doc.rateTableId)
-    const check = checkDoc(doc, { role: me.role, discountLimitBp: me.discountLimitBp, discountCapBp: table?.settings.discountCapBp ?? 2000, listPrice: listPrice(table) })
+    const validity = validityProblem(body.validUntil)
+    if (validity) return reply.code(422).send(validity)
+    let doc = editedDoc(current, body, me)
+    const { capBp, check } = await checkFor(doc, me)
     if (check.errors.length) {
       return reply.code(422).send({ code: 'INVALID_QUOTE', statusMessage: 'Some lines need fixing before this can be saved.', errors: check.errors })
     }
     // An earlier approval stands while the discounts stay the same
     const stillApproved = !!current.discountApprovedBy && discountShape(current) === discountShape(doc)
     const overCap = check.approvalReasons.some(r => r.code === 'over_cap')
-      || doc.options.some(o => o.discountBp > (table?.settings.discountCapBp ?? 2000))
+      || doc.options.some(o => o.discountBp > capBp)
     if (me.role === 'admin') {
       doc = { ...doc, status: 'draft', discountApprovedBy: check.staffDiscountBp > 0 || overCap ? me.id : null }
     } else if (check.needsApproval && !stillApproved) {
