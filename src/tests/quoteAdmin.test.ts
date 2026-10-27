@@ -6,6 +6,7 @@ import quoteRoutes from '../routes/quote.js'
 import quoteAdminRoutes from '../routes/quoteAdmin.js'
 import { memoryStore } from '../quote/store.js'
 import { memoryAdminStore } from '../quote/adminStore.js'
+import { memoryDeskStore } from '../quote/deskStore.js'
 import { alertNewLead, render, type AlertConfig } from '../quote/alerts.js'
 import { rateTableV1 } from '../quote/seed/rateTable.v1.js'
 
@@ -30,12 +31,16 @@ function alertConfig(over: Partial<AlertConfig> = {}) {
 }
 
 async function setup(alertsOver: Partial<AlertConfig> = {}, templates: Record<string, typeof template> = { 'staff_new_lead:email': template }) {
-  const store = memoryStore({ rateTable: rateTableV1, consent: { id: 'c1', body: 'Consent wording' }, templates })
+  const store = memoryStore({
+    rateTable: rateTableV1, consent: { id: 'c1', body: 'Consent wording' }, templates,
+    staff: [{ userId: SALES, displayName: 'Wanjiru', role: 'sales', discountLimitBp: 500, email: null, active: true }],
+  })
+  const desk = memoryDeskStore(() => store.dump())
   const { config, sent } = alertConfig(alertsOver)
   const pending: Array<Promise<unknown>> = []
   const fastify = Fastify()
-  await fastify.register(quoteRoutes, { prefix: '/quote', store, alerts: config, onAlert: p => pending.push(p) })
-  await fastify.register(quoteAdminRoutes, { prefix: '/admin/quote', store, adminStore: memoryAdminStore(() => store.dump(), { [SALES]: 'sales' }) })
+  await fastify.register(quoteRoutes, { prefix: '/quote', store, desk, alerts: config, onAlert: p => pending.push(p) })
+  await fastify.register(quoteAdminRoutes, { prefix: '/admin/quote', store, desk, adminStore: memoryAdminStore(() => store.dump()) })
   return { fastify, store, sent, settle: () => Promise.all(pending) }
 }
 

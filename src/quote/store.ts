@@ -4,6 +4,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { ClientType, PriceResult, RateTable } from './engine/types.js'
+import { docFromEngine, type QuoteDoc } from './desk.js'
 
 export interface StoredAnswers {
   details: Record<string, string | number | boolean>
@@ -62,6 +63,7 @@ export interface MessageTemplate { version: number; subject: string | null; body
 
 export interface MessageRecord {
   leadId: string
+  quoteId?: string | null
   channel: 'whatsapp' | 'email' | 'staff_alert'
   templateKey: string
   templateVersion: number | null
@@ -93,15 +95,44 @@ export interface QuoteStore {
 
 export type MemoryLead = LeadInput & {
   id: string; stage: string; createdAt: string; lastActivityAt: string; consentAt: string | null; deletedAt: string | null
+  ownerStaffId: string | null; optedOutAt: string | null
+}
+
+export interface MemoryStaff {
+  userId: string; displayName: string; role: 'admin' | 'sales' | 'viewer'; discountLimitBp: number; email: string | null; active: boolean
+}
+
+// A quote document plus the engine output it came from (null for staff edits)
+export type MemoryQuote = QuoteDoc & { id: string; createdAt: string; updatedAt: string; trace: PriceResult | null }
+
+export interface MemoryLink {
+  id: string; quoteId: string; tokenHash: string; channel: 'link' | 'whatsapp' | 'email'; createdBy: string | null
+  createdAt: string; expiresAt: string; revokedAt: string | null; firstViewedAt: string | null; lastViewedAt: string | null; views: number
+}
+
+export interface MemoryRateTable extends RateTable {
+  status: 'draft' | 'published' | 'archived'; notes: string | null; publishedAt: string | null; publishedBy: string | null; createdAt: string
+}
+
+export interface MemoryAudit {
+  id: number; actorId: string | null; entityType: string; entityId: string; action: string
+  before: unknown; after: unknown; reason: string | null; createdAt: string
 }
 
 // ── In-memory store (tests and local runs) ──────────────────────────────────
+// One live state object, shared with the memory admin and desk stores so
+// every view sees the same leads and quotes, as the database would.
 
 export interface MemoryData {
   requests: RequestRecord[]
   leads: MemoryLead[]
-  quotes: Array<{ id: string; requestId: string; result: PriceResult; createdAt: string }>
-  messages: Array<MessageRecord & { createdAt: string }>
+  quotes: MemoryQuote[]
+  links: MemoryLink[]
+  messages: Array<MessageRecord & { id: string; createdAt: string }>
+  notes: Array<{ id: string; leadId: string; authorId: string | null; body: string; createdAt: string }>
+  audit: MemoryAudit[]
+  staff: MemoryStaff[]
+  rateTables: MemoryRateTable[]
 }
 
 export function memoryStore(seed: {
@@ -109,37 +140,45 @@ export function memoryStore(seed: {
   consent?: ConsentText
   templates?: Record<string, MessageTemplate>   // keyed "key:channel"
   recipients?: string[]
+  staff?: MemoryStaff[]
 }): QuoteStore & { dump(): MemoryData } {
-  const requests = new Map<string, RequestRecord>()
-  const byHash = new Map<string, string>()
-  const leads = new Map<string, MemoryLead>()
-  const quotes: MemoryData['quotes'] = []
-  const messages: MemoryData['messages'] = []
   const now = () => new Date().toISOString()
+  const state: MemoryData = {
+    requests: [], leads: [], quotes: [], links: [], messages: [], notes: [], audit: [],
+    staff: structuredClone(seed.staff ?? []),
+    // Ids are uuids, as in the database (the seed file's own id is a label)
+    rateTables: [{ ...structuredClone(seed.rateTable), id: randomUUID(), status: 'published', notes: null, publishedAt: now(), publishedBy: null, createdAt: now() }],
+  }
+  const byHash = new Map<string, string>()
+  const request = (id: string) => state.requests.find(r => r.id === id)!
 
   return {
-    async publishedRateTable() { return seed.rateTable },
+    async publishedRateTable() {
+      const t = state.rateTables.find(x => x.status === 'published')
+      if (!t) return null
+      const { status: _s, notes: _n, publishedAt: _p, publishedBy: _b, createdAt: _c, ...table } = structuredClone(t)
+      return table
+    },
     async consentText() { return seed.consent ?? null },
     async createRequest(input, tokenHash) {
       const record: RequestRecord = {
         id: randomUUID(), leadId: null, answers: { details: {}, addons: {} }, flags: [],
         startedAt: now(), lastSavedAt: now(), completedAt: null, ...input,
       }
-      requests.set(record.id, record)
+      state.requests.push(record)
       byHash.set(tokenHash, record.id)
       return structuredClone(record)
     },
     async findRequest(tokenHash) {
       const id = byHash.get(tokenHash)
-      return id ? structuredClone(requests.get(id)!) : null
+      return id ? structuredClone(request(id)) : null
     },
     async updateRequest(id, patch) {
-      const next = { ...requests.get(id)!, ...structuredClone(patch), lastSavedAt: now() }
-      requests.set(id, next)
-      return structuredClone(next)
+      Object.assign(request(id), structuredClone(patch), { lastSavedAt: now() })
+      return structuredClone(request(id))
     },
     async upsertLead(input) {
-      const existing = [...leads.values()].find(l => l.whatsappE164 === input.whatsappE164)
+      const existing = state.leads.find(l => l.whatsappE164 === input.whatsappE164 && !l.deletedAt)
       if (existing) {
         existing.firstName ||= input.firstName
         existing.email ||= input.email
@@ -150,25 +189,31 @@ export function memoryStore(seed: {
       }
       const id = randomUUID()
       const consentAt = input.consentWhatsapp || input.consentEmail ? now() : null
-      leads.set(id, { ...input, id, stage: 'new', createdAt: now(), lastActivityAt: now(), consentAt, deletedAt: null })
+      state.leads.push({ ...input, id, stage: 'new', createdAt: now(), lastActivityAt: now(), consentAt, deletedAt: null, ownerStaffId: null, optedOutAt: null })
       return { id, created: true }
     },
     async getLead(id) {
-      const l = leads.get(id)
+      const l = state.leads.find(x => x.id === id)
       return l ? { id, firstName: l.firstName, whatsappE164: l.whatsappE164, email: l.email } : null
     },
-    async saveQuote(requestId, result) {
+    async saveQuote(requestId, result, opts) {
       const id = randomUUID()
-      quotes.push({ id, requestId, result: structuredClone(result), createdAt: now() })
+      const version = Math.max(0, ...state.quotes.filter(q => q.requestId === requestId).map(q => q.version)) + 1
+      // A price the visitor saw counts as sent; a custom draft waits for staff
+      const doc = docFromEngine(result, {
+        requestId, leadId: request(requestId).leadId, version, depositBp: opts.depositBp, validUntil: opts.validUntil,
+        status: result.mode === 'custom' ? 'draft' : 'sent',
+      })
+      state.quotes.push({ ...doc, id, createdAt: now(), updatedAt: now(), sentAt: doc.status === 'sent' ? now() : null, trace: structuredClone(result) })
       return id
     },
     async latestQuote(requestId) {
-      const q = quotes.filter(x => x.requestId === requestId).pop()
-      return q ? structuredClone(q.result) : null
+      const q = state.quotes.filter(x => x.requestId === requestId && x.trace).at(-1)
+      return q ? structuredClone(q.trace) : null
     },
     async messageTemplate(key, channel) { return seed.templates?.[`${key}:${channel}`] ?? null },
     async alertRecipients() { return seed.recipients ?? [] },
-    async recordMessage(message) { messages.push({ ...structuredClone(message), createdAt: now() }) },
-    dump: () => ({ requests: [...requests.values()], leads: [...leads.values()], quotes, messages }),
+    async recordMessage(message) { state.messages.push({ ...structuredClone(message), id: randomUUID(), createdAt: now() }) },
+    dump: () => state,
   }
 }

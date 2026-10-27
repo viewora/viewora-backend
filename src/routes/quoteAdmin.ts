@@ -1,53 +1,20 @@
 // Staff side of the quote engine, called by viewora-admin's server proxy.
-// Every request must carry the shared admin secret (proves it came from the
-// admin server) and X-Admin-Id (the signed-in staff member, already checked
-// there against profiles.is_admin). Each route then checks that staff
-// member's quote-engine role from qe_staff; admins without a staff row can
-// read but not change anything.
+// The staff check (admin secret, X-Admin-Id, qe_staff role) runs before
+// every route here and in the desk and rate table routes registered below.
 
-import { timingSafeEqual } from 'node:crypto'
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
+import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
-import { supabaseAdminStore, type QuoteAdminStore, type StaffRole } from '../quote/adminStore.js'
-import { modules } from '../quote/modules/index.js'
-import { CLIENT_TYPE_LABELS, industryLabel } from '../quote/industries.js'
+import { supabaseAdminStore, type QuoteAdminStore } from '../quote/adminStore.js'
 import type { QuoteStore } from '../quote/store.js'
 import { supabaseStore } from '../quote/supabaseStore.js'
+import { supabaseDeskStore, type DeskStore } from '../quote/deskStore.js'
+import { allowed, staffHook } from '../quote/staffAuth.js'
+import quoteDeskRoutes, { type DeskRouteOptions } from './quoteDesk.js'
+import quoteRatesRoutes from './quoteRates.js'
 
-const TIMING_LABELS: Record<string, string> = { this_week: 'This week', this_month: 'This month', planning: 'Just planning' }
-
-// Answers as staff read them: the module's own question and option wording
-export function answersView(request: Record<string, any>, itemLabel: (key: string) => string = k => k): Array<{ label: string; value: string }> {
-  const module = request.moduleKey ? modules[request.moduleKey] : undefined
-  const a = request.answers ?? {}
-  const rows: Array<{ label: string; value: string }> = [
-    { label: 'Industry', value: industryLabel(request.moduleKey, request.flags ?? [], module?.label) },
-    { label: 'Who they are', value: request.clientType ? CLIENT_TYPE_LABELS[request.clientType] ?? request.clientType : 'Not given' },
-  ]
-  for (const q of module?.questions ?? []) {
-    const v = a.details?.[q.id]
-    if (v === undefined || v === null || v === '') continue
-    const option = q.options?.find(o => o.value === String(v))
-    rows.push({ label: q.label, value: option?.label ?? (typeof v === 'boolean' ? (v ? 'Yes' : 'No') : String(v)) })
-  }
-  const addons = Object.entries(a.addons ?? {}) as Array<[string, number]>
-  if (addons.length) rows.push({ label: 'Extras', value: addons.map(([k, n]) => (n > 1 ? `${itemLabel(k)} × ${n}` : itemLabel(k))).join(', ') })
-  const loc = a.location
-  if (loc) {
-    const parts = [loc.town, loc.lat !== undefined && loc.lng !== undefined ? `pin ${loc.lat}, ${loc.lng}` : null].filter(Boolean)
-    rows.push({ label: 'Where', value: parts.join(' · ') })
-  }
-  if (a.timing) rows.push({ label: 'When', value: TIMING_LABELS[a.timing] ?? a.timing })
-  if (a.note) rows.push({ label: 'Note', value: a.note })
-  return rows
-}
-
-export type Permission = 'leads:read'
-
-const PERMISSIONS: Record<Permission, StaffRole[]> = {
-  'leads:read': ['admin', 'sales', 'viewer'],
-}
+export { answersView } from '../quote/answersView.js'
+import { answersView } from '../quote/answersView.js'
 
 const STAGES = ['new', 'contacted', 'quoted', 'booked', 'delivered', 'paid', 'lost'] as const
 
@@ -57,51 +24,27 @@ const leadsQuery = z.object({
   source: z.string().trim().min(1).max(40).optional(),
   status: z.enum(['completed', 'abandoned']).optional(),
   q: z.string().trim().max(100).optional(),
+  owner: z.union([z.string().uuid(), z.literal('none')]).optional(),
   page: z.coerce.number().int().min(1).max(10_000).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),
 })
 
 const leadParams = z.object({ id: z.string().uuid() })
-const uuid = z.string().uuid()
 
-function secretMatches(header: string | undefined): boolean {
-  const secret = process.env.ADMIN_SECRET
-  if (!secret || !header) return false
-  const expected = Buffer.from(`Bearer ${secret}`)
-  const given = Buffer.from(header)
-  return given.length === expected.length && timingSafeEqual(given, expected)
-}
-
-declare module 'fastify' {
-  interface FastifyRequest { quoteStaff?: { id: string; role: StaffRole } }
-}
-
-export default async function quoteAdminRoutes(fastify: FastifyInstance, opts: { adminStore?: QuoteAdminStore; store?: QuoteStore }) {
+export default async function quoteAdminRoutes(fastify: FastifyInstance, opts: Omit<DeskRouteOptions, 'adminStore' | 'store' | 'desk'> & {
+  adminStore?: QuoteAdminStore; store?: QuoteStore; desk?: DeskStore
+}) {
   const store = opts.adminStore ?? supabaseAdminStore(fastify.supabase)
   const quoteStore = opts.store ?? supabaseStore(fastify.supabase)
+  const desk = opts.desk ?? supabaseDeskStore(fastify.supabase)
 
-  fastify.addHook('preHandler', async (request, reply) => {
-    if (!secretMatches(request.headers.authorization)) {
-      return reply.code(401).send({ code: 'UNAUTHORIZED', statusMessage: 'Unauthorized' })
-    }
-    const adminId = uuid.safeParse(request.headers['x-admin-id'])
-    if (!adminId.success) {
-      return reply.code(401).send({ code: 'NO_STAFF_ID', statusMessage: 'Sign in again: your staff identity was missing.' })
-    }
-    const role = await store.staffRole(adminId.data)
-    request.quoteStaff = { id: adminId.data, role: role ?? 'viewer' }
-  })
-
-  const allowed = (request: FastifyRequest, reply: FastifyReply, permission: Permission) => {
-    if (request.quoteStaff && PERMISSIONS[permission].includes(request.quoteStaff.role)) return true
-    reply.code(403).send({ code: 'FORBIDDEN', statusMessage: 'Your role cannot do this. Ask an admin to change it.' })
-    return false
-  }
+  fastify.addHook('preHandler', staffHook(desk))
 
   // GET /admin/quote/summary: counts for the strip above the list, filter choices
   fastify.get('/summary', async (request, reply) => {
     if (!allowed(request, reply, 'leads:read')) return
-    return { role: request.quoteStaff!.role, ...await store.summary() }
+    const me = request.quoteStaff!
+    return { role: me.role, staff: { id: me.id, name: me.displayName, discountLimitBp: me.discountLimitBp }, ...await store.summary() }
   })
 
   // GET /admin/quote/leads: one row per lead, newest activity first
@@ -128,4 +71,9 @@ export default async function quoteAdminRoutes(fastify: FastifyInstance, opts: {
     const itemLabel = (key: string) => table?.items[key]?.label ?? key
     return { ...lead, requests: requests.map(r => ({ ...r, answersView: answersView(r, itemLabel) })) }
   })
+
+  // Child routes share the staff check above (not the prefix: Fastify already applied it)
+  const { prefix: _prefix, ...deskOpts } = opts as typeof opts & { prefix?: string }
+  await fastify.register(quoteDeskRoutes, { ...deskOpts, adminStore: store, store: quoteStore, desk })
+  await fastify.register(quoteRatesRoutes, { desk })
 }

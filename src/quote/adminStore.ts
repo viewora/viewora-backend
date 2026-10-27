@@ -1,12 +1,13 @@
 // Read side for the staff admin. Production calls the SQL functions from
-// migration-quote-engine-003.sql; tests and local runs read the memory store
-// with the same filters, so the admin can be tried without Supabase.
+// migrations 003 and 004 (qe_admin_leads_v2, qe_admin_lead_v2,
+// qe_admin_summary); tests and local runs read the memory store with the
+// same filters, so the admin can be tried without Supabase.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { MemoryData } from './store.js'
 import { industryHint } from './industries.js'
 
-export type StaffRole = 'admin' | 'sales' | 'viewer'
+export type { StaffRole } from './desk.js'
 
 export interface LeadFilter {
   stage?: string
@@ -14,6 +15,7 @@ export interface LeadFilter {
   source?: string
   status?: 'completed' | 'abandoned'
   q?: string
+  owner?: string          // staff uuid, or 'none' for unassigned
   limit: number
   offset: number
 }
@@ -36,6 +38,10 @@ export interface LeadRow {
   createdAt: string
   lastActivityAt: string
   mode: string | null
+  quoteStatus: string | null
+  needsApproval: boolean
+  ownerId: string | null
+  ownerName: string | null
   total: number | null
   totalHigh: number | null
 }
@@ -51,8 +57,6 @@ export interface LeadSummary {
 }
 
 export interface QuoteAdminStore {
-  // Active qe_staff role, or null if this admin has no staff row
-  staffRole(userId: string): Promise<StaffRole | null>
   leads(filter: LeadFilter): Promise<{ total: number; rows: LeadRow[] }>
   lead(id: string): Promise<Record<string, unknown> | null>
   summary(): Promise<LeadSummary>
@@ -65,47 +69,48 @@ export function supabaseAdminStore(db: SupabaseClient): QuoteAdminStore {
     return data as T
   }
   return {
-    async staffRole(userId) {
-      const { data, error } = await db.from('qe_staff').select('role').eq('user_id', userId).eq('active', true).maybeSingle()
-      if (error) throw new Error(`quote admin: staff role: ${error.message}`)
-      return (data?.role as StaffRole) ?? null
-    },
-    leads: f => call('qe_admin_leads', {
+    leads: f => call('qe_admin_leads_v2', {
       p_stage: f.stage ?? null, p_industry: f.industry ?? null, p_source: f.source ?? null,
-      p_status: f.status ?? null, p_q: f.q ?? null, p_limit: f.limit, p_offset: f.offset,
+      p_status: f.status ?? null, p_q: f.q ?? null, p_limit: f.limit, p_offset: f.offset, p_owner: f.owner ?? null,
     }),
-    lead: id => call('qe_admin_lead', { p_id: id }),
+    lead: id => call('qe_admin_lead_v2', { p_id: id }),
     summary: () => call('qe_admin_summary'),
   }
 }
 
-// Mirrors qe_admin_leads / qe_admin_lead / qe_admin_summary over memory data
-export function memoryAdminStore(data: () => MemoryData, staff: Record<string, StaffRole> = {}): QuoteAdminStore {
+// Mirrors qe_admin_leads_v2 / qe_admin_lead_v2 / qe_admin_summary over memory data
+export function memoryAdminStore(data: () => MemoryData): QuoteAdminStore {
   const day = 86_400_000
   const latestRequest = (d: MemoryData, leadId: string) =>
     d.requests.filter(r => r.leadId === leadId).sort((a, b) => b.lastSavedAt.localeCompare(a.lastSavedAt))[0]
   const latestQuote = (d: MemoryData, requestId: string) =>
-    d.quotes.filter(q => q.requestId === requestId).at(-1)
+    d.quotes.filter(q => q.requestId === requestId).sort((a, b) => b.version - a.version)[0]
+  const staffName = (d: MemoryData, id: string | null) => d.staff.find(s => s.userId === id)?.displayName ?? null
+  const totalHigh = (q: MemoryData['quotes'][number], tier: string) => q.trace?.options.find(o => o.tier === tier)?.totalHigh ?? null
 
   function rows(d: MemoryData): LeadRow[] {
     return d.leads.filter(l => !l.deletedAt).map(l => {
       const r = latestRequest(d, l.id)
       const q = r ? latestQuote(d, r.id) : undefined
-      const option = q && ([...q.result.options].sort((a, b) => Number(b.tier === 'standard') - Number(a.tier === 'standard') || a.total - b.total)[0])
+      const option = q && [...q.options].sort((a, b) =>
+        Number(b.selected) - Number(a.selected) || Number(b.tier === 'standard') - Number(a.tier === 'standard') || a.total - b.total)[0]
       const activity = [l.lastActivityAt, r?.lastSavedAt ?? ''].sort().at(-1)!
+      const requestIds = new Set(d.requests.filter(x => x.leadId === l.id).map(x => x.id))
       return {
         leadId: l.id, requestId: r?.id ?? null, firstName: l.firstName, whatsapp: l.whatsappE164, email: l.email,
         source: l.source, stage: l.stage, industry: r ? industryHint(r.flags) ?? r.moduleKey : null,
         moduleKey: r?.moduleKey ?? null, clientType: r?.clientType ?? null, stepReached: r?.stepReached ?? 0,
-        completed: !!r?.completedAt, flags: r?.flags ?? [], optedOut: false,
+        completed: !!r?.completedAt, flags: r?.flags ?? [], optedOut: !!l.optedOutAt,
         createdAt: l.createdAt, lastActivityAt: activity,
-        mode: q?.result.mode ?? null, total: option?.total ?? null, totalHigh: option?.totalHigh ?? null,
+        mode: q?.mode ?? null, quoteStatus: q?.status ?? null,
+        needsApproval: d.quotes.some(x => requestIds.has(x.requestId) && x.status === 'needs_approval'),
+        ownerId: l.ownerStaffId, ownerName: staffName(d, l.ownerStaffId),
+        total: option?.total ?? null, totalHigh: q && option ? totalHigh(q, option.tier) : null,
       }
     }).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt) || a.leadId.localeCompare(b.leadId))
   }
 
   return {
-    async staffRole(userId) { return staff[userId] ?? null },
     async leads(f) {
       const text = f.q?.trim().toLowerCase()
       let digits = text?.replace(/\D/g, '')
@@ -114,6 +119,7 @@ export function memoryAdminStore(data: () => MemoryData, staff: Record<string, S
         (!f.stage || r.stage === f.stage)
         && (!f.source || r.source === f.source)
         && (!f.industry || r.industry === f.industry)
+        && (!f.owner || (f.owner === 'none' ? !r.ownerId : r.ownerId === f.owner))
         && (!f.status || (f.status === 'completed') === r.completed)
         && (!text || !!r.firstName?.toLowerCase().includes(text) || !!r.email?.toLowerCase().includes(text)
           || (!!digits && !!r.whatsapp?.includes(digits))))
@@ -124,32 +130,53 @@ export function memoryAdminStore(data: () => MemoryData, staff: Record<string, S
       const d = data()
       const l = d.leads.find(x => x.id === id && !x.deletedAt)
       if (!l) return null
+      const requests = d.requests.filter(r => r.leadId === id).sort((a, b) => b.lastSavedAt.localeCompare(a.lastSavedAt))
+      const quoteIds = new Set(d.quotes.filter(q => requests.some(r => r.id === q.requestId)).map(q => q.id))
       return {
         lead: {
           id: l.id, firstName: l.firstName, whatsapp: l.whatsappE164, email: l.email, source: l.source, utm: l.utm,
-          stage: l.stage, consentWhatsapp: l.consentWhatsapp, consentEmail: l.consentEmail, consentAt: l.consentAt,
-          consentText: null, optedOutAt: null, createdAt: l.createdAt, lastActivityAt: l.lastActivityAt,
+          stage: l.stage, ownerId: l.ownerStaffId, ownerName: staffName(d, l.ownerStaffId),
+          consentWhatsapp: l.consentWhatsapp, consentEmail: l.consentEmail, consentAt: l.consentAt,
+          consentText: null, optedOutAt: l.optedOutAt, createdAt: l.createdAt, lastActivityAt: l.lastActivityAt,
         },
-        requests: d.requests.filter(r => r.leadId === id).map(r => ({
+        requests: requests.map(r => ({
           id: r.id, moduleKey: r.moduleKey, moduleVersion: r.moduleVersion, clientType: r.clientType,
           answers: r.answers, entry: r.entry, stepReached: r.stepReached, flags: r.flags, abVariant: r.abVariant,
           startedAt: r.startedAt, lastSavedAt: r.lastSavedAt, completedAt: r.completedAt,
-          quotes: d.quotes.filter(q => q.requestId === r.id).reverse().map(q => ({
-            id: q.id, mode: q.result.mode, status: q.result.mode === 'custom' ? 'draft' : 'sent', currency: q.result.currency,
-            vatCharged: q.result.vat.charged, depositBp: null, validUntil: null, createdAt: q.createdAt,
-            warnings: q.result.warnings,
-            options: q.result.options.map(o => ({
-              tier: o.tier, subtotal: o.subtotal, discount: o.discount, net: o.net, vat: o.vat, total: o.total,
-              totalHigh: o.totalHigh ?? null, deposit: o.deposit, selected: o.tier === 'standard',
-              lines: o.lines.map(li => ({ kind: li.kind, label: li.label, qty: li.qty, unit: li.unit, amount: li.amount, tbc: !!li.tbc, note: li.note ?? null })),
-            })),
-          })),
+          quotes: d.quotes.filter(q => q.requestId === r.id).sort((a, b) => b.version - a.version).map(q => {
+            const links = d.links.filter(k => k.quoteId === q.id)
+            return {
+              id: q.id, version: q.version, supersedesId: q.supersedesId, mode: q.mode, status: q.status, currency: q.currency,
+              vatCharged: q.vatCharged, depositBp: q.depositBp, validUntil: q.validUntil,
+              discountReason: q.discountReason, clientNote: q.clientNote,
+              createdAt: q.createdAt, sentAt: q.sentAt, viewedAt: q.viewedAt, createdByName: staffName(d, q.createdBy),
+              links: {
+                count: links.length, views: links.reduce((s, k) => s + k.views, 0),
+                lastViewedAt: links.map(k => k.lastViewedAt).filter(Boolean).sort().at(-1) ?? null,
+              },
+              warnings: q.warnings,
+              options: q.options.map(o => ({
+                tier: o.tier, subtotal: o.subtotal, discount: o.discount, net: o.net, vat: o.vat, total: o.total,
+                totalHigh: totalHigh(q, o.tier), deposit: o.deposit, selected: o.selected,
+                lines: o.lines.map(li => ({ kind: li.kind, label: li.label, qty: li.qty, unit: li.unit, amount: li.amount, tbc: li.tbc, note: li.note })),
+              })),
+            }
+          }),
         })),
-        messages: d.messages.filter(m => m.leadId === id).reverse().map((m, i) => ({
-          id: String(i), channel: m.channel, templateKey: m.templateKey, status: m.status,
+        messages: d.messages.filter(m => m.leadId === id).reverse().map(m => ({
+          id: m.id, channel: m.channel, templateKey: m.templateKey, status: m.status, quoteId: m.quoteId ?? null,
           skipReason: m.skipReason ?? null, error: m.error ?? null, sentAt: m.sentAt ?? null, createdAt: m.createdAt,
         })),
-        notes: [],
+        notes: d.notes.filter(n => n.leadId === id).reverse()
+          .map(n => ({ id: n.id, body: n.body, authorId: n.authorId, authorName: staffName(d, n.authorId), createdAt: n.createdAt })),
+        // Staff changes to this lead and its quotes, newest first
+        activity: d.audit
+          .filter(a => (a.entityType === 'lead' && a.entityId === id) || (a.entityType === 'quote' && quoteIds.has(a.entityId)))
+          .reverse().slice(0, 100)
+          .map(a => ({
+            id: a.id, entityType: a.entityType, entityId: a.entityId, action: a.action, actorName: staffName(d, a.actorId),
+            before: a.before, after: a.after, reason: a.reason, createdAt: a.createdAt,
+          })),
       }
     },
     async summary() {

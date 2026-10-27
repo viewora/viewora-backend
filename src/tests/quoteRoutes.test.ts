@@ -102,7 +102,7 @@ test('quote API: Other never shows the visitor a price', async () => {
   assert.equal(result.mode, 'custom')
   assert.deepEqual(result.options, [])
   // 12 areas × 800 + Greater Nairobi travel (Thika) 2,000
-  assert.equal((store.dump() as any).quotes[0].result.options[0].total, 12 * 800 + 2000, 'staff still get the draft')
+  assert.equal((store.dump() as any).quotes[0].trace.options[0].total, 12 * 800 + 2000, 'staff still get the draft')
   assert.equal((store.dump() as any).requests[0].flags.includes('new_industry'), true)
   assert.equal(request.completed, true)
 })

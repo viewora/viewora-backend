@@ -4,8 +4,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { PriceResult, RateItem, RateTable } from './engine/types.js'
 import type { QuoteStore, RequestRecord } from './store.js'
+import { docFromEngine } from './desk.js'
 
 const RATE_CACHE_MS = 60_000
+
+// Shared by every store instance; cleared when a rate table is published
+let cached: { at: number; table: RateTable } | null = null
+export function clearRateCache(): void { cached = null }
 
 function fail(error: { message: string } | null, what: string): void {
   if (error) throw new Error(`quote store: ${what}: ${error.message}`)
@@ -31,8 +36,6 @@ function toRecord(row: any): RequestRecord {
 }
 
 export function supabaseStore(db: SupabaseClient): QuoteStore {
-  let cached: { at: number; table: RateTable } | null = null
-
   return {
     async publishedRateTable() {
       if (cached && Date.now() - cached.at < RATE_CACHE_MS) return cached.table
@@ -147,36 +150,15 @@ export function supabaseStore(db: SupabaseClient): QuoteStore {
     },
 
     async saveQuote(requestId, result: PriceResult, opts) {
-      const { data: quote, error } = await db.from('qe_quotes').insert({
-        request_id: requestId,
-        rate_table_id: result.rateTableId,
-        result_mode: result.mode,
-        currency: result.currency,
-        fx_rate: result.fxRate ?? null,
-        vat_charged: result.vat.charged,
-        vat_rate_bp: result.vat.rateBp,
-        deposit_bp: opts.depositBp,
-        valid_until: opts.validUntil,
-        // A price the visitor saw counts as sent; a custom draft waits for staff
+      // One transaction in qe_desk_save_quote: next version, options, lines.
+      // A price the visitor saw counts as sent; a custom draft waits for staff.
+      const doc = docFromEngine(result, {
+        requestId, leadId: null, version: 0, depositBp: opts.depositBp, validUntil: opts.validUntil,
         status: result.mode === 'custom' ? 'draft' : 'sent',
-        sent_at: result.mode === 'custom' ? null : new Date().toISOString(),
-        engine_trace: result,
-      }).select('id').single()
+      })
+      const { data, error } = await db.rpc('qe_desk_save_quote', { p_doc: doc, p_trace: result, p_actor: null, p_action: 'created_by_form', p_reason: null })
       fail(error, 'save quote')
-      for (const option of result.options) {
-        const { data: opt, error: optErr } = await db.from('qe_quote_options').insert({
-          quote_id: quote!.id, tier: option.tier, subtotal: option.subtotal, discount: option.discount,
-          net: option.net, vat: option.vat, total: option.total, total_high: option.totalHigh ?? null,
-          deposit: option.deposit, selected: option.tier === 'standard' || result.options.length === 1,
-        }).select('id').single()
-        fail(optErr, 'save option')
-        const { error: linesErr } = await db.from('qe_quote_lines').insert(option.lines.map((l, i) => ({
-          option_id: opt!.id, position: i, rate_item_key: l.key, kind: l.kind, label: l.label,
-          quantity: l.qty, unit_price: l.unit, amount: l.amount, tbc: !!l.tbc, note: l.note ?? null,
-        })))
-        fail(linesErr, 'save lines')
-      }
-      return quote!.id
+      return data as string
     },
 
     async messageTemplate(key, channel, locale = 'en') {
@@ -195,7 +177,7 @@ export function supabaseStore(db: SupabaseClient): QuoteStore {
 
     async recordMessage(m) {
       const { error } = await db.from('qe_messages').insert({
-        lead_id: m.leadId, channel: m.channel, template_key: m.templateKey, template_version: m.templateVersion,
+        lead_id: m.leadId, quote_id: m.quoteId ?? null, channel: m.channel, template_key: m.templateKey, template_version: m.templateVersion,
         rendered_body: m.renderedBody, status: m.status, skip_reason: m.skipReason ?? null,
         error: m.error ?? null, sent_at: m.sentAt ?? null,
       })

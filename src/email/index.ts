@@ -855,12 +855,18 @@ export async function sendGiftExpiredEmail(params: {
 // Plain-text email with the standard shell, for wording that lives in
 // editable templates (quote engine staff alerts). Throws on failure so the
 // caller can retry and record the outcome.
-export async function sendPlainEmail(params: { to: string[]; subject: string; text: string }): Promise<string | null> {
+export async function sendPlainEmail(params: {
+  to: string[]; subject: string; text: string
+  attachments?: Array<{ filename: string; content: Buffer }>
+}): Promise<string | null> {
   if (!resend) throw new Error('RESEND_API_KEY not set')
   const html = emailShell(`<div style="font-size: 15px; line-height: 1.6; color: #1a1a1a;">${
     escapeHtml(params.text).replace(/(https:\/\/[^\s<]+)/g, '<a href="$1" style="color: #0066cc;">$1</a>').replace(/\n/g, '<br>')
   }</div>`)
-  const { data, error } = await resend.emails.send({ from: FROM, to: params.to, subject: params.subject, text: params.text, html })
+  const { data, error } = await resend.emails.send({
+    from: FROM, to: params.to, subject: params.subject, text: params.text, html,
+    ...(params.attachments?.length ? { attachments: params.attachments } : {}),
+  })
   if (error) throw new Error(error.message)
   return data?.id ?? null
 }

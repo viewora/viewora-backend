@@ -1,6 +1,7 @@
 // Public quote form API. A visitor starts a request, saves each step with
 // their resume token (the only secret; only its hash is stored) and gets a
-// price after the last step. Staff routes come with the admin in Phase 2.
+// price after the last step. Client quote links (/quote/view/:token) are
+// registered from here too; staff routes live under /admin/quote.
 
 import crypto from 'node:crypto'
 import type { FastifyInstance, FastifyReply } from 'fastify'
@@ -17,6 +18,10 @@ import { sanitizeLeadText } from '../utils/sanitize.js'
 import { sendPlainEmail } from '../email/index.js'
 import { alertConfigFromEnv, alertNewLead, type AlertConfig } from '../quote/alerts.js'
 import { CLIENT_TYPE_LABELS, PLANNED_INDUSTRIES, industryHint, industryLabel } from '../quote/industries.js'
+import { supabaseDeskStore, type DeskStore } from '../quote/deskStore.js'
+import { nairobiDate } from '../quote/desk.js'
+import { trackServer } from '../utils/analytics.js'
+import quotePublicRoutes from './quotePublic.js'
 
 // Step order: industry first, then contact (the lead exists from step 2).
 export const STEPS = ['industry', 'contact', 'details', 'extras', 'where'] as const
@@ -102,10 +107,10 @@ function publicView(req: RequestRecord) {
   }
 }
 
-const daysFromNow = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10)
 
 export default async function quoteRoutes(fastify: FastifyInstance, opts: {
   store?: QuoteStore
+  desk?: DeskStore
   alerts?: AlertConfig
   onAlert?: (pending: Promise<unknown>) => void   // tests wait on the background alert
 }) {
@@ -339,7 +344,7 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
       location: answers.location,
     }, table)
     await store.saveQuote(req.id, result, {
-      validUntil: daysFromNow(table.settings.quoteValidityDays),
+      validUntil: nairobiDate(new Date(), table.settings.quoteValidityDays),
       depositBp: table.settings.depositBp,
     })
     const next = await store.updateRequest(req.id, {
@@ -349,5 +354,11 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
       completedAt: req.completedAt ?? new Date().toISOString(),
     })
     return { request: publicView(next), result: clientResult(result) }
+  })
+
+  await fastify.register(quotePublicRoutes, {
+    desk: opts.desk ?? supabaseDeskStore(fastify.supabase),
+    // Analytics carry the quote id only, never personal data
+    onViewed: (quoteId, firstView) => trackServer(`quote:${quoteId}`, 'quote opened', { firstView }),
   })
 }
