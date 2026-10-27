@@ -23,13 +23,19 @@ const RESUME_DAYS = Number(process.env.QUOTE_RESUME_DAYS ?? 30)
 
 const hashToken = (token: string) => crypto.createHash('sha256').update(token).digest('hex')
 
-const clientTypeSchema = z.enum(['owner', 'agent', 'developer', 'manager'])
+const clientTypeSchema = z.enum(['owner', 'agent', 'developer', 'manager', 'other'])
+// Industries on the form that have no pricing module yet. They use the
+// "other" module (staff price them by hand) and are tagged for staff.
+export const PLANNED_INDUSTRIES = ['restaurants', 'developers', 'malls', 'institutions', 'farms'] as const
+const industryHintSchema = z.enum(PLANNED_INDUSTRIES).optional()
+const withHint = (flags: string[], hint?: string) => [...flags.filter(f => !f.startsWith('industry:')), ...(hint ? [`industry:${hint}`] : [])]
 const moduleKeySchema = z.string().refine(k => modules[k]?.enabled, 'unknown industry')
 const tokenParams = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{32}$/) })
 
 const startSchema = z.object({
   moduleKey: moduleKeySchema,
   clientType: clientTypeSchema.optional(),
+  industryHint: industryHintSchema,
   entry: z.object({
     source: z.string().trim().max(40).optional(),
     utm: z.record(z.string().regex(/^utm_[a-z]+$/), z.string().trim().max(100)).optional(),
@@ -40,9 +46,10 @@ const startSchema = z.object({
 })
 
 const stepSchema = z.discriminatedUnion('step', [
-  z.object({ step: z.literal('industry'), moduleKey: moduleKeySchema, clientType: clientTypeSchema }),
+  z.object({ step: z.literal('industry'), moduleKey: moduleKeySchema, clientType: clientTypeSchema.optional(), industryHint: industryHintSchema }),
   z.object({
     step: z.literal('contact'),
+    clientType: clientTypeSchema.optional(),
     firstName: z.string().trim().min(1).max(60),
     whatsapp: z.string().trim().min(1).max(30),
     email: z.union([z.string().trim().email().max(254), z.literal('')]).optional(),
@@ -88,6 +95,7 @@ function publicView(req: RequestRecord) {
   return {
     moduleKey: req.moduleKey,
     clientType: req.clientType,
+    industryHint: req.flags.find(f => f.startsWith('industry:'))?.slice('industry:'.length) ?? null,
     answers: req.answers,
     stepReached: req.stepReached,
     completed: !!req.completedAt,
@@ -202,9 +210,12 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: { stor
       entry: { source: body.entry?.source, utm: body.entry?.utm, partnerCode: body.entry?.partnerCode },
       abVariant: body.abVariant ?? null,
       device: { ua: String(request.headers['user-agent'] ?? '').slice(0, 200) },
-      stepReached: body.clientType ? 1 : 0,
+      stepReached: 1,
     }, hashToken(token))
-    return reply.code(201).send({ token, request: publicView(created) })
+    const hinted = body.moduleKey === 'other' && body.industryHint
+      ? await store.updateRequest(created.id, { flags: withHint(created.flags, body.industryHint) })
+      : created
+    return reply.code(201).send({ token, request: publicView(hinted) })
   })
 
   // GET /quote/requests/:token: resume
@@ -246,7 +257,9 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: { stor
       const module = modules[body.moduleKey]
       const changed = module.key !== req.moduleKey
       const next = await store.updateRequest(req.id, {
-        moduleKey: module.key, moduleVersion: module.version, clientType: body.clientType, stepReached: reached,
+        moduleKey: module.key, moduleVersion: module.version, stepReached: reached,
+        ...(body.clientType ? { clientType: body.clientType } : {}),
+        flags: withHint(req.flags, module.key === 'other' ? body.industryHint : undefined),
         // A different industry asks different questions, so its old details go
         ...(changed ? { answers: { ...req.answers, details: {}, addons: {} } } : {}),
       })
@@ -270,7 +283,7 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: { stor
         source: req.entry.source ?? null,
         utm: req.entry.utm ?? {},
       })
-      const next = await store.updateRequest(req.id, { leadId: lead.id, stepReached: reached })
+      const next = await store.updateRequest(req.id, { leadId: lead.id, stepReached: reached, ...(body.clientType ? { clientType: body.clientType } : {}) })
       if (lead.created) fastify.log.info({ requestId: req.id, module: req.moduleKey }, 'quote: new lead')
       return { request: publicView(next) }
     }

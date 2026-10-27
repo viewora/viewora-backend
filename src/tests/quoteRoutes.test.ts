@@ -30,7 +30,7 @@ test('quote API: config lists enabled modules with rate-table prices and consent
   const res = await fastify.inject({ method: 'GET', url: '/quote/config' })
   assert.equal(res.statusCode, 200)
   const body = res.json()
-  assert.deepEqual(body.modules.map((m: any) => m.key), ['homes', 'airbnb', 'hotels', 'other'])
+  assert.deepEqual(body.modules.map((m: any) => m.key), ['homes', 'airbnb', 'hotels', 'vehicles', 'other'])
   const homes = body.modules[0]
   assert.equal(homes.from, 4500)
   assert.equal(homes.questions[0].options.find((o: any) => o.value === '2br').price, 7000)
@@ -157,9 +157,9 @@ test('quote API: bad and unknown tokens are rejected', async () => {
   assert.equal((await fastify.inject({ method: 'GET', url: `/quote/requests/${'a'.repeat(32)}` })).statusCode, 404)
 })
 
-test('quote API: disabled industries cannot be started', async () => {
+test('quote API: unknown industries cannot be started', async () => {
   const { fastify } = await app()
-  const { res } = await start(fastify, { moduleKey: 'vehicles' })
+  const { res } = await start(fastify, { moduleKey: 'castle' })
   assert.equal(res.statusCode, 400)
 })
 
@@ -182,4 +182,25 @@ test('quote API: preview gives the running total before travel and stores nothin
   const custom = await fastify.inject({ method: 'POST', url: '/quote/preview', payload: { moduleKey: 'other', details: { description: 'Hall', areas: 4 }, addons: {} } })
   assert.equal(custom.json().beforeTravel, null, 'custom quotes never show a price')
   assert.equal((store.dump() as any).requests.length, 0)
+})
+
+test('quote API: planned industries go to staff pricing, tagged; who-you-are can come with contact', async () => {
+  const { fastify, store } = await app()
+  const { token } = await start(fastify, { moduleKey: 'other', industryHint: 'restaurants' })
+  assert.deepEqual((store.dump() as any).requests[0].flags, ['industry:restaurants'])
+  await patch(fastify, token, { ...contact, clientType: 'other' })
+  assert.equal((store.dump() as any).requests[0].clientType, 'other')
+  await patch(fastify, token, { step: 'industry', moduleKey: 'other', industryHint: 'farms' })
+  assert.deepEqual((store.dump() as any).requests[0].flags, ['industry:farms'])
+})
+
+test('quote API: vehicles are priced', async () => {
+  const { fastify } = await app()
+  const { token } = await start(fastify, { moduleKey: 'vehicles' })
+  await patch(fastify, token, contact)
+  await patch(fastify, token, { step: 'details', details: { kind: 'showroom', showroom_size: '10', vehicles: 0 } })
+  await patch(fastify, token, { step: 'extras', addons: {} })
+  const done = await patch(fastify, token, { step: 'where', location: { town: 'Westlands, Nairobi' }, timing: 'this_month' })
+  assert.equal(done.statusCode, 200)
+  assert.ok(done.json().result.options.length >= 1)
 })

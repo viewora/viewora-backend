@@ -123,12 +123,12 @@ export const hotels: IndustryModule = {
   },
 }
 
-// Built now so the engine's test table covers vehicles; the form turns it on in Phase 4.
+// Showrooms, car hire and garages.
 export const vehicles: IndustryModule = {
   key: 'vehicles',
   version: 1,
   label: 'Vehicles',
-  enabled: false,
+  enabled: true,
   resultMode: 'instant',
   questions: [
     { id: 'kind', type: 'choice', label: 'What do you run?', required: true, drivesPrice: true,
