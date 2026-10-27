@@ -14,6 +14,9 @@ import type { QuoteStore, RequestRecord } from '../quote/store.js'
 import { supabaseStore } from '../quote/supabaseStore.js'
 import { parseWithSchema } from '../utils/validation.js'
 import { sanitizeLeadText } from '../utils/sanitize.js'
+import { sendPlainEmail } from '../email/index.js'
+import { alertConfigFromEnv, alertNewLead, type AlertConfig } from '../quote/alerts.js'
+import { CLIENT_TYPE_LABELS, PLANNED_INDUSTRIES, industryHint, industryLabel } from '../quote/industries.js'
 
 // Step order: industry first, then contact (the lead exists from step 2).
 export const STEPS = ['industry', 'contact', 'details', 'extras', 'where'] as const
@@ -24,9 +27,6 @@ const RESUME_DAYS = Number(process.env.QUOTE_RESUME_DAYS ?? 30)
 const hashToken = (token: string) => crypto.createHash('sha256').update(token).digest('hex')
 
 const clientTypeSchema = z.enum(['owner', 'agent', 'developer', 'manager', 'marketer', 'other'])
-// Industries on the form that have no pricing module yet. They use the
-// "other" module (staff price them by hand) and are tagged for staff.
-export const PLANNED_INDUSTRIES = ['restaurants', 'developers', 'malls', 'institutions', 'farms'] as const
 const industryHintSchema = z.enum(PLANNED_INDUSTRIES).optional()
 const withHint = (flags: string[], hint?: string) => [...flags.filter(f => !f.startsWith('industry:')), ...(hint ? [`industry:${hint}`] : [])]
 const moduleKeySchema = z.string().refine(k => modules[k]?.enabled, 'unknown industry')
@@ -95,7 +95,7 @@ function publicView(req: RequestRecord) {
   return {
     moduleKey: req.moduleKey,
     clientType: req.clientType,
-    industryHint: req.flags.find(f => f.startsWith('industry:'))?.slice('industry:'.length) ?? null,
+    industryHint: industryHint(req.flags),
     answers: req.answers,
     stepReached: req.stepReached,
     completed: !!req.completedAt,
@@ -104,8 +104,13 @@ function publicView(req: RequestRecord) {
 
 const daysFromNow = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10)
 
-export default async function quoteRoutes(fastify: FastifyInstance, opts: { store?: QuoteStore }) {
+export default async function quoteRoutes(fastify: FastifyInstance, opts: {
+  store?: QuoteStore
+  alerts?: AlertConfig
+  onAlert?: (pending: Promise<unknown>) => void   // tests wait on the background alert
+}) {
   const store = opts.store ?? supabaseStore(fastify.supabase)
+  const alerts = opts.alerts ?? alertConfigFromEnv(sendPlainEmail)
 
   async function rateTableOr503(reply: FastifyReply): Promise<RateTable | null> {
     const table = await store.publishedRateTable()
@@ -284,7 +289,19 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: { stor
         utm: req.entry.utm ?? {},
       })
       const next = await store.updateRequest(req.id, { leadId: lead.id, stepReached: reached, ...(body.clientType ? { clientType: body.clientType } : {}) })
-      if (lead.created) fastify.log.info({ requestId: req.id, module: req.moduleKey }, 'quote: new lead')
+      if (lead.created) {
+        fastify.log.info({ requestId: req.id, module: req.moduleKey }, 'quote: new lead')
+        // In the background: the visitor never waits on email, and a failure is recorded, not thrown
+        const clientType = body.clientType ?? req.clientType
+        const pending = alertNewLead(store, alerts, fastify.log, {
+          leadId: lead.id,
+          firstName: sanitizeLeadText(body.firstName, 60),
+          industry: industryLabel(req.moduleKey ? modules[req.moduleKey]?.label : undefined, req.flags),
+          clientType: clientType ? CLIENT_TYPE_LABELS[clientType] ?? clientType : 'Not given',
+          source: req.entry.source ?? null,
+        }).catch(err => fastify.log.error({ err, leadId: lead.id }, 'quote: new-lead alert crashed'))
+        opts.onAlert?.(pending)
+      }
       return { request: publicView(next) }
     }
 

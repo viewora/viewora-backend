@@ -58,6 +58,20 @@ export interface LeadView {
 
 export interface ConsentText { id: string; body: string }
 
+export interface MessageTemplate { version: number; subject: string | null; body: string }
+
+export interface MessageRecord {
+  leadId: string
+  channel: 'whatsapp' | 'email' | 'staff_alert'
+  templateKey: string
+  templateVersion: number | null
+  renderedBody: string | null
+  status: 'queued' | 'sent' | 'failed' | 'skipped'
+  skipReason?: string
+  error?: string
+  sentAt?: string
+}
+
 export interface QuoteStore {
   publishedRateTable(): Promise<RateTable | null>
   consentText(locale: string): Promise<ConsentText | null>
@@ -70,15 +84,37 @@ export interface QuoteStore {
   getLead(id: string): Promise<LeadView | null>
   saveQuote(requestId: string, result: PriceResult, opts: { validUntil: string; depositBp: number }): Promise<string>
   latestQuote(requestId: string): Promise<PriceResult | null>
+  // Editable message wording (qe_message_templates), newest active version
+  messageTemplate(key: string, channel: 'email' | 'whatsapp', locale?: string): Promise<MessageTemplate | null>
+  // Staff who asked for new-lead emails
+  alertRecipients(): Promise<string[]>
+  recordMessage(message: MessageRecord): Promise<void>
+}
+
+export type MemoryLead = LeadInput & {
+  id: string; stage: string; createdAt: string; lastActivityAt: string; consentAt: string | null; deletedAt: string | null
 }
 
 // ── In-memory store (tests and local runs) ──────────────────────────────────
 
-export function memoryStore(seed: { rateTable: RateTable; consent?: ConsentText }): QuoteStore & { dump(): unknown } {
+export interface MemoryData {
+  requests: RequestRecord[]
+  leads: MemoryLead[]
+  quotes: Array<{ id: string; requestId: string; result: PriceResult; createdAt: string }>
+  messages: Array<MessageRecord & { createdAt: string }>
+}
+
+export function memoryStore(seed: {
+  rateTable: RateTable
+  consent?: ConsentText
+  templates?: Record<string, MessageTemplate>   // keyed "key:channel"
+  recipients?: string[]
+}): QuoteStore & { dump(): MemoryData } {
   const requests = new Map<string, RequestRecord>()
   const byHash = new Map<string, string>()
-  const leads = new Map<string, LeadInput & { id: string }>()
-  const quotes: Array<{ id: string; requestId: string; result: PriceResult }> = []
+  const leads = new Map<string, MemoryLead>()
+  const quotes: MemoryData['quotes'] = []
+  const messages: MemoryData['messages'] = []
   const now = () => new Date().toISOString()
 
   return {
@@ -109,10 +145,12 @@ export function memoryStore(seed: { rateTable: RateTable; consent?: ConsentText 
         existing.email ||= input.email
         existing.consentWhatsapp ||= input.consentWhatsapp
         existing.consentEmail ||= input.consentEmail
+        existing.lastActivityAt = now()
         return { id: existing.id, created: false }
       }
       const id = randomUUID()
-      leads.set(id, { ...input, id })
+      const consentAt = input.consentWhatsapp || input.consentEmail ? now() : null
+      leads.set(id, { ...input, id, stage: 'new', createdAt: now(), lastActivityAt: now(), consentAt, deletedAt: null })
       return { id, created: true }
     },
     async getLead(id) {
@@ -121,13 +159,16 @@ export function memoryStore(seed: { rateTable: RateTable; consent?: ConsentText 
     },
     async saveQuote(requestId, result) {
       const id = randomUUID()
-      quotes.push({ id, requestId, result: structuredClone(result) })
+      quotes.push({ id, requestId, result: structuredClone(result), createdAt: now() })
       return id
     },
     async latestQuote(requestId) {
       const q = quotes.filter(x => x.requestId === requestId).pop()
       return q ? structuredClone(q.result) : null
     },
-    dump: () => ({ requests: [...requests.values()], leads: [...leads.values()], quotes }),
+    async messageTemplate(key, channel) { return seed.templates?.[`${key}:${channel}`] ?? null },
+    async alertRecipients() { return seed.recipients ?? [] },
+    async recordMessage(message) { messages.push({ ...structuredClone(message), createdAt: now() }) },
+    dump: () => ({ requests: [...requests.values()], leads: [...leads.values()], quotes, messages }),
   }
 }

@@ -179,6 +179,29 @@ export function supabaseStore(db: SupabaseClient): QuoteStore {
       return quote!.id
     },
 
+    async messageTemplate(key, channel, locale = 'en') {
+      const { data, error } = await db.from('qe_message_templates').select('version, subject, body')
+        .eq('key', key).eq('channel', channel).eq('locale', locale).eq('active', true)
+        .order('version', { ascending: false }).limit(1).maybeSingle()
+      fail(error, 'load message template')
+      return data ? { version: data.version, subject: data.subject, body: data.body } : null
+    },
+
+    async alertRecipients() {
+      const { data, error } = await db.rpc('qe_alert_recipients')
+      fail(error, 'load alert recipients')
+      return ((data ?? []) as unknown[]).map(String)
+    },
+
+    async recordMessage(m) {
+      const { error } = await db.from('qe_messages').insert({
+        lead_id: m.leadId, channel: m.channel, template_key: m.templateKey, template_version: m.templateVersion,
+        rendered_body: m.renderedBody, status: m.status, skip_reason: m.skipReason ?? null,
+        error: m.error ?? null, sent_at: m.sentAt ?? null,
+      })
+      fail(error, 'record message')
+    },
+
     async latestQuote(requestId) {
       const { data, error } = await db.from('qe_quotes').select('engine_trace')
         .eq('request_id', requestId).order('created_at', { ascending: false }).limit(1).maybeSingle()

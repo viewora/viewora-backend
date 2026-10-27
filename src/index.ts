@@ -36,6 +36,7 @@ import autolinkRoutes from './routes/autolink.js'
 import aiAssistantRoutes from './routes/aiAssistant.js'
 import captureRoutes from './routes/capture.js'
 import quoteRoutes from './routes/quote.js'
+import quoteAdminRoutes from './routes/quoteAdmin.js'
 import tilesRoutes from './routes/tiles.js'
 import whatsappRoutes from './routes/whatsapp.js'
 import telegramRoutes from './routes/telegram.js'
@@ -390,7 +391,10 @@ fastify.register(autolinkRoutes)
 fastify.register(aiAssistantRoutes)
 fastify.register(captureRoutes, { prefix: '/capture' })
 // Quote engine: off in production until QUOTE_ENGINE_ENABLED=1
-if (process.env.QUOTE_ENGINE_ENABLED === '1') fastify.register(quoteRoutes, { prefix: '/quote' })
+if (process.env.QUOTE_ENGINE_ENABLED === '1') {
+  fastify.register(quoteRoutes, { prefix: '/quote' })
+  fastify.register(quoteAdminRoutes, { prefix: '/admin/quote' })
+}
 fastify.register(tilesRoutes)
 fastify.register(whatsappRoutes, { prefix: '/whatsapp' })
 fastify.register(telegramRoutes, { prefix: '/telegram' })
