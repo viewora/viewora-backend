@@ -64,6 +64,13 @@ const stepSchema = z.discriminatedUnion('step', [
   }),
 ])
 
+const previewSchema = z.object({
+  moduleKey: moduleKeySchema,
+  clientType: clientTypeSchema.optional(),
+  details: z.record(z.string(), z.unknown()),
+  addons: z.record(z.string(), z.number()),
+})
+
 // What the visitor may see. A custom result keeps its staff draft private.
 export function clientResult(r: PriceResult) {
   return {
@@ -146,10 +153,34 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: { stor
           addons: m.pricing.addons
             .map(key => table.items[key])
             .filter(i => i && !i.custom)
-            .map(i => ({ key: i.key, label: i.label, unit: i.unit, amount: i.use === 'high' ? (i.high ?? i.low) : i.low })),
+            // A percentage add-on (rush) has no fixed price until the order is known
+            .map(i => i.unit === 'bp'
+              ? { key: i.key, label: i.label, unit: i.unit, amount: null, percentBp: i.low }
+              : { key: i.key, label: i.label, unit: i.unit, amount: i.use === 'high' ? (i.high ?? i.low) : i.low }),
         }
       }),
     }
+  })
+
+  // POST /quote/preview: the running total on the extras step. Prices the
+  // answers so far with the real engine (no location yet, so before travel);
+  // nothing is stored.
+  fastify.post('/preview', {
+    config: { rateLimit: { max: 60, timeWindow: '1 minute', keyGenerator: (req: any) => req.ip } },
+  }, async (request, reply) => {
+    const body = parseWithSchema(reply, previewSchema, request.body)
+    if (!body) return
+    const module = modules[body.moduleKey]
+    const { details, errors } = cleanDetails(module, body.details)
+    const { addons, errors: addonErrors } = cleanAddons(module, body.addons)
+    if (errors.length || addonErrors.length) return reply.code(400).send({ code: 'VALIDATION_ERROR', fields: [...errors, ...addonErrors] })
+    const table = await rateTableOr503(reply)
+    if (!table) return
+    const result = price(module, { clientType: body.clientType, details, addons }, table)
+    const picked = result.options.find(o => o.tier === 'standard') ?? result.options[0]
+    if (result.mode === 'custom' || !picked) return { mode: result.mode, currency: result.currency, beforeTravel: null }
+    const travel = picked.lines.filter(l => l.kind === 'travel').reduce((sum, l) => sum + l.amount, 0)
+    return { mode: result.mode, currency: result.currency, beforeTravel: picked.total - travel }
   })
 
   // POST /quote/requests: step 1, start a request

@@ -38,6 +38,8 @@ test('quote API: config lists enabled modules with rate-table prices and consent
   assert.equal(homes.questions[0].options[0].rateKey, undefined, 'rate keys stay on the server')
   assert.equal(body.modules.find((m: any) => m.key === 'other').from, null)
   assert.deepEqual(body.consent, consent)
+  const rush = homes.addons.find((a: any) => a.key === 'rush')
+  assert.deepEqual([rush.amount, rush.percentBp], [null, 3000], 'percentage add-ons are not shown as shillings')
 })
 
 test('quote API: full form → instant price, lead saved, quote stored', async () => {
@@ -169,4 +171,15 @@ test('quote API: no published rate table gives an honest 503', async () => {
   const res = await fastify.inject({ method: 'GET', url: '/quote/config' })
   assert.equal(res.statusCode, 503)
   assert.equal(res.json().code, 'NO_RATE_TABLE')
+})
+
+test('quote API: preview gives the running total before travel and stores nothing', async () => {
+  const { fastify, store } = await app()
+  const res = await fastify.inject({ method: 'POST', url: '/quote/preview', payload: { moduleKey: 'homes', clientType: 'owner', details: { size: '2br', purpose: 'let' }, addons: { photos_20: 1 } } })
+  assert.equal(res.statusCode, 200)
+  // Standard option for the same answers in the full-form test is 11,000 (Kilimani, in Nairobi zone)
+  assert.equal(res.json().beforeTravel, 11000)
+  const custom = await fastify.inject({ method: 'POST', url: '/quote/preview', payload: { moduleKey: 'other', details: { description: 'Hall', areas: 4 }, addons: {} } })
+  assert.equal(custom.json().beforeTravel, null, 'custom quotes never show a price')
+  assert.equal((store.dump() as any).requests.length, 0)
 })

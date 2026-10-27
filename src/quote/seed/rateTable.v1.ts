@@ -153,7 +153,7 @@ const items: RateItem[] = [
   addon('branding', 'Branding and custom domain', 3000),
   addon('website_embed', 'Website embed', 2000),
   addon('google_maps', 'Google Maps publishing', 3500),
-  addon('rush', 'Rush delivery, 24 hours (+30%)', 3000, 3000, { unit: 'bp' }),
+  addon('rush', 'Rush delivery, 24 hours', 3000, 3000, { unit: 'bp' }),
   addon('extra_revision', 'Extra revision round', 1500),
   addon('drone', 'Drone aerials', null, null, { custom: true, meta: { note: 'Subcontract at cost +20%; no published price until we own a drone' } }),
   discount('refresh_12m', 'Refresh shoot within 12 months (50% off)', 5000),

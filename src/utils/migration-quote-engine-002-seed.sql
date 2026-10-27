@@ -130,7 +130,7 @@ BEGIN
   (v_id, 'branding', 'addon', 'Branding and custom domain', NULL, 'job', 3000, 3000, 'low', false, NULL, NULL, '{}'::jsonb),
   (v_id, 'website_embed', 'addon', 'Website embed', NULL, 'job', 2000, 2000, 'low', false, NULL, NULL, '{}'::jsonb),
   (v_id, 'google_maps', 'addon', 'Google Maps publishing', NULL, 'job', 3500, 3500, 'low', false, NULL, NULL, '{}'::jsonb),
-  (v_id, 'rush', 'addon', 'Rush delivery, 24 hours (+30%)', NULL, 'bp', 3000, 3000, 'low', false, NULL, NULL, '{}'::jsonb),
+  (v_id, 'rush', 'addon', 'Rush delivery, 24 hours', NULL, 'bp', 3000, 3000, 'low', false, NULL, NULL, '{}'::jsonb),
   (v_id, 'extra_revision', 'addon', 'Extra revision round', NULL, 'job', 1500, 1500, 'low', false, NULL, NULL, '{}'::jsonb),
   (v_id, 'drone', 'addon', 'Drone aerials', NULL, 'job', NULL, NULL, 'low', true, NULL, NULL, '{"note":"Subcontract at cost +20%; no published price until we own a drone"}'::jsonb),
   (v_id, 'refresh_12m', 'discount', 'Refresh shoot within 12 months (50% off)', NULL, 'bp', 5000, 5000, 'low', false, NULL, NULL, '{}'::jsonb),
