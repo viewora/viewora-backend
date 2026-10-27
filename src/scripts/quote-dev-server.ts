@@ -50,6 +50,15 @@ const store = memoryStore({
     { userId: DEV_SALES_ID, displayName: 'Dev sales', role: 'sales', discountLimitBp: 500, email: 'sales@localhost', active: true },
   ],
 })
+function devClock(): (() => Date) | null {
+  const m = /^(\d{2}):(\d{2})$/.exec(process.env.QUOTE_DEV_CLOCK ?? '')
+  if (!m) return null
+  return () => {
+    const d = new Date()
+    d.setUTCHours((Number(m[1]) + 21) % 24, Number(m[2]))   // Nairobi is UTC+3
+    return d
+  }
+}
 const app = Fastify({ logger: { level: 'info' } })
 
 await app.register(cors, { origin: true })
@@ -64,6 +73,9 @@ await app.register(quoteRoutes, {
 await app.register(quoteAdminRoutes, {
   prefix: '/admin/quote', store, desk, adminStore: memoryAdminStore(() => store.dump()),
   messagesLive: false, publicUrl: process.env.QUOTE_PUBLIC_URL ?? 'http://localhost:3001',
+  // QUOTE_DEV_CLOCK=12:00 pretends it is that Nairobi time today, to try
+  // WhatsApp and email sends at night (quiet hours are 21:00-07:00)
+  ...(devClock() ? { now: devClock()! } : {}),
 })
 // Peek at what the form saved: http://localhost:4010/dev/dump
 app.get('/dev/dump', async () => store.dump())

@@ -141,11 +141,16 @@ export default async function quoteDeskRoutes(fastify: FastifyInstance, opts: De
     return recalc(doc)
   }
 
-  // GET /admin/quote/staff: people a lead can be assigned to
+  // GET /admin/quote/staff: who is asking (role decides which buttons show)
+  // and the people a lead can be assigned to
   fastify.get('/staff', async (request, reply) => {
     if (!allowed(request, reply, 'leads:read')) return
     const list = await desk.staffList()
-    return { staff: list.filter(s => s.role !== 'viewer').map(s => ({ id: s.userId, name: s.displayName, role: s.role })) }
+    const me = request.quoteStaff!
+    return {
+      me: { id: me.id, name: me.displayName, role: me.role, discountLimitBp: me.discountLimitBp },
+      staff: list.filter(s => s.role !== 'viewer').map(s => ({ id: s.userId, name: s.displayName, role: s.role })),
+    }
   })
 
   // GET /admin/quote/board: leads by stage, newest activity first (50 per column)

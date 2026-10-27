@@ -237,6 +237,8 @@ test('desk routes: roles are checked on every write', async () => {
   assert.equal((await call('POST', '/admin/quote/rate-tables/drafts', SALES, { fromId: rateTableV1.id })).statusCode, 403, 'sales cannot edit prices')
   assert.equal((await call('GET', '/admin/quote/rate-tables', NOBODY)).statusCode, 200)
   assert.equal((await fastify.inject({ method: 'GET', url: '/admin/quote/board' })).statusCode, 401)
+  assert.deepEqual((await call('GET', '/admin/quote/staff', SALES)).json().me, { id: SALES, name: 'Wanjiru', role: 'sales', discountLimitBp: 500 })
+  assert.equal((await call('GET', '/admin/quote/staff', NOBODY)).json().me.role, 'viewer')
 })
 
 test('desk routes: New to Quoted — create, edit, send a link, the client opens it', async () => {
