@@ -5,6 +5,7 @@
 import { randomUUID } from 'node:crypto'
 import type { ClientType, PriceResult, RateTable } from './engine/types.js'
 import { docFromEngine, type QuoteDoc } from './desk.js'
+import { DEFAULT_BOOKING, type BookingSettings, type JobCost, type JobRecord, type PaymentRecord } from './jobs.js'
 
 export interface StoredAnswers {
   details: Record<string, string | number | boolean>
@@ -133,6 +134,12 @@ export interface MemoryData {
   audit: MemoryAudit[]
   staff: MemoryStaff[]
   rateTables: MemoryRateTable[]
+  // Phase 3: deposits and jobs (migration 005)
+  payments: Array<Omit<PaymentRecord, 'recordedByName'> & { recordedBy: string | null; raw: unknown; lastCheckedAt?: string }>
+  jobs: Array<Omit<JobRecord, 'costs' | 'payments' | 'costsTotal' | 'assignedStaffName' | 'leadName' | 'requestId' | 'quoteVersion'> & { optionTier: string }>
+  jobCosts: Array<JobCost & { jobId: string; createdBy: string | null }>
+  invoices: Array<{ id: string; jobId: string; paymentId: string; status: 'pending' | 'issued' | 'failed' | 'not_configured'; provider: string | null; externalRef: string | null; error: string | null }>
+  settings: { booking: BookingSettings }
 }
 
 export function memoryStore(seed: {
@@ -145,6 +152,7 @@ export function memoryStore(seed: {
   const now = () => new Date().toISOString()
   const state: MemoryData = {
     requests: [], leads: [], quotes: [], links: [], messages: [], notes: [], audit: [],
+    payments: [], jobs: [], jobCosts: [], invoices: [], settings: { booking: structuredClone(DEFAULT_BOOKING) },
     staff: structuredClone(seed.staff ?? []),
     // Ids are uuids, as in the database (the seed file's own id is a label)
     rateTables: [{ ...structuredClone(seed.rateTable), id: randomUUID(), status: 'published', notes: null, publishedAt: now(), publishedBy: null, createdAt: now() }],

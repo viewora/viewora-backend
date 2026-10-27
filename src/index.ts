@@ -457,6 +457,7 @@ const start = async () => {
       'cleanup-stale-pending-uploads': 6 * 60 * 60 * 1000,
       'recover-stuck-media': 10 * 60 * 1000,
       'recover-stuck-scenes': 10 * 60 * 1000,
+      'quote-payment-recheck': 10 * 60 * 1000,
     }
 
     const CLEANUP_LOCK_TTL_S: Record<string, number> = {
@@ -465,6 +466,7 @@ const start = async () => {
       'cleanup-stale-pending-uploads': 5 * 60 * 60 + 50 * 60,
       'recover-stuck-media': 8 * 60,
       'recover-stuck-scenes': 8 * 60,
+      'quote-payment-recheck': 8 * 60,
     }
 
     const cleanupIntervals: NodeJS.Timeout[] = []

@@ -11,6 +11,7 @@ import type { StaffRole } from './desk.js'
 import type { DeskStore } from './deskStore.js'
 
 export type Permission = 'leads:read' | 'leads:write' | 'quotes:write' | 'quotes:approve' | 'rates:read' | 'rates:write'
+  | 'jobs:read' | 'jobs:write' | 'payments:write' | 'jobs:export' | 'settings:write'
 
 export const PERMISSIONS: Record<Permission, StaffRole[]> = {
   'leads:read': ['admin', 'sales', 'viewer'],
@@ -19,6 +20,12 @@ export const PERMISSIONS: Record<Permission, StaffRole[]> = {
   'quotes:approve': ['admin'],
   'rates:read': ['admin', 'sales', 'viewer'],
   'rates:write': ['admin'],
+  'jobs:read': ['admin', 'sales', 'viewer'],
+  'jobs:write': ['admin', 'sales'],
+  // Recording money by hand and exporting the tracker are admin-only
+  'payments:write': ['admin'],
+  'jobs:export': ['admin'],
+  'settings:write': ['admin'],
 }
 
 export interface QuoteStaff {

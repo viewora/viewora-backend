@@ -398,10 +398,34 @@ export const stuckSceneRecoveryTask: CleanupTask = {
 /**
  * All cleanup tasks
  */
+/**
+ * Quote deposits still waiting: asks Paystack about checkouts the webhook
+ * and the return page missed. Every 10 minutes; does nothing unless the
+ * quote engine and its Paystack key are set.
+ */
+export const quotePaymentRecheckTask: CleanupTask = {
+  name: 'quote-payment-recheck',
+  schedule: '*/10 * * * *',
+  execute: async (fastify: FastifyInstance) => {
+    if (process.env.QUOTE_ENGINE_ENABLED !== '1' || !process.env.QUOTE_PAYSTACK_SECRET_KEY) return
+    const { recheckPayments, paymentDeps } = await import('../quote/payments.js')
+    const { supabaseJobStore } = await import('../quote/jobStore.js')
+    const { supabaseDeskStore } = await import('../quote/deskStore.js')
+    const { supabaseStore } = await import('../quote/supabaseStore.js')
+    const deps = paymentDeps({
+      jobs: supabaseJobStore(fastify.supabase), desk: supabaseDeskStore(fastify.supabase),
+      store: supabaseStore(fastify.supabase), log: fastify.log,
+    })
+    const { checked, paid } = await recheckPayments(deps)
+    if (checked) fastify.log.info({ checked, paid }, 'quote payments rechecked')
+  },
+}
+
 export const cleanupTasks: CleanupTask[] = [
   failedMediaCleanupTask,
   orphanMediaCleanupTask,
   stalePendingUploadCleanupTask,
   stuckMediaRecoveryTask,
   stuckSceneRecoveryTask,
+  quotePaymentRecheckTask,
 ]

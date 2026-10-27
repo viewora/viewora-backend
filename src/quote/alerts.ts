@@ -1,4 +1,4 @@
-// New-lead email to staff. The lead is already saved before this runs, so a
+// Staff emails (new lead, deposit paid). The lead is already saved before this runs, so a
 // failure here never loses an answer: it is retried, then recorded as failed
 // on the lead (qe_messages) and logged at error level.
 //
@@ -44,34 +44,48 @@ export async function alertNewLead(
   log: AlertLog,
   lead: { leadId: string; firstName: string; industry: string; clientType: string; source: string | null },
 ): Promise<'sent' | 'skipped' | 'failed'> {
-  const base = { leadId: lead.leadId, channel: 'staff_alert' as const, templateKey: TEMPLATE_NEW_LEAD }
+  return alertStaff(store, config, log, {
+    leadId: lead.leadId, templateKey: TEMPLATE_NEW_LEAD, what: 'new-lead alert', migration: '003',
+    vars: {
+      name: lead.firstName,
+      industry: lead.industry,
+      client_type: lead.clientType,
+      source: lead.source ?? 'direct',
+      admin_link: `${config.adminUrl}/dashboard/quotes/${lead.leadId}`,
+    },
+  })
+}
 
-  const template = await store.messageTemplate(TEMPLATE_NEW_LEAD, 'email')
+// Any staff email from an editable template: sandboxed, retried, and
+// recorded on the lead whatever happens
+export async function alertStaff(
+  store: QuoteStore,
+  config: AlertConfig,
+  log: AlertLog,
+  alert: { leadId: string; quoteId?: string | null; templateKey: string; what: string; migration: string; vars: Record<string, string> },
+): Promise<'sent' | 'skipped' | 'failed'> {
+  const { leadId, what } = alert
+  const base = { leadId, quoteId: alert.quoteId ?? null, channel: 'staff_alert' as const, templateKey: alert.templateKey }
+
+  const template = await store.messageTemplate(alert.templateKey, 'email')
   if (!template) {
-    log.error({ leadId: lead.leadId }, 'quote: new-lead alert template missing (run migration 003)')
+    log.error({ leadId }, `quote: ${what} template missing (run migration ${alert.migration})`)
     await store.recordMessage({ ...base, templateVersion: null, renderedBody: null, status: 'failed', error: 'template_missing' })
     return 'failed'
   }
 
-  const vars = {
-    name: lead.firstName,
-    industry: lead.industry,
-    client_type: lead.clientType,
-    source: lead.source ?? 'direct',
-    admin_link: `${config.adminUrl}/dashboard/quotes/${lead.leadId}`,
-  }
-  const subject = render(template.subject ?? '', vars)
-  const text = render(template.body, vars)
+  const subject = render(template.subject ?? '', alert.vars)
+  const text = render(template.body, alert.vars)
   const message = { ...base, templateVersion: template.version, renderedBody: text }
 
   const to = [...new Set([...config.extraRecipients, ...await store.alertRecipients()].map(e => e.toLowerCase()))]
   if (!to.length) {
-    log.warn({ leadId: lead.leadId }, 'quote: new-lead alert has no recipients (set QUOTE_ALERT_EMAILS or staff alert_new_leads)')
+    log.warn({ leadId }, `quote: ${what} has no recipients (set QUOTE_ALERT_EMAILS or staff alert_new_leads)`)
     await store.recordMessage({ ...message, status: 'skipped', skipReason: 'no_recipients' })
     return 'skipped'
   }
   if (!config.liveSend) {
-    log.info({ leadId: lead.leadId, recipients: to.length }, 'quote: new-lead alert not sent (sandbox; set QUOTE_ALERTS_SEND=1)')
+    log.info({ leadId, recipients: to.length }, `quote: ${what} not sent (sandbox; set QUOTE_ALERTS_SEND=1)`)
     await store.recordMessage({ ...message, status: 'skipped', skipReason: 'sandbox' })
     return 'skipped'
   }
@@ -89,7 +103,7 @@ export async function alertNewLead(
       if (attempt < delays.length) await sleep(delays[attempt])
     }
   }
-  log.error({ leadId: lead.leadId, error: lastError }, 'quote: new-lead alert failed after retries')
+  log.error({ leadId, error: lastError }, `quote: ${what} failed after retries`)
   await store.recordMessage({ ...message, status: 'failed', error: lastError.slice(0, 500) })
   return 'failed'
 }

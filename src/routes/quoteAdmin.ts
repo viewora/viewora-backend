@@ -12,6 +12,9 @@ import { supabaseDeskStore, type DeskStore } from '../quote/deskStore.js'
 import { allowed, staffHook } from '../quote/staffAuth.js'
 import quoteDeskRoutes, { type DeskRouteOptions } from './quoteDesk.js'
 import quoteRatesRoutes from './quoteRates.js'
+import quoteJobsRoutes from './quoteJobs.js'
+import { supabaseJobStore, type JobStore } from '../quote/jobStore.js'
+import { paymentDeps, type PaymentDeps } from '../quote/payments.js'
 
 export { answersView } from '../quote/answersView.js'
 import { answersView } from '../quote/answersView.js'
@@ -33,6 +36,7 @@ const leadParams = z.object({ id: z.string().uuid() })
 
 export default async function quoteAdminRoutes(fastify: FastifyInstance, opts: Omit<DeskRouteOptions, 'adminStore' | 'store' | 'desk'> & {
   adminStore?: QuoteAdminStore; store?: QuoteStore; desk?: DeskStore
+  jobs?: JobStore; payments?: Partial<PaymentDeps>
 }) {
   const store = opts.adminStore ?? supabaseAdminStore(fastify.supabase)
   const quoteStore = opts.store ?? supabaseStore(fastify.supabase)
@@ -73,7 +77,15 @@ export default async function quoteAdminRoutes(fastify: FastifyInstance, opts: O
   })
 
   // Child routes share the staff check above (not the prefix: Fastify already applied it)
-  const { prefix: _prefix, ...deskOpts } = opts as typeof opts & { prefix?: string }
+  const { prefix: _prefix, jobs: _jobs, payments: _payments, ...deskOpts } = opts as typeof opts & { prefix?: string }
   await fastify.register(quoteDeskRoutes, { ...deskOpts, adminStore: store, store: quoteStore, desk })
   await fastify.register(quoteRatesRoutes, { desk })
+  const jobs = opts.jobs ?? supabaseJobStore(fastify.supabase)
+  const payments = paymentDeps({ jobs, desk, store: quoteStore, log: fastify.log }, {
+    ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.publicUrl ? { publicUrl: opts.publicUrl.replace(/\/$/, '') } : {}),
+    ...(opts.messagesLive !== undefined ? { messagesLive: opts.messagesLive } : {}),
+    ...opts.payments,
+  })
+  await fastify.register(quoteJobsRoutes, { desk, store: quoteStore, jobs, payments })
 }

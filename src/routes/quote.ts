@@ -22,6 +22,9 @@ import { supabaseDeskStore, type DeskStore } from '../quote/deskStore.js'
 import { nairobiDate } from '../quote/desk.js'
 import { trackServer } from '../utils/analytics.js'
 import quotePublicRoutes from './quotePublic.js'
+import quotePayRoutes from './quotePay.js'
+import { supabaseJobStore, type JobStore } from '../quote/jobStore.js'
+import { paymentDeps, type PaymentDeps } from '../quote/payments.js'
 
 // Step order: industry first, then contact (the lead exists from step 2).
 export const STEPS = ['industry', 'contact', 'details', 'extras', 'where'] as const
@@ -113,6 +116,9 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
   desk?: DeskStore
   alerts?: AlertConfig
   onAlert?: (pending: Promise<unknown>) => void   // tests wait on the background alert
+  jobs?: JobStore
+  payments?: Partial<PaymentDeps>                 // tests and the dev server: fake Paystack, clock
+  webhookSecret?: string
 }) {
   const store = opts.store ?? supabaseStore(fastify.supabase)
   const alerts = opts.alerts ?? alertConfigFromEnv(sendPlainEmail)
@@ -356,9 +362,16 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
     return { request: publicView(next), result: clientResult(result) }
   })
 
+  const desk = opts.desk ?? supabaseDeskStore(fastify.supabase)
+  const jobs = opts.jobs ?? supabaseJobStore(fastify.supabase)
+  const payments = paymentDeps({ jobs, desk, store, log: fastify.log }, { alerts, ...opts.payments })
   await fastify.register(quotePublicRoutes, {
-    desk: opts.desk ?? supabaseDeskStore(fastify.supabase),
+    desk, jobs, paymentsOn: !!payments.paystack, now: payments.now,
     // Analytics carry the quote id only, never personal data
     onViewed: (quoteId, firstView) => trackServer(`quote:${quoteId}`, 'quote opened', { firstView }),
+  })
+  await fastify.register(quotePayRoutes, {
+    desk, jobs, payments,
+    webhookSecret: opts.webhookSecret ?? process.env.QUOTE_PAYSTACK_SECRET_KEY ?? null,
   })
 }
