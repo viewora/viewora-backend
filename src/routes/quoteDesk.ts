@@ -261,6 +261,7 @@ export default async function quoteDeskRoutes(fastify: FastifyInstance, opts: De
       quote: doc,
       lead,
       industry: ctx ? industryLabel(ctx.moduleKey, ctx.flags, ctx.moduleKey ? modules[ctx.moduleKey]?.label : undefined) : null,
+      moduleKey: ctx?.moduleKey ?? null,   // "other" offers an AI draft
       answers: ctx ? answersView(ctx, itemLabel) : [],
       // Extras staff can add from the quote's own rate table version
       catalogue: Object.values(table?.items ?? {})
