@@ -2,6 +2,7 @@
 // and local runs use the in-memory store while production uses Supabase
 // (qe_* tables from migration-quote-engine-001.sql).
 
+import type { MemoryAccounts } from './accountStore.js'
 import { randomUUID } from 'node:crypto'
 import type { ClientType, PriceResult, RateTable } from './engine/types.js'
 import { docFromEngine, type QuoteDoc } from './desk.js'
@@ -106,6 +107,7 @@ export interface QuoteStore {
 export type MemoryLead = LeadInput & {
   id: string; stage: string; createdAt: string; lastActivityAt: string; consentAt: string | null; deletedAt: string | null
   ownerStaffId: string | null; optedOutAt: string | null; partnerId: string | null
+  userId?: string | null                  // the Viewora account it belongs to (Phase 5b)
 }
 
 export interface MemoryStaff {
@@ -160,6 +162,8 @@ export interface MemoryData {
   entryLinks: Array<Omit<EntryLink, 'leadName' | 'createdByName'> & { key: string }>
   partners: Array<Omit<Partner, 'leads'>>
   payouts: Array<{ id: string; partnerId: string; jobId: string; amount: number; currency: 'KES' | 'USD'; reference: string | null; paidAt: string; paidBy: string | null }>
+  // Phase 5b: orders from a signed-in account (migration 009)
+  accounts: MemoryAccounts
   // The memory stores' clock (tests and the dev server move it); real time otherwise
   clock: () => Date
 }
@@ -171,6 +175,7 @@ export function memoryStore(seed: {
   recipients?: string[]
   staff?: MemoryStaff[]
   clock?: () => Date
+  profiles?: MemoryAccounts['profiles']
 }): QuoteStore & { dump(): MemoryData } {
   const clock = seed.clock ?? (() => new Date())
   const now = () => clock().toISOString()
@@ -179,6 +184,7 @@ export function memoryStore(seed: {
     payments: [], jobs: [], jobCosts: [], invoices: [],
     settings: { booking: structuredClone(DEFAULT_BOOKING), messaging: structuredClone(DEFAULT_MESSAGING) },
     sequences: [], messageTasks: {}, clock, entryLinks: [], partners: [], payouts: [],
+    accounts: { requests: {}, profiles: structuredClone(seed.profiles ?? {}) },
     templates: Object.entries(seed.templates ?? {}).map(([k, t]) => {
       const [key, channel] = k.split(':') as [string, 'whatsapp' | 'email']
       return { key, channel, version: t.version, subject: t.subject, body: t.body, updatedBy: null, updatedAt: now() }

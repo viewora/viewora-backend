@@ -8,7 +8,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { price } from '../quote/engine/price.js'
 import { normalisePhone } from '../quote/engine/phone.js'
-import type { PriceResult, RateTable } from '../quote/engine/types.js'
+import type { ClientType, PriceResult, RateTable } from '../quote/engine/types.js'
 import { modules } from '../quote/modules/index.js'
 import { cleanAddons, cleanDetails } from '../quote/answers.js'
 import type { QuoteStore, RequestRecord } from '../quote/store.js'
@@ -28,6 +28,8 @@ import { paymentDeps, type PaymentDeps } from '../quote/payments.js'
 import { followupStoreFor, type FollowupStore } from '../quote/followupStore.js'
 import { linkStoreFor, type LinkStore } from '../quote/linkStore.js'
 import { codeSchema, linkState, storedKey } from '../quote/links.js'
+import { accountStoreFor, type AccountStore } from '../quote/accountStore.js'
+import quoteAccountRoutes, { type AccountRouteOptions } from './quoteAccount.js'
 import { formCompleted, formSaved, messagingDeps, optOutValid, type MessagingDeps } from '../quote/messaging.js'
 
 // Step order: industry first, then contact (the lead exists from step 2).
@@ -128,6 +130,9 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
   followups?: FollowupStore
   messaging?: Partial<MessagingDeps>
   links?: LinkStore
+  // Ordering from a Viewora account; tests and the dev server pass their own sign-in check
+  accounts?: AccountStore
+  authenticate?: AccountRouteOptions['authenticate']
 }) {
   const store = opts.store ?? supabaseStore(fastify.supabase)
   const alerts = opts.alerts ?? alertConfigFromEnv(sendPlainEmail)
@@ -136,6 +141,7 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
   const followups = opts.followups ?? followupStoreFor(store, fastify.supabase)
   const messaging = messagingDeps({ store, desk, jobs, followups, alerts, log: fastify.log }, opts.messaging)
   const links = opts.links ?? linkStoreFor(store, fastify.supabase)
+  const accounts = opts.accounts ?? accountStoreFor(store, fastify.supabase)
 
   // A /q/:code link: a DM code is looked up by its hash, a campaign code as typed
   const findEntryLink = async (code: string) =>
@@ -165,6 +171,49 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
       return null
     }
     return req
+  }
+
+  // The contact step: the public form, and a signed-in client whose number
+  // is already on file (quoteAccount.ts). Consent is only ever added here.
+  async function saveContact(req: RequestRecord, reached: number, c: {
+    firstName: string; whatsappE164: string; email: string | null; consent: boolean; clientType?: ClientType
+  }): Promise<RequestRecord> {
+    const consent = c.consent ? await store.consentText('en') : null
+    const lead = await store.upsertLead({
+      firstName: sanitizeLeadText(c.firstName, 60),
+      whatsappE164: c.whatsappE164,
+      email: c.email ? c.email.toLowerCase() : null,
+      consentWhatsapp: c.consent,
+      consentEmail: c.consent && !!c.email,
+      consentTextId: consent?.id ?? null,
+      source: req.entry.source ?? null,
+      utm: req.entry.utm ?? {},
+    })
+    const next = await store.updateRequest(req.id, { leadId: lead.id, stepReached: reached, ...(c.clientType ? { clientType: c.clientType } : {}) })
+    // Started from a Viewora account: the lead is theirs (once; never moved to another account)
+    const userId = await accounts.requestUser(req.id).catch(() => null)
+    // Who brought them: the DM link's maker owns a new lead, a partner code credits the partner.
+    // Neither may stop the form, so a failure is only logged.
+    await Promise.all([
+      userId ? accounts.linkLead(lead.id, userId) : null,
+      req.entry.linkKey ? links.attachLead(req.entry.linkKey, lead.id) : null,
+      req.entry.partnerCode ? links.creditPartner(lead.id, req.entry.partnerCode) : null,
+    ].map(p => p?.catch(err => fastify.log.error({ err: err instanceof Error ? err.message : String(err), leadId: lead.id }, 'quote: attribution failed'))))
+    if (!next.completedAt) followUp('start', lead.id, () => formSaved(messaging, lead.id, { first: true }))
+    if (lead.created) {
+      fastify.log.info({ requestId: req.id, module: req.moduleKey }, 'quote: new lead')
+      // In the background: the visitor never waits on email, and a failure is recorded, not thrown
+      const clientType = c.clientType ?? req.clientType
+      const pending = alertNewLead(store, alerts, fastify.log, {
+        leadId: lead.id,
+        firstName: sanitizeLeadText(c.firstName, 60),
+        industry: industryLabel(req.moduleKey, req.flags, req.moduleKey ? modules[req.moduleKey]?.label : undefined),
+        clientType: clientType ? CLIENT_TYPE_LABELS[clientType] ?? clientType : 'Not given',
+        source: req.entry.source ?? null,
+      }).catch(err => fastify.log.error({ err, leadId: lead.id }, 'quote: new-lead alert crashed'))
+      opts.onAlert?.(pending)
+    }
+    return next
   }
 
   // GET /quote/config: modules, add-on prices and consent wording for the form
@@ -357,38 +406,9 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
       if (!phone.ok) {
         return reply.code(400).send({ code: 'VALIDATION_ERROR', fields: [{ field: 'whatsapp', message: phone.reason }] })
       }
-      const consent = body.consent ? await store.consentText('en') : null
-      const lead = await store.upsertLead({
-        firstName: sanitizeLeadText(body.firstName, 60),
-        whatsappE164: phone.e164,
-        email: body.email ? body.email.toLowerCase() : null,
-        consentWhatsapp: body.consent,
-        consentEmail: body.consent && !!body.email,
-        consentTextId: consent?.id ?? null,
-        source: req.entry.source ?? null,
-        utm: req.entry.utm ?? {},
+      const next = await saveContact(req, reached, {
+        firstName: body.firstName, whatsappE164: phone.e164, email: body.email || null, consent: body.consent, clientType: body.clientType,
       })
-      const next = await store.updateRequest(req.id, { leadId: lead.id, stepReached: reached, ...(body.clientType ? { clientType: body.clientType } : {}) })
-      // Who brought them: the DM link's maker owns a new lead, a partner code credits the partner.
-      // Neither may stop the form, so a failure is only logged.
-      await Promise.all([
-        req.entry.linkKey ? links.attachLead(req.entry.linkKey, lead.id) : null,
-        req.entry.partnerCode ? links.creditPartner(lead.id, req.entry.partnerCode) : null,
-      ].map(p => p?.catch(err => fastify.log.error({ err: err instanceof Error ? err.message : String(err), leadId: lead.id }, 'quote: attribution failed'))))
-      if (!next.completedAt) followUp('start', lead.id, () => formSaved(messaging, lead.id, { first: true }))
-      if (lead.created) {
-        fastify.log.info({ requestId: req.id, module: req.moduleKey }, 'quote: new lead')
-        // In the background: the visitor never waits on email, and a failure is recorded, not thrown
-        const clientType = body.clientType ?? req.clientType
-        const pending = alertNewLead(store, alerts, fastify.log, {
-          leadId: lead.id,
-          firstName: sanitizeLeadText(body.firstName, 60),
-          industry: industryLabel(req.moduleKey, req.flags, req.moduleKey ? modules[req.moduleKey]?.label : undefined),
-          clientType: clientType ? CLIENT_TYPE_LABELS[clientType] ?? clientType : 'Not given',
-          source: req.entry.source ?? null,
-        }).catch(err => fastify.log.error({ err, leadId: lead.id }, 'quote: new-lead alert crashed'))
-        opts.onAlert?.(pending)
-      }
       return { request: publicView(next) }
     }
 
@@ -475,4 +495,9 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
     desk, jobs, payments,
     webhookSecret: opts.webhookSecret ?? process.env.QUOTE_PAYSTACK_SECRET_KEY ?? null,
   })
+  // Only where there is a sign-in check to run: the app server's, or the one a test passes
+  const authenticate = opts.authenticate ?? (fastify.hasDecorator('authenticate') ? fastify.authenticate : null)
+  if (authenticate) {
+    await fastify.register(quoteAccountRoutes, { prefix: '/account', accounts, store, authenticate, loadRequest, saveContact, publicView })
+  }
 }

@@ -9,7 +9,7 @@
 // Payments use a fake Paystack: "Pay deposit" opens a local checkout page
 // (/dev/paystack/checkout) where you choose paid or failed.
 
-import Fastify from 'fastify'
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify'
 import cors from '@fastify/cors'
 import rateLimit from '@fastify/rate-limit'
 import quoteRoutes from '../routes/quote.js'
@@ -28,6 +28,7 @@ import fs from 'node:fs'
 process.env.ADMIN_SECRET ||= 'dev-secret'
 const DEV_ADMIN_ID = '00000000-0000-4000-8000-000000000001'
 const DEV_SALES_ID = '00000000-0000-4000-8000-000000000002'
+const DEV_CLIENT_ID = '00000000-0000-4000-8000-0000000000c1'
 const port = Number(process.env.PORT ?? 4010)
 
 // The follow-up wording, read from migration 006 so the two never drift
@@ -99,8 +100,23 @@ const store = memoryStore({
     { userId: DEV_ADMIN_ID, displayName: 'Dev admin', role: 'admin', discountLimitBp: 10_000, email: 'admin@localhost', active: true },
     { userId: DEV_SALES_ID, displayName: 'Dev sales', role: 'sales', discountLimitBp: 500, email: 'sales@localhost', active: true },
   ],
+  // A signed-in app user for "Order a capture": any session whose token says this id
+  profiles: { [DEV_CLIENT_ID]: { fullName: 'Dev Client', phone: '0711 000 111', email: 'client@localhost' } },
 })
 const app = Fastify({ logger: { level: 'info' } })
+
+// Local only: reads the user id out of the app's session token WITHOUT
+// checking its signature. The real API uses fastify.authenticate (Supabase).
+async function devAuthenticate(request: FastifyRequest, reply: FastifyReply) {
+  const token = String(request.headers.authorization ?? '').replace(/^Bearer /, '')
+  try {
+    const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString())
+    if (typeof claims.sub !== 'string') throw new Error('no sub')
+    request.user = { sub: claims.sub, is_anonymous: !!claims.is_anonymous }
+  } catch {
+    return reply.code(401).send({ code: 'UNAUTHORIZED', statusMessage: 'Sign in first.' })
+  }
+}
 
 await app.register(cors, { origin: true })
 await app.register(rateLimit, { max: 300, timeWindow: '1 minute' })
@@ -112,7 +128,7 @@ const alerts = { liveSend: false, extraRecipients: [], adminUrl: 'http://localho
 const payments = { paystack, publicUrl, messagesLive: false, alerts, track: () => {}, now: clock }
 const followups = memoryFollowupStore(() => store.dump())
 const messaging = { now: clock, publicUrl, messagesLive: false, optOutSecret: 'dev-optout' }
-await app.register(quoteRoutes, { prefix: '/quote', store, desk, jobs, alerts, payments, followups, messaging, webhookSecret: 'sk_test_dev' })
+await app.register(quoteRoutes, { prefix: '/quote', store, desk, jobs, alerts, payments, followups, messaging, webhookSecret: 'sk_test_dev', authenticate: devAuthenticate })
 await app.register(quoteAdminRoutes, {
   prefix: '/admin/quote', store, desk, jobs, payments, followups, adminStore: memoryAdminStore(() => store.dump()),
   messagesLive: false, publicUrl, now: clock,
