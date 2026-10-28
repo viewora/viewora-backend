@@ -201,6 +201,8 @@ test('pay: a test quote is accepted, paid and becomes a job', async () => {
   assert.equal(d.quotes.find(q => q.id === quote.id)!.status, 'accepted')
   assert.equal(d.leads[0].stage, 'booked')
   assert.equal(d.invoices[0].status, 'not_configured', 'eTIMS hook ran')
+  // The deposit ends the quote's nudges (Phase 4 follow-ups)
+  assert.deepEqual(d.sequences.filter(s => s.key === 'quote_followup' && s.stopReason !== 'restarted').map(s => [s.status, s.stopReason]), [['stopped', 'booked']])
   const paid = t.events.filter(e => e[1] === 'deposit paid')
   assert.equal(paid.length, 1)
   assert.deepEqual(paid[0][2], { tier: 'standard', via: 'return', channel: 'mobile_money', live: false })

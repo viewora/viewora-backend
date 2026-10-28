@@ -563,7 +563,8 @@ test('desk routes: board, stage, owner and notes', async () => {
   assert.equal(detail.notes[0].authorName, 'Wanjiru')
   assert.ok(!detail.notes[0].body.includes('<b>'))
   assert.equal(detail.lead.ownerName, 'Wanjiru')
-  assert.deepEqual(detail.activity.map((a: any) => a.action).sort(), ['owner_changed', 'stage_changed'])
+  // Marking the lead lost also stopped its unfinished-form reminder
+  assert.deepEqual(detail.activity.map((a: any) => a.action).sort(), ['followups_stopped', 'owner_changed', 'stage_changed'])
   assert.deepEqual((await call('GET', '/admin/quote/staff')).json().staff.map((s: any) => s.name), ['Peter', 'Wanjiru'])
   assert.equal(store.dump().leads[0].stage, 'contacted')
 })

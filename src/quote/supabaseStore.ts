@@ -87,7 +87,19 @@ export function supabaseStore(db: SupabaseClient): QuoteStore {
     async findRequest(tokenHash) {
       const { data, error } = await db.from('qe_quote_requests').select('*').eq('resume_token_hash', tokenHash).maybeSingle()
       fail(error, 'find request')
-      return data ? toRecord(data) : null
+      if (data) return toRecord(data)
+      // A reminder's own link (migration 006)
+      const { data: extra, error: extraErr } = await db.from('qe_resume_tokens').select('request_id, expires_at').eq('token_hash', tokenHash).maybeSingle()
+      fail(extraErr, 'find resume token')
+      if (!extra || Date.parse(extra.expires_at) < Date.now()) return null
+      const { data: row, error: rowErr } = await db.from('qe_quote_requests').select('*').eq('id', extra.request_id).maybeSingle()
+      fail(rowErr, 'find request')
+      return row ? toRecord(row) : null
+    },
+
+    async addResumeToken(requestId, tokenHash, expiresAt) {
+      const { error } = await db.from('qe_resume_tokens').insert({ token_hash: tokenHash, request_id: requestId, expires_at: expiresAt })
+      fail(error, 'add resume token')
     },
 
     async updateRequest(id, patch) {
@@ -162,11 +174,11 @@ export function supabaseStore(db: SupabaseClient): QuoteStore {
     },
 
     async messageTemplate(key, channel, locale = 'en') {
-      const { data, error } = await db.from('qe_message_templates').select('version, subject, body')
+      const { data, error } = await db.from('qe_message_templates').select('version, subject, body, wa_template_name')
         .eq('key', key).eq('channel', channel).eq('locale', locale).eq('active', true)
         .order('version', { ascending: false }).limit(1).maybeSingle()
       fail(error, 'load message template')
-      return data ? { version: data.version, subject: data.subject, body: data.body } : null
+      return data ? { version: data.version, subject: data.subject, body: data.body, waTemplateName: data.wa_template_name } : null
     },
 
     async alertRecipients() {
@@ -176,12 +188,17 @@ export function supabaseStore(db: SupabaseClient): QuoteStore {
     },
 
     async recordMessage(m) {
-      const { error } = await db.from('qe_messages').insert({
+      const row: Record<string, unknown> = {
         lead_id: m.leadId, quote_id: m.quoteId ?? null, channel: m.channel, template_key: m.templateKey, template_version: m.templateVersion,
         rendered_body: m.renderedBody, status: m.status, skip_reason: m.skipReason ?? null,
         error: m.error ?? null, sent_at: m.sentAt ?? null,
-      })
+      }
+      // Columns from migration 006, only when used, so older databases keep working
+      if (m.sequenceId) Object.assign(row, { sequence_id: m.sequenceId, sequence_step: m.sequenceStep ?? null })
+      if (m.needsStaff) row.needs_staff = true
+      const { data, error } = await db.from('qe_messages').insert(row).select('id').single()
       fail(error, 'record message')
+      return data!.id as string
     },
 
     async latestQuote(requestId) {

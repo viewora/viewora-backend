@@ -24,6 +24,8 @@ import { PaystackError } from '../quote/paystack.js'
 import { PaymentsOff, TEMPLATE_BALANCE_REQUEST, afterSettle, balanceMessage, startBalance, type PaymentDeps } from '../quote/payments.js'
 import { formatKes, inQuietHours, nairobiDate } from '../quote/desk.js'
 import { CLIENT_TYPE_LABELS, industryLabel } from '../quote/industries.js'
+import type { FollowupStore } from '../quote/followupStore.js'
+import { jobDelivered } from '../quote/messaging.js'
 
 const MESSAGES: Record<string, string> = {
   not_found: 'That job no longer exists.',
@@ -97,6 +99,7 @@ export interface JobRouteOptions {
   store: QuoteStore
   jobs: JobStore
   payments: PaymentDeps
+  followups?: FollowupStore              // delivering a job starts the review and renewal follow-ups
 }
 
 export default async function quoteJobsRoutes(fastify: FastifyInstance, opts: JobRouteOptions) {
@@ -150,7 +153,12 @@ export default async function quoteJobsRoutes(fastify: FastifyInstance, opts: Jo
       const slot = patch.shootWindow !== undefined ? patch.shootWindow : current?.shootWindow
       if (!day || !slot) return reply.code(422).send({ code: 'NO_DATE', statusMessage: 'Pick a day and morning or afternoon before confirming.' })
     }
+    const before = patch.status === 'delivered' ? await jobs.job(params.id) : null
     const job = await guard(reply, () => jobs.updateJob(params.id, patch as any, request.quoteStaff!.id))
+    if (job && opts.followups && before && before.status !== 'delivered') {
+      await jobDelivered({ followups: opts.followups, now }, job.leadId, job.id)
+        .catch(err => fastify.log.error({ err: err instanceof Error ? err.message : String(err), jobId: job.id }, 'quote jobs: could not start follow-ups'))
+    }
     return job && { job: withProfit(job) }
   })
 

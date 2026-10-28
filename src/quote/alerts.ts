@@ -62,7 +62,7 @@ export async function alertStaff(
   store: QuoteStore,
   config: AlertConfig,
   log: AlertLog,
-  alert: { leadId: string; quoteId?: string | null; templateKey: string; what: string; migration: string; vars: Record<string, string> },
+  alert: { leadId: string; quoteId?: string | null; templateKey: string; what: string; migration: string; vars: Record<string, string>; recipients?: string[] },
 ): Promise<'sent' | 'skipped' | 'failed'> {
   const { leadId, what } = alert
   const base = { leadId, quoteId: alert.quoteId ?? null, channel: 'staff_alert' as const, templateKey: alert.templateKey }
@@ -78,7 +78,7 @@ export async function alertStaff(
   const text = render(template.body, alert.vars)
   const message = { ...base, templateVersion: template.version, renderedBody: text }
 
-  const to = [...new Set([...config.extraRecipients, ...await store.alertRecipients()].map(e => e.toLowerCase()))]
+  const to = [...new Set((alert.recipients ?? [...config.extraRecipients, ...await store.alertRecipients()]).map(e => e.toLowerCase()))]
   if (!to.length) {
     log.warn({ leadId }, `quote: ${what} has no recipients (set QUOTE_ALERT_EMAILS or staff alert_new_leads)`)
     await store.recordMessage({ ...message, status: 'skipped', skipReason: 'no_recipients' })

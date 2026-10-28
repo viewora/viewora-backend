@@ -20,6 +20,7 @@ import { industryLabel } from './industries.js'
 import { modules } from './modules/index.js'
 import { sendPlainEmail } from '../email/index.js'
 import { trackServer } from '../utils/analytics.js'
+import type { FollowupStore } from './followupStore.js'
 
 export const TEMPLATE_DEPOSIT_PAID = 'deposit_paid'
 export const TEMPLATE_STAFF_DEPOSIT = 'staff_deposit_paid'
@@ -40,6 +41,7 @@ export interface PaymentDeps {
   sendEmail: (msg: { to: string[]; subject: string; text: string }) => Promise<unknown>
   track: (distinctId: string, event: string, props: Record<string, unknown>) => void
   now: () => Date
+  followups?: FollowupStore              // a deposit stops the selling follow-ups
 }
 
 export const newReference = () => `qp_${crypto.randomBytes(18).toString('base64url')}`
@@ -147,6 +149,8 @@ export async function afterSettle(
     tier: ctx.tier, via: ctx.source, channel: ctx.channel, live: ctx.live,
   })
   if (result.kind !== 'deposit' || !result.leadId || !result.jobId) return
+  const leadId = result.leadId
+  if (deps.followups) await step('stop follow-ups', () => deps.followups!.stop(leadId, 'booked', null))
 
   const [lead, quote, job] = await Promise.all([deps.desk.lead(result.leadId), deps.desk.quote(result.quoteId), deps.jobs.job(result.jobId)])
   if (!lead || !quote || !job) return

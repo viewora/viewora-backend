@@ -75,7 +75,7 @@ const OPEN_QUOTE = ['draft', 'needs_approval', 'sent', 'viewed']
 
 export function memoryJobStore(data: () => MemoryData): JobStore {
   const d = () => data()
-  const now = () => new Date().toISOString()
+  const now = () => data().clock().toISOString()
   const audit = (actorId: string | null, entityType: string, entityId: string, action: string, before: unknown, after: unknown, reason: string | null = null) => {
     const list = d().audit
     list.push({ id: list.length + 1, actorId, entityType, entityId, action, before: structuredClone(before ?? null), after: structuredClone(after ?? null), reason, createdAt: now() })

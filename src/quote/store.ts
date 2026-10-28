@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import type { ClientType, PriceResult, RateTable } from './engine/types.js'
 import { docFromEngine, type QuoteDoc } from './desk.js'
 import { DEFAULT_BOOKING, type BookingSettings, type JobCost, type JobRecord, type PaymentRecord } from './jobs.js'
+import { DEFAULT_MESSAGING, type MessagingSettings, type SequenceKey } from './followups.js'
 
 export interface StoredAnswers {
   details: Record<string, string | number | boolean>
@@ -60,7 +61,7 @@ export interface LeadView {
 
 export interface ConsentText { id: string; body: string }
 
-export interface MessageTemplate { version: number; subject: string | null; body: string }
+export interface MessageTemplate { version: number; subject: string | null; body: string; waTemplateName?: string | null }
 
 export interface MessageRecord {
   leadId: string
@@ -73,6 +74,10 @@ export interface MessageRecord {
   skipReason?: string
   error?: string
   sentAt?: string
+  // Follow-ups (migration 006)
+  sequenceId?: string | null
+  sequenceStep?: string | null
+  needsStaff?: boolean                    // a WhatsApp to-do: staff press send themselves
 }
 
 export interface QuoteStore {
@@ -91,7 +96,9 @@ export interface QuoteStore {
   messageTemplate(key: string, channel: 'email' | 'whatsapp', locale?: string): Promise<MessageTemplate | null>
   // Staff who asked for new-lead emails
   alertRecipients(): Promise<string[]>
-  recordMessage(message: MessageRecord): Promise<void>
+  recordMessage(message: MessageRecord): Promise<string>
+  // Another "finish your quote" link for the same request (reminders)
+  addResumeToken(requestId: string, tokenHash: string, expiresAt: string): Promise<void>
 }
 
 export type MemoryLead = LeadInput & {
@@ -139,7 +146,16 @@ export interface MemoryData {
   jobs: Array<Omit<JobRecord, 'costs' | 'payments' | 'costsTotal' | 'assignedStaffName' | 'leadName' | 'requestId' | 'quoteVersion'> & { optionTier: string }>
   jobCosts: Array<JobCost & { jobId: string; createdBy: string | null }>
   invoices: Array<{ id: string; jobId: string; paymentId: string; status: 'pending' | 'issued' | 'failed' | 'not_configured'; provider: string | null; externalRef: string | null; error: string | null }>
-  settings: { booking: BookingSettings }
+  settings: { booking: BookingSettings; messaging: MessagingSettings }
+  // Phase 4: follow-ups and editable wording (migration 006)
+  sequences: Array<{
+    id: string; leadId: string; key: SequenceKey; subjectId: string | null; status: 'active' | 'stopped' | 'completed'
+    stopReason: string | null; nextStep: number; nextRunAt: string | null; startedAt: string; createdAt: string; updatedAt: string; stoppedAt: string | null
+  }>
+  templates: Array<{ key: string; channel: 'whatsapp' | 'email'; version: number; subject: string | null; body: string; updatedBy: string | null; updatedAt: string }>
+  messageTasks: Record<string, { doneBy: string | null; doneAt: string | null }>
+  // The memory stores' clock (tests and the dev server move it); real time otherwise
+  clock: () => Date
 }
 
 export function memoryStore(seed: {
@@ -148,11 +164,19 @@ export function memoryStore(seed: {
   templates?: Record<string, MessageTemplate>   // keyed "key:channel"
   recipients?: string[]
   staff?: MemoryStaff[]
+  clock?: () => Date
 }): QuoteStore & { dump(): MemoryData } {
-  const now = () => new Date().toISOString()
+  const clock = seed.clock ?? (() => new Date())
+  const now = () => clock().toISOString()
   const state: MemoryData = {
     requests: [], leads: [], quotes: [], links: [], messages: [], notes: [], audit: [],
-    payments: [], jobs: [], jobCosts: [], invoices: [], settings: { booking: structuredClone(DEFAULT_BOOKING) },
+    payments: [], jobs: [], jobCosts: [], invoices: [],
+    settings: { booking: structuredClone(DEFAULT_BOOKING), messaging: structuredClone(DEFAULT_MESSAGING) },
+    sequences: [], messageTasks: {}, clock,
+    templates: Object.entries(seed.templates ?? {}).map(([k, t]) => {
+      const [key, channel] = k.split(':') as [string, 'whatsapp' | 'email']
+      return { key, channel, version: t.version, subject: t.subject, body: t.body, updatedBy: null, updatedAt: now() }
+    }),
     staff: structuredClone(seed.staff ?? []),
     // Ids are uuids, as in the database (the seed file's own id is a label)
     rateTables: [{ ...structuredClone(seed.rateTable), id: randomUUID(), status: 'published', notes: null, publishedAt: now(), publishedBy: null, createdAt: now() }],
@@ -219,9 +243,17 @@ export function memoryStore(seed: {
       const q = state.quotes.filter(x => x.requestId === requestId && x.trace).at(-1)
       return q ? structuredClone(q.trace) : null
     },
-    async messageTemplate(key, channel) { return seed.templates?.[`${key}:${channel}`] ?? null },
+    async messageTemplate(key, channel) {
+      const t = state.templates.filter(x => x.key === key && x.channel === channel).sort((a, b) => b.version - a.version)[0]
+      return t ? { version: t.version, subject: t.subject, body: t.body } : null
+    },
     async alertRecipients() { return seed.recipients ?? [] },
-    async recordMessage(message) { state.messages.push({ ...structuredClone(message), id: randomUUID(), createdAt: now() }) },
+    async recordMessage(message) {
+      const id = randomUUID()
+      state.messages.push({ ...structuredClone(message), id, createdAt: now() })
+      return id
+    },
+    async addResumeToken(requestId, tokenHash) { byHash.set(tokenHash, requestId) },
     dump: () => state,
   }
 }

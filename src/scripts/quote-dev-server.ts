@@ -21,14 +21,43 @@ import { memoryJobStore } from '../quote/jobStore.js'
 import { fakePaystack } from '../quote/paystack.js'
 import { rateTableV1 } from '../quote/seed/rateTable.v1.js'
 import { CONSENT_EN } from '../quote/seed/consent.js'
+import { memoryFollowupStore } from '../quote/followupStore.js'
+import { messagingDeps, runFollowups } from '../quote/messaging.js'
+import fs from 'node:fs'
 
 process.env.ADMIN_SECRET ||= 'dev-secret'
 const DEV_ADMIN_ID = '00000000-0000-4000-8000-000000000001'
 const DEV_SALES_ID = '00000000-0000-4000-8000-000000000002'
 const port = Number(process.env.PORT ?? 4010)
 
+// The follow-up wording, read from migration 006 so the two never drift
+function migrationTemplates(file: string) {
+  const sql = fs.readFileSync(new URL(`../utils/${file}`, import.meta.url), 'utf8')
+  const out: Record<string, { version: number; subject: string | null; body: string }> = {}
+  const unquote = (s: string) => s.replace(/''/g, "'").replace(/\\n/g, '\n')
+  for (const m of sql.matchAll(/\('(\w+)', '(whatsapp|email)', 'en', 1, (NULL|'(?:[^']|'')*'),\s*E'((?:[^']|'')*)'\)/g)) {
+    out[`${m[1]}:${m[2]}`] = { version: 1, subject: m[3] === 'NULL' ? null : unquote(m[3].slice(1, -1)), body: unquote(m[4]) }
+  }
+  return out
+}
+
+// A clock you can move forward to try the reminders: POST /dev/clock {"minutes": 16}.
+// QUOTE_DEV_CLOCK=12:00 starts it at that Nairobi time today, so messages
+// can be tried at night (quiet hours are 21:00-07:00).
+let offsetMs = 0
+{
+  const m = /^(\d{2}):(\d{2})$/.exec(process.env.QUOTE_DEV_CLOCK ?? '')
+  if (m) {
+    const target = new Date()
+    target.setUTCHours((Number(m[1]) + 21) % 24, Number(m[2]), 0, 0)   // Nairobi is UTC+3
+    offsetMs = target.getTime() - Date.now()
+  }
+}
+const clock = () => new Date(Date.now() + offsetMs)
+
 // Same wording as migrations 003 and 004 seed into qe_message_templates
 const store = memoryStore({
+  clock,
   rateTable: rateTableV1,
   consent: { id: 'local-consent-en', body: CONSENT_EN },
   templates: {
@@ -70,15 +99,6 @@ const store = memoryStore({
     { userId: DEV_SALES_ID, displayName: 'Dev sales', role: 'sales', discountLimitBp: 500, email: 'sales@localhost', active: true },
   ],
 })
-function devClock(): (() => Date) | null {
-  const m = /^(\d{2}):(\d{2})$/.exec(process.env.QUOTE_DEV_CLOCK ?? '')
-  if (!m) return null
-  return () => {
-    const d = new Date()
-    d.setUTCHours((Number(m[1]) + 21) % 24, Number(m[2]))   // Nairobi is UTC+3
-    return d
-  }
-}
 const app = Fastify({ logger: { level: 'info' } })
 
 await app.register(cors, { origin: true })
@@ -88,17 +108,29 @@ const jobs = memoryJobStore(() => store.dump())
 const paystack = fakePaystack(`http://localhost:${port}/dev/paystack/checkout`)
 const publicUrl = process.env.QUOTE_PUBLIC_URL ?? 'http://localhost:3001'
 const alerts = { liveSend: false, extraRecipients: [], adminUrl: 'http://localhost:3002', send: async () => {} }
-const payments = { paystack, publicUrl, messagesLive: false, alerts, track: () => {}, ...(devClock() ? { now: devClock()! } : {}) }
-await app.register(quoteRoutes, { prefix: '/quote', store, desk, jobs, alerts, payments, webhookSecret: 'sk_test_dev' })
+const payments = { paystack, publicUrl, messagesLive: false, alerts, track: () => {}, now: clock }
+const followups = memoryFollowupStore(() => store.dump())
+const messaging = { now: clock, publicUrl, messagesLive: false, optOutSecret: 'dev-optout' }
+await app.register(quoteRoutes, { prefix: '/quote', store, desk, jobs, alerts, payments, followups, messaging, webhookSecret: 'sk_test_dev' })
 await app.register(quoteAdminRoutes, {
-  prefix: '/admin/quote', store, desk, jobs, payments, adminStore: memoryAdminStore(() => store.dump()),
-  messagesLive: false, publicUrl,
-  // QUOTE_DEV_CLOCK=12:00 pretends it is that Nairobi time today, to try
-  // WhatsApp and email sends at night (quiet hours are 21:00-07:00)
-  ...(devClock() ? { now: devClock()! } : {}),
+  prefix: '/admin/quote', store, desk, jobs, payments, followups, adminStore: memoryAdminStore(() => store.dump()),
+  messagesLive: false, publicUrl, now: clock,
 })
 // Peek at what the form saved: http://localhost:4010/dev/dump
 app.get('/dev/dump', async () => store.dump())
+
+// Follow-ups: the scheduler's job, every 20 seconds here (5 minutes in production).
+// Move the clock to see reminders: POST /dev/clock {"minutes": 16}
+const followupDeps = messagingDeps({ store, desk, jobs, followups, alerts, log: app.log }, messaging)
+const runNow = () => runFollowups(followupDeps).catch(err => { app.log.error(err, 'dev follow-ups failed'); return null })
+setInterval(runNow, 20_000).unref()
+app.post('/dev/clock', async request => {
+  const minutes = Number((request.body as any)?.minutes ?? 0)
+  if (Number.isFinite(minutes) && minutes > 0) offsetMs += minutes * 60_000
+  return { now: clock().toISOString(), ran: await runNow() }
+})
+// Pretend the lead wrote to us on WhatsApp: POST /dev/whatsapp-reply {"e164": "+2547..."}
+app.post('/dev/whatsapp-reply', async request => ({ leadId: await followups.replied(String((request.body as any)?.e164 ?? '')) }))
 
 // Fake Paystack checkout. A real one shows card and M-Pesa; this one lets
 // you pick the outcome, then returns to the quote page like Paystack does.

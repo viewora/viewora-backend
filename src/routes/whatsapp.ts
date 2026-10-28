@@ -53,6 +53,15 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
     const message = normalizeWhatsAppWebhook(body)
     if (!message) return
 
+    // Quote engine (read-only tap): a message from a quote lead's number
+    // stops their follow-ups. It never changes what the bot does.
+    if (process.env.QUOTE_ENGINE_ENABLED === '1' && /^\d{8,15}$/.test(message.sender.id)) {
+      import('../quote/followupStore.js')
+        .then(({ supabaseFollowupStore }) => supabaseFollowupStore(fastify.supabase).replied(`+${message.sender.id}`))
+        .then(leadId => { if (leadId) fastify.log.info({ leadId }, 'quote: lead replied on WhatsApp; follow-ups stopped') })
+        .catch(err => fastify.log.error({ err: err?.message }, 'quote: reply hook failed'))
+    }
+
     handleIncomingMessage(fastify, 'whatsapp', message, {
       sendReply: (to, text) => sendMessage(to, text),
       fetchMedia,

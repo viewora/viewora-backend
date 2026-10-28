@@ -29,6 +29,8 @@ import { answersView } from '../quote/answersView.js'
 import { render } from '../quote/alerts.js'
 import { publicQuote } from '../quote/publicQuote.js'
 import { renderQuotePdf } from '../quote/pdf.js'
+import type { FollowupStore } from '../quote/followupStore.js'
+import { quoteSent } from '../quote/messaging.js'
 
 export interface DeskRouteOptions {
   adminStore: QuoteAdminStore
@@ -40,6 +42,7 @@ export interface DeskRouteOptions {
   whatsappNumber?: string                // shown on the PDF; default QUOTE_WHATSAPP
   now?: () => Date
   newToken?: () => string
+  followups?: FollowupStore              // sending a quote starts its follow-ups
 }
 
 export const STAGES: LeadStage[] = ['new', 'contacted', 'quoted', 'booked', 'delivered', 'paid', 'lost']
@@ -173,7 +176,12 @@ export default async function quoteDeskRoutes(fastify: FastifyInstance, opts: De
       ...(body.stage ? { stage: body.stage } : {}),
       ...(body.ownerId !== undefined ? { ownerStaffId: body.ownerId } : {}),
     }, request.quoteStaff!.id))
-    if (lead) return { lead }
+    if (!lead) return
+    // Lost ends every follow-up; booked by hand ends the selling ones
+    if (opts.followups && (body.stage === 'lost' || body.stage === 'booked')) {
+      await opts.followups.stop(params.id, body.stage, request.quoteStaff!.id)
+    }
+    return { lead }
   })
 
   // POST /admin/quote/leads/:id/notes
@@ -418,6 +426,10 @@ export default async function quoteDeskRoutes(fastify: FastifyInstance, opts: De
     })
     if (!sent) return
     const result: Record<string, unknown> = { url, sandbox: !messagesLive }
+    if (opts.followups) {
+      await quoteSent({ followups: opts.followups, now }, lead.id, doc.id!)
+        .catch(err => fastify.log.error({ err: err instanceof Error ? err.message : String(err), quoteId: doc.id }, 'quote desk: could not start follow-ups'))
+    }
 
     if (channel === 'whatsapp' && template) {
       const text = render(template.body, vars)

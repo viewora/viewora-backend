@@ -91,7 +91,8 @@ export interface DeskStore {
   decideApproval(id: string, actorId: string, approve: boolean, reason: string): Promise<void>
   // Marks the quote sent, retires older sent versions, moves the lead to
   // Quoted (from New or Contacted) and stores the hashed link.
-  markSent(id: string, actorId: string, link: { tokenHash: string; channel: 'link' | 'whatsapp' | 'email'; expiresAt: string }): Promise<void>
+  // actorId is null when the follow-up runner sends it
+  markSent(id: string, actorId: string | null, link: { tokenHash: string; channel: 'link' | 'whatsapp' | 'email'; expiresAt: string }): Promise<void>
   findLink(tokenHash: string): Promise<LinkHit | null>
   // The client opened the page: counts the view, sets viewed on first open
   linkSeen(linkId: string): Promise<{ firstView: boolean }>
@@ -116,7 +117,7 @@ export interface DeskStore {
 const OPEN: QuoteDoc['status'][] = ['draft', 'needs_approval', 'sent', 'viewed']
 
 export function memoryDeskStore(data: () => MemoryData): DeskStore {
-  const now = () => new Date().toISOString()
+  const now = () => data().clock().toISOString()
   const d = () => data()
   const staffById = (id: string | null) => d().staff.find(s => s.userId === id)
   const audit = (actorId: string | null, entityType: string, entityId: string, action: string, before: unknown, after: unknown, reason: string | null = null) => {

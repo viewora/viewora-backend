@@ -11,7 +11,7 @@ import type { StaffRole } from './desk.js'
 import type { DeskStore } from './deskStore.js'
 
 export type Permission = 'leads:read' | 'leads:write' | 'quotes:write' | 'quotes:approve' | 'rates:read' | 'rates:write'
-  | 'jobs:read' | 'jobs:write' | 'payments:write' | 'jobs:export' | 'settings:write'
+  | 'jobs:read' | 'jobs:write' | 'payments:write' | 'jobs:export' | 'settings:write' | 'templates:write'
 
 export const PERMISSIONS: Record<Permission, StaffRole[]> = {
   'leads:read': ['admin', 'sales', 'viewer'],
@@ -26,6 +26,8 @@ export const PERMISSIONS: Record<Permission, StaffRole[]> = {
   'payments:write': ['admin'],
   'jobs:export': ['admin'],
   'settings:write': ['admin'],
+  // Wording clients receive
+  'templates:write': ['admin'],
 }
 
 export interface QuoteStaff {

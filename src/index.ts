@@ -458,6 +458,7 @@ const start = async () => {
       'recover-stuck-media': 10 * 60 * 1000,
       'recover-stuck-scenes': 10 * 60 * 1000,
       'quote-payment-recheck': 10 * 60 * 1000,
+      'quote-followups': 5 * 60 * 1000,
     }
 
     const CLEANUP_LOCK_TTL_S: Record<string, number> = {
@@ -467,6 +468,7 @@ const start = async () => {
       'recover-stuck-media': 8 * 60,
       'recover-stuck-scenes': 8 * 60,
       'quote-payment-recheck': 8 * 60,
+      'quote-followups': 4 * 60,
     }
 
     const cleanupIntervals: NodeJS.Timeout[] = []

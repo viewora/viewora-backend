@@ -421,6 +421,33 @@ export const quotePaymentRecheckTask: CleanupTask = {
   },
 }
 
+/**
+ * Quote follow-ups: sends the reminder steps that are due (unfinished
+ * form, quote nudges, expiry, after delivery). Every 5 minutes, so the
+ * 15-minute reminder goes within 15-20 minutes. Does nothing unless the
+ * quote engine is on.
+ */
+export const quoteFollowupsTask: CleanupTask = {
+  name: 'quote-followups',
+  schedule: '*/5 * * * *',
+  execute: async (fastify: FastifyInstance) => {
+    if (process.env.QUOTE_ENGINE_ENABLED !== '1') return
+    const { runFollowups, messagingDeps } = await import('../quote/messaging.js')
+    const { supabaseFollowupStore } = await import('../quote/followupStore.js')
+    const { supabaseJobStore } = await import('../quote/jobStore.js')
+    const { supabaseDeskStore } = await import('../quote/deskStore.js')
+    const { supabaseStore } = await import('../quote/supabaseStore.js')
+    const { alertConfigFromEnv } = await import('../quote/alerts.js')
+    const { sendPlainEmail } = await import('../email/index.js')
+    const deps = messagingDeps({
+      store: supabaseStore(fastify.supabase), desk: supabaseDeskStore(fastify.supabase), jobs: supabaseJobStore(fastify.supabase),
+      followups: supabaseFollowupStore(fastify.supabase), alerts: alertConfigFromEnv(sendPlainEmail), log: fastify.log,
+    })
+    const result = await runFollowups(deps)
+    if (result.ran || result.expired) fastify.log.info(result, 'quote follow-ups ran')
+  },
+}
+
 export const cleanupTasks: CleanupTask[] = [
   failedMediaCleanupTask,
   orphanMediaCleanupTask,
@@ -428,4 +455,5 @@ export const cleanupTasks: CleanupTask[] = [
   stuckMediaRecoveryTask,
   stuckSceneRecoveryTask,
   quotePaymentRecheckTask,
+  quoteFollowupsTask,
 ]

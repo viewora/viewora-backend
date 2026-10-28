@@ -25,6 +25,8 @@ import quotePublicRoutes from './quotePublic.js'
 import quotePayRoutes from './quotePay.js'
 import { supabaseJobStore, type JobStore } from '../quote/jobStore.js'
 import { paymentDeps, type PaymentDeps } from '../quote/payments.js'
+import { followupStoreFor, type FollowupStore } from '../quote/followupStore.js'
+import { formCompleted, formSaved, messagingDeps, optOutValid, type MessagingDeps } from '../quote/messaging.js'
 
 // Step order: industry first, then contact (the lead exists from step 2).
 export const STEPS = ['industry', 'contact', 'details', 'extras', 'where'] as const
@@ -119,9 +121,22 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
   jobs?: JobStore
   payments?: Partial<PaymentDeps>                 // tests and the dev server: fake Paystack, clock
   webhookSecret?: string
+  followups?: FollowupStore
+  messaging?: Partial<MessagingDeps>
 }) {
   const store = opts.store ?? supabaseStore(fastify.supabase)
   const alerts = opts.alerts ?? alertConfigFromEnv(sendPlainEmail)
+  const desk = opts.desk ?? supabaseDeskStore(fastify.supabase)
+  const jobs = opts.jobs ?? supabaseJobStore(fastify.supabase)
+  const followups = opts.followups ?? followupStoreFor(store, fastify.supabase)
+  const messaging = messagingDeps({ store, desk, jobs, followups, alerts, log: fastify.log }, opts.messaging)
+
+  // Follow-ups never hold up or break the form: they run after the answer
+  // is saved, and a failure is logged (the answers are already stored)
+  const followUp = (what: string, leadId: string, run: () => Promise<unknown>) => {
+    const pending = run().catch(err => fastify.log.error({ err: err instanceof Error ? err.message : String(err), leadId }, `quote: follow-up ${what} failed`))
+    opts.onAlert?.(pending)
+  }
 
   async function rateTableOr503(reply: FastifyReply): Promise<RateTable | null> {
     const table = await store.publishedRateTable()
@@ -135,7 +150,7 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
   async function loadRequest(token: string, reply: FastifyReply): Promise<RequestRecord | null> {
     const req = await store.findRequest(hashToken(token))
     if (!req) { reply.code(404).send({ code: 'NOT_FOUND', statusMessage: 'This link is not valid.' }); return null }
-    if (Date.now() - Date.parse(req.lastSavedAt) > RESUME_DAYS * 86_400_000) {
+    if (messaging.now().getTime() - Date.parse(req.lastSavedAt) > RESUME_DAYS * 86_400_000) {
       reply.code(410).send({ code: 'EXPIRED', statusMessage: 'This link has expired. Start a new quote; it takes about a minute.' })
       return null
     }
@@ -300,6 +315,7 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
         utm: req.entry.utm ?? {},
       })
       const next = await store.updateRequest(req.id, { leadId: lead.id, stepReached: reached, ...(body.clientType ? { clientType: body.clientType } : {}) })
+      if (!next.completedAt) followUp('start', lead.id, () => formSaved(messaging, lead.id, { first: true }))
       if (lead.created) {
         fastify.log.info({ requestId: req.id, module: req.moduleKey }, 'quote: new lead')
         // In the background: the visitor never waits on email, and a failure is recorded, not thrown
@@ -323,6 +339,7 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
       const { details, errors } = cleanDetails(module, body.details)
       if (errors.length) return reply.code(400).send({ code: 'VALIDATION_ERROR', fields: errors })
       const next = await store.updateRequest(req.id, { answers: { ...req.answers, details }, stepReached: reached })
+      if (next.leadId && !next.completedAt) followUp('touch', next.leadId, () => formSaved(messaging, next.leadId!, { first: false }))
       return { request: publicView(next) }
     }
 
@@ -330,6 +347,7 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
       const { addons, errors } = cleanAddons(module, body.addons)
       if (errors.length) return reply.code(400).send({ code: 'VALIDATION_ERROR', fields: errors })
       const next = await store.updateRequest(req.id, { answers: { ...req.answers, addons }, stepReached: reached })
+      if (next.leadId && !next.completedAt) followUp('touch', next.leadId, () => formSaved(messaging, next.leadId!, { first: false }))
       return { request: publicView(next) }
     }
 
@@ -349,22 +367,45 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
       addons: answers.addons,
       location: answers.location,
     }, table)
-    await store.saveQuote(req.id, result, {
-      validUntil: nairobiDate(new Date(), table.settings.quoteValidityDays),
+    const quoteId = await store.saveQuote(req.id, result, {
+      validUntil: nairobiDate(messaging.now(), table.settings.quoteValidityDays),
       depositBp: table.settings.depositBp,
     })
     const next = await store.updateRequest(req.id, {
       answers,
       stepReached: reached,
       flags: [...new Set([...req.flags, ...result.flags])],
-      completedAt: req.completedAt ?? new Date().toISOString(),
+      completedAt: req.completedAt ?? messaging.now().toISOString(),
     })
+    const picked = result.options.find(o => o.tier === 'standard') ?? result.options[0]
+    const leadId = req.leadId
+    followUp('quote', leadId, () => formCompleted(messaging, {
+      leadId, quoteId, mode: result.mode, total: picked?.total ?? null, source: req.entry.source ?? null,
+      industry: industryLabel(req.moduleKey, next.flags, module.label),
+    }))
     return { request: publicView(next), result: clientResult(result) }
   })
 
-  const desk = opts.desk ?? supabaseDeskStore(fastify.supabase)
-  const jobs = opts.jobs ?? supabaseJobStore(fastify.supabase)
-  const payments = paymentDeps({ jobs, desk, store, log: fastify.log }, { alerts, ...opts.payments })
+  // Opt-out link from an email: /quote/stop?l=<lead>&s=<signature>
+  const stopQuery = z.object({ l: z.string().uuid(), s: z.string().regex(/^[A-Za-z0-9_-]{32}$/) })
+  const stopLimit = { rateLimit: { max: 20, timeWindow: '1 minute', keyGenerator: (req: any) => req.ip } }
+  fastify.get('/stop', { config: stopLimit }, async (request, reply) => {
+    const q = parseWithSchema(reply, stopQuery, request.query)
+    if (!q) return
+    if (!messaging.optOutSecret || !optOutValid(messaging.optOutSecret, q.l, q.s)) return reply.code(404).send({ code: 'NOT_FOUND', statusMessage: 'This link is not valid. WhatsApp us and we will stop the messages.' })
+    const lead = await followups.lead(q.l)
+    if (!lead) return reply.code(404).send({ code: 'NOT_FOUND', statusMessage: 'We have no details for you any more, so you will not hear from us.' })
+    return { optedOut: !!lead.optedOutAt }
+  })
+  fastify.post('/stop', { config: stopLimit }, async (request, reply) => {
+    const q = parseWithSchema(reply, stopQuery, request.body)
+    if (!q) return
+    if (!messaging.optOutSecret || !optOutValid(messaging.optOutSecret, q.l, q.s)) return reply.code(404).send({ code: 'NOT_FOUND', statusMessage: 'This link is not valid. WhatsApp us and we will stop the messages.' })
+    await followups.optOut(q.l, null, 'email_link')
+    return { optedOut: true }
+  })
+
+  const payments = paymentDeps({ jobs, desk, store, log: fastify.log }, { alerts, followups, ...opts.payments })
   await fastify.register(quotePublicRoutes, {
     desk, jobs, paymentsOn: !!payments.paystack, now: payments.now,
     // Analytics carry the quote id only, never personal data
