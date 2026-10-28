@@ -166,7 +166,7 @@ test('campaign link: QR code presets the town, codes are unique, and a campaign 
   const res = await t.call('POST', '/admin/quote/links', ADMIN, { kind: 'campaign', code: 'Junction-Walkin', label: 'Junction poster', town: 'Ngong Road', industry: 'malls', source: 'qr' })
   assert.equal(res.statusCode, 201)
   assert.equal(res.json().link.code, 'junction-walkin')
-  assert.deepEqual((await t.pub('GET', '/quote/entry/JUNCTION-WALKIN')).json(), { kind: 'campaign', prefill: { moduleKey: 'other', industryHint: 'malls', town: 'Ngong Road' } })
+  assert.deepEqual((await t.pub('GET', '/quote/entry/JUNCTION-WALKIN')).json(), { kind: 'campaign', prefill: { moduleKey: 'malls', town: 'Ngong Road' } })
   assert.equal((await t.call('POST', '/admin/quote/links', ADMIN, { kind: 'campaign', code: 'junction-walkin', label: 'Again', source: 'qr' })).statusCode, 409)
   assert.equal((await t.call('POST', '/admin/quote/links', ADMIN, { kind: 'campaign', label: 'Bad', industry: 'spaceships', source: 'qr' })).statusCode, 400)
   // No personal data on a campaign link: a name is not accepted

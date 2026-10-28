@@ -60,6 +60,9 @@ interface Built {
   custom: boolean
   unresolvedBase: boolean
   travelTbc: boolean
+  // The rate card gives a range for the base or a per-unit price, so the
+  // visitor sees an estimate, not one end of it presented as the price
+  ranged: boolean
   zone: string | null
   warnings: Warning[]
 }
@@ -79,6 +82,13 @@ function buildLines(
   let scenes: number | null = null
   let custom = false
   let unresolvedBase = false
+  let ranged = false
+  let sector = p.sector
+  // A range has two ends; "from X" (no top) is confirmed by staff
+  const spread = (item: RateItem) => {
+    if (item.custom || item.high === null) custom = true
+    else if (item.high !== item.low && !item.tiers) ranged = true
+  }
 
   // Base
   const qty = p.quantity ? Math.max(1, numberAnswer(module, answers, p.quantity.question)) : 1
@@ -88,11 +98,12 @@ function buildLines(
       const q = module.questions.find(x => x.id === qid)
       if (!q || !isVisible(q, answers)) continue
       const opt = q.options?.find(o => o.value === String(answers.details[qid]))
-      if (opt?.rateKey) { baseItem = items[opt.rateKey]; break }
+      if (opt?.rateKey) { baseItem = items[opt.rateKey]; sector = opt.sector ?? sector; break }
     }
     if (baseItem) {
       const unit = valueOf(baseItem, end)
       if (baseItem.custom || unit === null) custom = true
+      spread(baseItem)
       lines.push({ key: baseItem.key, kind: 'base', label: baseItem.label, qty, unit: unit ?? 0, amount: qty * (unit ?? 0) })
       scenes = baseItem.scenes ?? null
     }
@@ -112,6 +123,7 @@ function buildLines(
     const count = numberAnswer(module, answers, pu.question)
     if (count === 0) continue
     const item = items[pu.rateKey]
+    spread(item)
     const unit = tierValue(item, count, end) ?? 0
     lines.push({ key: item.key, kind: 'per_unit', label: item.label, qty: count, unit, amount: count * unit })
   }
@@ -195,7 +207,7 @@ function buildLines(
   lines.push(...best)
 
   // Minimum job price
-  const minItem = items[`min_${p.sector}`]
+  const minItem = items[`min_${sector}`]
   const jobNet = lines.reduce((s, l) => s + l.amount, 0)
   const minimum = minItem ? valueOf(minItem, end) ?? 0 : 0
   if (!custom && jobNet < minimum) {
@@ -215,7 +227,7 @@ function buildLines(
     else if (travelTbc) warnings.push({ code: 'travel_far', data: { perDiem: items.travel_per_diem?.low ?? null } })
   }
 
-  return { lines, scenes, custom, unresolvedBase, travelTbc, zone, warnings }
+  return { lines, scenes, custom, unresolvedBase, travelTbc, ranged, zone, warnings }
 }
 
 function toUsd(lines: Line[], rate: number): Line[] {
@@ -268,7 +280,7 @@ export function price(module: IndustryModule, answers: Answers, table: RateTable
   const standard = buildLines(module, answers, table, chosen, 'use', ctx)
   let mode: ResultMode = module.resultMode
   if (missingDrivers.length || standard.unresolvedBase || standard.custom) mode = 'custom'
-  else if (mode === 'instant' && standard.travelTbc) mode = 'range'
+  else if (mode === 'instant' && (standard.travelTbc || standard.ranged)) mode = 'range'
 
   const result = (options: PriceOption[], warnings: Warning[]): PriceResult => ({
     mode,

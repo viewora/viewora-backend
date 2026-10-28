@@ -4,7 +4,7 @@
 // Question text is the English default; the form's strings file can
 // override it per locale using `quote.modules.<module>.<question>`.
 
-import type { ChoiceOption, IndustryModule, RateTable } from '../engine/types.js'
+import type { ChoiceOption, IndustryModule, Question, RateTable } from '../engine/types.js'
 
 const homeSizes: ChoiceOption[] = [
   { value: 'studio', label: 'Studio / bedsitter', rateKey: 'home_studio' },
@@ -184,7 +184,237 @@ export const other: IndustryModule = {
   },
 }
 
-export const modules: Record<string, IndustryModule> = { homes, airbnb, hotels, vehicles, other }
+// "When can we shoot?" for places that are busy in the day. The uplift
+// amount lives in the rate table (night_uplift), not in the wording.
+const shootTime: Question = {
+  id: 'shoot_time', type: 'choice', label: 'When can we shoot?', drivesPrice: true, default: 'open',
+  help: 'Shoots before opening or after closing cost a little more.',
+  options: [{ value: 'open', label: 'During the day, while open' }, { value: 'night', label: 'Before opening or after closing' }],
+}
+
+export const restaurants: IndustryModule = {
+  key: 'restaurants',
+  version: 1,
+  label: 'Restaurants and venues',
+  enabled: true,
+  resultMode: 'instant',
+  questions: [
+    { id: 'kind', type: 'choice', label: 'What kind of place is it?', required: true, drivesPrice: true,
+      options: [
+        { value: 'cafe', label: 'Café', rateKey: 'cafe' },
+        { value: 'restaurant', label: 'Restaurant or bar', rateKey: 'restaurant' },
+        { value: 'restaurant_large', label: 'Multi-level, rooftop or large outdoor restaurant', rateKey: 'restaurant_large' },
+        { value: 'venue', label: 'Event venue' },
+        { value: 'nightlife', label: 'Nightclub, lounge, cinema or bowling', rateKey: 'nightlife' },
+      ] },
+    { id: 'guests', type: 'choice', label: 'How many guests does it hold?', required: true, drivesPrice: true,
+      showIf: { question: 'kind', in: ['venue'] },
+      options: [
+        { value: '100', label: 'Up to 100', rateKey: 'venue_100' },
+        { value: '300', label: '100 to 300', rateKey: 'venue_300' },
+        { value: '300plus', label: 'More than 300, or several halls', rateKey: 'venue_300plus' },
+      ] },
+    shootTime,
+  ],
+  pricing: {
+    sector: 'business',
+    base: { from: ['guests', 'kind'] },
+    uplifts: [{ rateKey: 'night_uplift', when: { question: 'shoot_time', in: ['night'] } }],
+    addons: businessAddons,
+    premiumAddons: ['video', 'reel', 'photos_20'],
+    hostingKey: 'hosting_business',
+  },
+}
+
+// Developers, land, hostels and space to let. Land takes the home minimum
+// job price: plots are small jobs priced below the business minimum.
+export const developers: IndustryModule = {
+  key: 'developers',
+  version: 1,
+  label: 'Developers and land',
+  enabled: true,
+  resultMode: 'instant',
+  questions: [
+    { id: 'kind', type: 'choice', label: 'What should we shoot?', required: true, drivesPrice: true,
+      options: [
+        { value: 'show_unit', label: 'One show unit', rateKey: 'dev_show_unit' },
+        { value: 'show_unit_plus', label: 'Show unit, amenities and outside', rateKey: 'dev_show_unit_plus' },
+        { value: 'block', label: 'Whole apartment block: amenities and one show unit', rateKey: 'dev_block' },
+        { value: 'full', label: 'Full development tour', rateKey: 'dev_full' },
+        { value: 'progress', label: 'Construction progress, per site visit' },
+        { value: 'commercial', label: 'Commercial space to let' },
+        { value: 'hostel', label: 'Student hostel or co-living' },
+        { value: 'land', label: 'Land or plots' },
+        { value: 'memorial', label: 'Memorial park', rateKey: 'memorial_park' },
+      ] },
+    { id: 'hostel_rooms', type: 'choice', label: 'How many rooms?', required: true, drivesPrice: true,
+      showIf: { question: 'kind', in: ['hostel'] },
+      options: [
+        { value: '20', label: 'Up to 20', rateKey: 'hostel_20' },
+        { value: '60', label: '21 to 60', rateKey: 'hostel_60' },
+        { value: '60plus', label: 'More than 60', rateKey: 'hostel_60plus' },
+      ] },
+    { id: 'land_size', type: 'choice', label: 'How big is the land?', required: true, drivesPrice: true,
+      showIf: { question: 'kind', in: ['land'] },
+      options: [
+        { value: 'plot', label: 'One plot (50 × 100 ft)', rateKey: 'land_plot', sector: 'home' },
+        { value: 'half_acre', label: 'Several plots, up to ½ acre', rateKey: 'land_half_acre', sector: 'home' },
+        { value: '1_acre', label: '½ to 1 acre', rateKey: 'land_1_acre', sector: 'home' },
+        { value: '5_acres', label: '1 to 5 acres', rateKey: 'land_5_acres', sector: 'home' },
+        { value: '20_acres', label: '5 to 20 acres', rateKey: 'land_20_acres', sector: 'home' },
+        { value: '50_acres', label: '20 to 50 acres', rateKey: 'land_50_acres', sector: 'home' },
+        { value: '50plus', label: 'More than 50 acres', rateKey: 'land_50plus' },
+      ] },
+    { id: 'visits', type: 'number', label: 'How many site visits?', help: 'For example one a month until handover.',
+      min: 1, max: 60, default: 1, required: true, drivesPrice: true, showIf: { question: 'kind', in: ['progress'] } },
+    { id: 'units', type: 'number', label: 'How many units to let?', min: 1, max: 200, default: 1, required: true, drivesPrice: true,
+      showIf: { question: 'kind', in: ['commercial'] } },
+  ],
+  pricing: {
+    sector: 'business',
+    base: { from: ['hostel_rooms', 'land_size', 'kind'] },
+    perUnit: [
+      { question: 'visits', rateKey: 'dev_progress', when: { question: 'kind', in: ['progress'] } },
+      { question: 'units', rateKey: 'commercial_let', when: { question: 'kind', in: ['commercial'] } },
+    ],
+    addons: businessAddons,
+    premiumAddons: ['video', 'reel', 'photos_20'],
+    hostingKey: 'hosting_business',
+  },
+}
+
+export const malls: IndustryModule = {
+  key: 'malls',
+  version: 1,
+  label: 'Malls and retail',
+  enabled: true,
+  resultMode: 'instant',
+  questions: [
+    { id: 'kind', type: 'choice', label: 'What kind of place is it?', required: true, drivesPrice: true,
+      options: [
+        { value: 'mall', label: 'Shopping mall' },
+        { value: 'shop', label: 'Shop or boutique', rateKey: 'shop' },
+        { value: 'fashion', label: 'Fashion flagship store', rateKey: 'fashion_flagship' },
+        { value: 'supermarket', label: 'Supermarket or large store', rateKey: 'supermarket' },
+        { value: 'showroom', label: 'Furniture or appliance showroom', rateKey: 'showroom_furniture' },
+        { value: 'salon', label: 'Salon or barber', rateKey: 'salon' },
+        { value: 'gym', label: 'Gym or spa', rateKey: 'gym_spa' },
+        { value: 'popup', label: 'Pop-up or temporary space', rateKey: 'popup' },
+      ] },
+    { id: 'mall_size', type: 'choice', label: 'How big is the mall?', required: true, drivesPrice: true,
+      help: 'This covers the common areas: entrances, walkways, food court and parking.',
+      showIf: { question: 'kind', in: ['mall'] },
+      options: [
+        { value: 'arcade', label: 'Arcade or neighbourhood centre', rateKey: 'mall_arcade' },
+        { value: 'community', label: 'Community mall', rateKey: 'mall_community' },
+        { value: 'regional', label: 'Regional mall', rateKey: 'mall_regional' },
+        { value: 'super', label: 'Super-regional mall', rateKey: 'mall_super' },
+      ] },
+    { id: 'tenants', type: 'number', label: 'How many tenant shops should we shoot on the same visit?', min: 0, max: 500, default: 0,
+      drivesPrice: true, showIf: { question: 'kind', in: ['mall'] } },
+    { id: 'anchors', type: 'number', label: 'How many anchor tenants, like a supermarket or cinema?', help: 'We price these with you.',
+      min: 0, max: 20, default: 0, drivesPrice: true, showIf: { question: 'kind', in: ['mall'] } },
+    shootTime,
+  ],
+  pricing: {
+    sector: 'business',
+    base: { from: ['mall_size', 'kind'] },
+    perUnit: [
+      { question: 'tenants', rateKey: 'mall_tenant', when: { question: 'kind', in: ['mall'] } },
+      { question: 'anchors', rateKey: 'mall_anchor', when: { question: 'kind', in: ['mall'] } },
+    ],
+    uplifts: [{ rateKey: 'night_uplift', when: { question: 'shoot_time', in: ['night'] } }],
+    addons: businessAddons,
+    premiumAddons: ['video', 'reel', 'photos_20'],
+    hostingKey: 'hosting_business',
+  },
+}
+
+export const institutions: IndustryModule = {
+  key: 'institutions',
+  version: 1,
+  label: 'Offices, schools and clinics',
+  enabled: true,
+  resultMode: 'instant',
+  questions: [
+    { id: 'kind', type: 'choice', label: 'What kind of place is it?', required: true, drivesPrice: true,
+      options: [
+        { value: 'office', label: 'Office' },
+        { value: 'coworking', label: 'Co-working space', rateKey: 'coworking' },
+        { value: 'school', label: 'School, college or university' },
+        { value: 'clinic', label: 'Clinic or dental practice', rateKey: 'clinic' },
+        { value: 'vet', label: 'Vet clinic', rateKey: 'vet_clinic' },
+        { value: 'pharmacy', label: 'Pharmacy', rateKey: 'pharmacy' },
+        { value: 'lab', label: 'Diagnostic lab', rateKey: 'lab' },
+        { value: 'hospital', label: 'Hospital' },
+        { value: 'museum', label: 'Museum, gallery or heritage site', rateKey: 'museum' },
+        { value: 'government', label: 'Government or county project', rateKey: 'government' },
+      ] },
+    { id: 'desks', type: 'choice', label: 'How many desks?', required: true, drivesPrice: true,
+      showIf: { question: 'kind', in: ['office'] },
+      options: [
+        { value: '20', label: 'Up to 20', rateKey: 'office_small' },
+        { value: '100', label: '21 to 100', rateKey: 'office_mid' },
+        { value: '100plus', label: 'More than 100' },
+      ] },
+    { id: 'school_size', type: 'choice', label: 'What kind of school?', required: true, drivesPrice: true,
+      showIf: { question: 'kind', in: ['school'] },
+      options: [
+        { value: 'small', label: 'Nursery or small primary school', rateKey: 'school_small' },
+        { value: 'large', label: 'Large primary or secondary school', rateKey: 'school_large' },
+        { value: 'intl', label: 'International school, boarding school or university', rateKey: 'school_intl' },
+      ] },
+    { id: 'beds', type: 'choice', label: 'How many beds?', required: true, drivesPrice: true,
+      showIf: { question: 'kind', in: ['hospital'] },
+      options: [
+        { value: '50', label: 'Up to 50', rateKey: 'hospital_50' },
+        { value: '50plus', label: 'More than 50', rateKey: 'hospital_large' },
+      ] },
+  ],
+  pricing: {
+    sector: 'business',
+    base: { from: ['desks', 'school_size', 'beds', 'kind'] },
+    addons: businessAddons,
+    premiumAddons: ['video', 'reel', 'photos_20'],
+    hostingKey: 'hosting_business',
+  },
+}
+
+export const farms: IndustryModule = {
+  key: 'farms',
+  version: 1,
+  label: 'Farms and factories',
+  enabled: true,
+  resultMode: 'instant',
+  questions: [
+    { id: 'kind', type: 'choice', label: 'What should we shoot?', required: true, drivesPrice: true,
+      options: [
+        { value: 'farm', label: 'Farm or greenhouse, up to 5 acres', rateKey: 'farm_5' },
+        { value: 'farm_large', label: 'Farm larger than 5 acres' },
+        { value: 'estate', label: 'Flower, tea or coffee estate with processing', rateKey: 'estate_processing' },
+        { value: 'factory', label: 'Factory or processing plant', rateKey: 'factory' },
+        { value: 'warehouse', label: 'Warehouse' },
+        { value: 'hq', label: 'Company HQ, for recruitment or investors', rateKey: 'company_hq' },
+        { value: 'training', label: 'Staff training or safety induction tour', rateKey: 'training_tour' },
+      ] },
+    { id: 'warehouse_size', type: 'choice', label: 'How big is the warehouse?', required: true, drivesPrice: true,
+      showIf: { question: 'kind', in: ['warehouse'] },
+      options: [
+        { value: '10k', label: 'Up to 10,000 sq ft', rateKey: 'warehouse_10k' },
+        { value: '50k', label: '10,000 to 50,000 sq ft', rateKey: 'warehouse_50k' },
+        { value: '50kplus', label: 'More than 50,000 sq ft' },
+      ] },
+  ],
+  pricing: {
+    sector: 'business',
+    base: { from: ['warehouse_size', 'kind'] },
+    addons: businessAddons,
+    premiumAddons: ['video', 'reel', 'photos_20'],
+    hostingKey: 'hosting_business',
+  },
+}
+
+export const modules: Record<string, IndustryModule> = { homes, airbnb, hotels, vehicles, restaurants, developers, malls, institutions, farms, other }
 
 // Every rate key a module points at must exist in the table it prices
 // against. Run on startup and in tests so a typo can't reach a visitor.

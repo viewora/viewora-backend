@@ -185,7 +185,13 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
       },
       consent,
       modules: enabled.map(m => {
-        const optionPrices = m.questions.flatMap(q => q.options ?? []).map(o => itemPrice(o.rateKey)).filter((v): v is number => typeof v === 'number')
+        // A price shown on a tile is never below the minimum job price the quote will charge
+        const minimum = (sector: string) => itemPrice(`min_${sector}`) ?? 0
+        const shown = (o: { rateKey?: string; sector?: string }) => {
+          const p = itemPrice(o.rateKey)
+          return typeof p === 'number' ? Math.max(p, minimum(o.sector ?? m.pricing.sector)) : p
+        }
+        const optionPrices = m.questions.flatMap(q => q.options ?? []).map(shown).filter((v): v is number => typeof v === 'number')
         return {
           key: m.key,
           version: m.version,
@@ -196,7 +202,7 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
             ...q,
             options: q.options?.map(o => ({
               value: o.value, label: o.label,
-              price: o.rateKey && !table.items[o.rateKey]?.custom ? itemPrice(o.rateKey) : null,
+              price: o.rateKey && !table.items[o.rateKey]?.custom ? shown(o) : null,
             })),
           })),
           addons: m.pricing.addons

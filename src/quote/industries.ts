@@ -1,5 +1,7 @@
-// Industries on the form that have no pricing module yet. They use the
-// "other" module (staff price them by hand) and are tagged industry:<key>.
+// Industries that were on the form before they had a pricing module
+// (Phase 4c gave each one). The form still falls back to "other" with an
+// industry:<key> tag if a module is switched off, and requests made before
+// 4c carry that tag, so the hints stay valid.
 export const PLANNED_INDUSTRIES = ['restaurants', 'developers', 'malls', 'institutions', 'farms'] as const
 
 // Names staff see in alerts and the admin, the same as the form shows.
