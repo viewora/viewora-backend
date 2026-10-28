@@ -32,6 +32,7 @@ select
 2. Each column says `true` (already in) or `false` (still to run). If `m001` is `true`, also run `select count(*) from qe_rate_tables where status = 'published';`. If it says `0`, migration 002 still needs running.
 
 ### A3. Run the missing migrations, oldest first
+On 28 Oct 2026 none were in yet, so expect to run all ten.
 The files are in `D:\Viewora\viewora-backend\src\utils\`. For each number that was `false`, in order 001 → 010:
 1. Open `migration-quote-engine-0NN.sql` in Notepad (002 is `migration-quote-engine-002-seed.sql`).
 2. Select all, copy, paste into a **new** SQL Editor query, and **Run**.

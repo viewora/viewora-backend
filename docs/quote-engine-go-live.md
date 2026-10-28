@@ -7,7 +7,10 @@ set, so the branches can be merged before launch.
 ## 1. Database (Supabase)
 
 Migrations live in `src/utils/`. Each has a `.down.sql` rollback.
-001 to 005 are already applied. Apply the rest in order, after a backup:
+Apply 001 to 010 in order, after a backup (001 creates the quote tables,
+002 publishes the rate table and consent text, 003 to 005 the desk, links
+and payments; the check query in `quote-engine-manual-steps.md` A2 shows
+which are in). From 006:
 
 | File | What it does | Touches outside `qe_*`? |
 | --- | --- | --- |
