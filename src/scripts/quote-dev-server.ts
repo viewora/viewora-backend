@@ -101,7 +101,7 @@ const store = memoryStore({
     { userId: DEV_SALES_ID, displayName: 'Dev sales', role: 'sales', discountLimitBp: 500, email: 'sales@localhost', active: true },
   ],
   // A signed-in app user for "Order a capture": any session whose token says this id
-  profiles: { [DEV_CLIENT_ID]: { fullName: 'Dev Client', phone: '0711 000 111', email: 'client@localhost' } },
+  profiles: { [DEV_CLIENT_ID]: { fullName: 'Dev Client', phone: '0711 000 111', email: 'client@example.com' } },
 })
 const app = Fastify({ logger: { level: 'info' } })
 
