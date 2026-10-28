@@ -92,6 +92,7 @@ const store = memoryStore({
       subject: 'Deposit paid: {{name}}, {{amount}}',
       body: '{{name}} paid a {{amount}} deposit for {{industry}} ({{option}}, quote {{quote_ref}}).\n\nThey will pick a shoot day on the quote page. Open the job: {{admin_link}}',
     },
+    ...migrationTemplates('migration-quote-engine-006.sql'),
   },
   recipients: ['staff@localhost'],
   staff: [
