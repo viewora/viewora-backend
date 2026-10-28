@@ -26,14 +26,18 @@ import {
 
 const id = z.object({ id: z.string().uuid() })
 const source = z.string().trim().toLowerCase().regex(/^[a-z0-9_-]{1,40}$/, 'Use a short word like instagram or qr.')
-const moduleKey = z.string().refine(k => modules[k]?.enabled, 'Unknown industry').optional()
-const industryHint = z.enum(PLANNED_INDUSTRIES).optional()
+// Any industry tile key: a live module, or a planned one priced through "other"
+const industry = z.string().refine(k => modules[k]?.enabled || (PLANNED_INDUSTRIES as readonly string[]).includes(k), 'Unknown industry').optional()
+const industryPrefill = (key?: string): LinkPrefill => {
+  if (!key) return {}
+  return modules[key]?.enabled ? { moduleKey: key } : { moduleKey: 'other', industryHint: key }
+}
 
 const dmBody = z.object({
   kind: z.literal('dm'),
   firstName: z.string().trim().min(1).max(60).optional(),
   leadId: z.string().uuid().optional(),
-  moduleKey, industryHint, source,
+  industry, source,
   partnerCode: partnerCodeSchema.optional(),
   days: z.number().int().min(1).max(90).optional(),
 })
@@ -41,7 +45,7 @@ const campaignBody = z.object({
   kind: z.literal('campaign'),
   code: campaignCodeSchema.optional(),
   label: z.string().trim().min(1).max(80),
-  moduleKey, industryHint,
+  industry,
   town: z.string().trim().min(1).max(80).optional(),
   source,
   partnerCode: partnerCodeSchema.optional(),
@@ -92,16 +96,12 @@ export default async function quoteLinkRoutes(fastify: FastifyInstance, opts: {
     const body = parseWithSchema(reply, linkBody, request.body)
     if (!body) return
     const staff = request.quoteStaff!
-    if (body.industryHint && body.moduleKey !== 'other') {
-      return reply.code(400).send({ code: 'VALIDATION_ERROR', fields: [{ field: 'industryHint', message: 'Only for the "other" industry.' }] })
-    }
     if (body.partnerCode) {
       const p = await links.partnerByCode(body.partnerCode)
       if (!p?.active) return reply.code(400).send({ code: 'VALIDATION_ERROR', fields: [{ field: 'partnerCode', message: 'No active partner has that code.' }] })
     }
     const prefill: LinkPrefill = {
-      ...(body.moduleKey ? { moduleKey: body.moduleKey } : {}),
-      ...(body.industryHint ? { industryHint: body.industryHint } : {}),
+      ...industryPrefill(body.industry),
       source: body.source,
       ...(body.partnerCode ? { partnerCode: body.partnerCode } : {}),
     }

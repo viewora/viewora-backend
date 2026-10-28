@@ -104,7 +104,7 @@ async function setup() {
 
 test('DM link: made for a named person, prefills the form, credits the maker, and only its hash is stored', async () => {
   const t = await setup()
-  const made = await t.call('POST', '/admin/quote/links', SALES, { kind: 'dm', firstName: 'Wanjiku', moduleKey: 'homes', source: 'instagram' })
+  const made = await t.call('POST', '/admin/quote/links', SALES, { kind: 'dm', firstName: 'Wanjiku', industry: 'homes', source: 'instagram' })
   assert.equal(made.statusCode, 201)
   const { url, link } = made.json()
   const code = url.split('/q/')[1]
@@ -163,13 +163,12 @@ test('DM link: an owner already set is kept; expired and revoked links stop pref
 
 test('campaign link: QR code presets the town, codes are unique, and a campaign link never carries a name', async () => {
   const t = await setup()
-  const res = await t.call('POST', '/admin/quote/links', ADMIN, { kind: 'campaign', code: 'Junction-Walkin', label: 'Junction poster', town: 'Ngong Road', moduleKey: 'other', industryHint: 'malls', source: 'qr' })
+  const res = await t.call('POST', '/admin/quote/links', ADMIN, { kind: 'campaign', code: 'Junction-Walkin', label: 'Junction poster', town: 'Ngong Road', industry: 'malls', source: 'qr' })
   assert.equal(res.statusCode, 201)
   assert.equal(res.json().link.code, 'junction-walkin')
   assert.deepEqual((await t.pub('GET', '/quote/entry/JUNCTION-WALKIN')).json(), { kind: 'campaign', prefill: { moduleKey: 'other', industryHint: 'malls', town: 'Ngong Road' } })
   assert.equal((await t.call('POST', '/admin/quote/links', ADMIN, { kind: 'campaign', code: 'junction-walkin', label: 'Again', source: 'qr' })).statusCode, 409)
-  // A hint belongs to "other" only
-  assert.equal((await t.call('POST', '/admin/quote/links', ADMIN, { kind: 'campaign', label: 'Bad', moduleKey: 'homes', industryHint: 'malls', source: 'qr' })).statusCode, 400)
+  assert.equal((await t.call('POST', '/admin/quote/links', ADMIN, { kind: 'campaign', label: 'Bad', industry: 'spaceships', source: 'qr' })).statusCode, 400)
   // No personal data on a campaign link: a name is not accepted
   assert.equal((await t.call('POST', '/admin/quote/links', ADMIN, { kind: 'campaign', label: 'x', source: 'qr', firstName: 'Amina' })).statusCode, 201)
   assert.equal(t.store.dump().entryLinks.at(-1)!.prefill.firstName, undefined)
