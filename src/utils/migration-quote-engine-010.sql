@@ -110,10 +110,8 @@ END $$;
 
 -- The message staff send with the link (editable in Templates)
 INSERT INTO public.qe_message_templates (key, channel, locale, version, subject, body) VALUES
-(
-  'tour_delivery', 'whatsapp', 'en', 1, NULL,
-  E'Hi {{name}}, your Viewora tour is ready. Open this link and sign in to add it to your account: {{delivery_link}}\n\nThe link works once and expires on {{expires_on}}.'
-)
+('tour_delivery', 'whatsapp', 'en', 1, NULL,
+  E'Hi {{name}}, your Viewora tour is ready. Open this link and sign in to add it to your account: {{delivery_link}}\n\nThe link works once and expires on {{expires_on}}.')
 ON CONFLICT DO NOTHING;
 
 COMMIT;
