@@ -83,7 +83,7 @@ function buildLines(
   let custom = false
   let unresolvedBase = false
   let ranged = false
-  let sector = p.sector
+  let minimumApplies = true
   // A range has two ends; "from X" (no top) is confirmed by staff
   const spread = (item: RateItem) => {
     if (item.custom || item.high === null) custom = true
@@ -98,7 +98,7 @@ function buildLines(
       const q = module.questions.find(x => x.id === qid)
       if (!q || !isVisible(q, answers)) continue
       const opt = q.options?.find(o => o.value === String(answers.details[qid]))
-      if (opt?.rateKey) { baseItem = items[opt.rateKey]; sector = opt.sector ?? sector; break }
+      if (opt?.rateKey) { baseItem = items[opt.rateKey]; minimumApplies = !opt.noMinimum; break }
     }
     if (baseItem) {
       const unit = valueOf(baseItem, end)
@@ -207,10 +207,10 @@ function buildLines(
   lines.push(...best)
 
   // Minimum job price
-  const minItem = items[`min_${sector}`]
+  const minItem = minimumApplies ? items[`min_${p.sector}`] : undefined
   const jobNet = lines.reduce((s, l) => s + l.amount, 0)
   const minimum = minItem ? valueOf(minItem, end) ?? 0 : 0
-  if (!custom && jobNet < minimum) {
+  if (minItem && !custom && jobNet < minimum) {
     const gap = minimum - jobNet
     lines.push({ key: minItem.key, kind: 'minimum', label: minItem.label, qty: 1, unit: gap, amount: gap })
   }

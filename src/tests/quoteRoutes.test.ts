@@ -37,11 +37,14 @@ test('quote API: config lists enabled modules with rate-table prices and consent
   assert.equal(homes.questions[0].options.find((o: any) => o.value === 'estate').price, null, 'custom sizes show no price')
   assert.equal(homes.questions[0].options[0].rateKey, undefined, 'rate keys stay on the server')
   assert.equal(body.modules.find((m: any) => m.key === 'other').from, null)
-  // A plot is 3,500 in the table but the quote charges the 4,500 minimum: the form shows 4,500
+  // Land has no minimum: a plot shows its rate card price
   const dev = body.modules.find((m: any) => m.key === 'developers')
-  assert.equal(dev.from, 4500)
-  assert.equal(dev.questions.find((q: any) => q.id === 'land_size').options[0].price, 4500)
-  assert.equal(dev.questions.find((q: any) => q.id === 'land_size').options[0].sector, undefined, 'only value, label and price go out')
+  assert.equal(dev.from, 3500)
+  assert.equal(dev.questions.find((q: any) => q.id === 'land_size').options[0].price, 3500)
+  assert.equal(dev.questions.find((q: any) => q.id === 'land_size').options[0].noMinimum, undefined, 'only value, label and price go out')
+  // Elsewhere a shown price never sits below the minimum job price
+  const malls = body.modules.find((m: any) => m.key === 'malls')
+  assert.equal(malls.from, 7000, 'a popup is from 5,000 but quotes no less than the 7,000 business minimum')
   assert.deepEqual(body.consent, consent)
   const rush = homes.addons.find((a: any) => a.key === 'rush')
   assert.deepEqual([rush.amount, rush.percentBp], [null, 3000], 'percentage add-ons are not shown as shillings')

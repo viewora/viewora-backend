@@ -47,14 +47,12 @@ for (const ex of fixed) {
   })
 }
 
-test('industries: a single plot takes the home minimum job price', () => {
-  // land_plot 3,500 is below min_home 4,500, so a minimum line makes up the 1,000
-  const r = run('developers', { kind: 'land', land_size: 'plot' })
-  const o = r.options[1]
-  assert.equal(o.total, 4_500)
-  assert.deepEqual(o.lines.find(l => l.kind === 'minimum')?.amount, 1_000)
-  // Bigger land is above the minimum: no adjustment
-  assert.equal(run('developers', { kind: 'land', land_size: '1_acre' }).options[1].lines.some(l => l.kind === 'minimum'), false)
+test('industries: land has no minimum job price, so a plot is the rate card price', () => {
+  const o = run('developers', { kind: 'land', land_size: 'plot' }).options[1]
+  assert.equal(o.total, 3_500)
+  assert.equal(o.lines.some(l => l.kind === 'minimum'), false)
+  // Other developer jobs are unchanged
+  assert.equal(run('developers', { kind: 'hostel', hostel_rooms: '20' }).options[1].total, 15_000)
 })
 
 test('industries: where the rate card gives a range, the visitor sees the range', () => {

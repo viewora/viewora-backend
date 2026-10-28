@@ -60,7 +60,7 @@ export interface ChoiceOption {
   value: string
   label: string
   rateKey?: string        // base item this option selects
-  sector?: 'home' | 'business'   // its minimum job price, when it differs from the module's (land plots)
+  noMinimum?: boolean     // no minimum job price when this option is the base (land: plots are priced below it)
 }
 
 export interface Condition {

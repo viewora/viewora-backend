@@ -187,9 +187,9 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
       modules: enabled.map(m => {
         // A price shown on a tile is never below the minimum job price the quote will charge
         const minimum = (sector: string) => itemPrice(`min_${sector}`) ?? 0
-        const shown = (o: { rateKey?: string; sector?: string }) => {
+        const shown = (o: { rateKey?: string; noMinimum?: boolean }) => {
           const p = itemPrice(o.rateKey)
-          return typeof p === 'number' ? Math.max(p, minimum(o.sector ?? m.pricing.sector)) : p
+          return typeof p === 'number' && !o.noMinimum ? Math.max(p, minimum(m.pricing.sector)) : p
         }
         const optionPrices = m.questions.flatMap(q => q.options ?? []).map(shown).filter((v): v is number => typeof v === 'number')
         return {

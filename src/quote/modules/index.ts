@@ -226,8 +226,8 @@ export const restaurants: IndustryModule = {
   },
 }
 
-// Developers, land, hostels and space to let. Land takes the home minimum
-// job price: plots are small jobs priced below the business minimum.
+// Developers, land, hostels and space to let. Land has no minimum job
+// price: the rate card prices a single plot below it (Peter, 2026-10-28).
 export const developers: IndustryModule = {
   key: 'developers',
   version: 1,
@@ -257,12 +257,12 @@ export const developers: IndustryModule = {
     { id: 'land_size', type: 'choice', label: 'How big is the land?', required: true, drivesPrice: true,
       showIf: { question: 'kind', in: ['land'] },
       options: [
-        { value: 'plot', label: 'One plot (50 × 100 ft)', rateKey: 'land_plot', sector: 'home' },
-        { value: 'half_acre', label: 'Several plots, up to ½ acre', rateKey: 'land_half_acre', sector: 'home' },
-        { value: '1_acre', label: '½ to 1 acre', rateKey: 'land_1_acre', sector: 'home' },
-        { value: '5_acres', label: '1 to 5 acres', rateKey: 'land_5_acres', sector: 'home' },
-        { value: '20_acres', label: '5 to 20 acres', rateKey: 'land_20_acres', sector: 'home' },
-        { value: '50_acres', label: '20 to 50 acres', rateKey: 'land_50_acres', sector: 'home' },
+        { value: 'plot', label: 'One plot (50 × 100 ft)', rateKey: 'land_plot', noMinimum: true },
+        { value: 'half_acre', label: 'Several plots, up to ½ acre', rateKey: 'land_half_acre', noMinimum: true },
+        { value: '1_acre', label: '½ to 1 acre', rateKey: 'land_1_acre', noMinimum: true },
+        { value: '5_acres', label: '1 to 5 acres', rateKey: 'land_5_acres', noMinimum: true },
+        { value: '20_acres', label: '5 to 20 acres', rateKey: 'land_20_acres', noMinimum: true },
+        { value: '50_acres', label: '20 to 50 acres', rateKey: 'land_50_acres', noMinimum: true },
         { value: '50plus', label: 'More than 50 acres', rateKey: 'land_50plus' },
       ] },
     { id: 'visits', type: 'number', label: 'How many site visits?', help: 'For example one a month until handover.',
