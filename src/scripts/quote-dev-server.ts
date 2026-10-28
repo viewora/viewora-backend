@@ -129,8 +129,17 @@ const payments = { paystack, publicUrl, messagesLive: false, alerts, track: () =
 const followups = memoryFollowupStore(() => store.dump())
 const messaging = { now: clock, publicUrl, messagesLive: false, optOutSecret: 'dev-optout' }
 await app.register(quoteRoutes, { prefix: '/quote', store, desk, jobs, alerts, payments, followups, messaging, webhookSecret: 'sk_test_dev', authenticate: devAuthenticate })
+// Without GEMINI_API_KEY the AI draft answers from a fixed rule, so the admin can be tried offline
+const fakeAiDraft = async ({ user }: { user: string }) => {
+  const areas = Number(/Rooms or areas: (\d+)/.exec(user)?.[1] ?? 6)
+  return JSON.stringify({
+    lines: [{ key: 'scene_business', qty: areas, reason: `${areas} rooms or areas, one scene each` }, { key: 'video', qty: 1, reason: 'Dev fake: not a real suggestion' }],
+    questions: ['Dev fake: is every area open on the shoot day?'],
+  })
+}
 await app.register(quoteAdminRoutes, {
   prefix: '/admin/quote', store, desk, jobs, payments, followups, adminStore: memoryAdminStore(() => store.dump()),
+  ...(process.env.GEMINI_API_KEY ? {} : { aiDraft: fakeAiDraft }),
   messagesLive: false, publicUrl, now: clock,
 })
 // Peek at what the form saved: http://localhost:4010/dev/dump

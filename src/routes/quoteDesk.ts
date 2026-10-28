@@ -31,6 +31,8 @@ import { publicQuote } from '../quote/publicQuote.js'
 import { renderQuotePdf } from '../quote/pdf.js'
 import type { FollowupStore } from '../quote/followupStore.js'
 import { quoteSent } from '../quote/messaging.js'
+import { draftPrompt, readDraft, type DraftFn } from '../quote/aiDraft.js'
+import { generateGemini } from '../utils/gemini.js'
 
 export interface DeskRouteOptions {
   adminStore: QuoteAdminStore
@@ -43,6 +45,7 @@ export interface DeskRouteOptions {
   now?: () => Date
   newToken?: () => string
   followups?: FollowupStore              // sending a quote starts its follow-ups
+  aiDraft?: DraftFn | null               // default: Gemini when GEMINI_API_KEY is set; null turns it off
 }
 
 export const STAGES: LeadStage[] = ['new', 'contacted', 'quoted', 'booked', 'delivered', 'paid', 'lost']
@@ -305,6 +308,42 @@ export default async function quoteDeskRoutes(fastify: FastifyInstance, opts: De
 
   // POST /admin/quote/quotes/:id/check: what a save would do, without saving
   // (the editor calls it as staff type, so the rules live in one place)
+  // POST /admin/quote/quotes/:id/ai-draft: suggested lines for a "Something
+  // else" request. Saves nothing: staff add the lines they agree with.
+  const aiDraft: DraftFn | null = opts.aiDraft !== undefined ? opts.aiDraft
+    : process.env.GEMINI_API_KEY
+      ? ({ system, user }) => generateGemini({ apiKey: process.env.GEMINI_API_KEY!, systemText: system, parts: [{ text: user }], json: true, maxOutputTokens: 2048 })
+      : null
+  fastify.post('/quotes/:id/ai-draft', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute', keyGenerator: (r: any) => `ai:${r.headers['x-admin-id'] ?? r.ip}` } },
+  }, async (request, reply) => {
+    if (!allowed(request, reply, 'quotes:write')) return
+    const params = parseWithSchema(reply, id, request.params)
+    if (!params) return
+    if (!aiDraft) return reply.code(503).send({ code: 'AI_OFF', statusMessage: 'AI drafts are not set up on this server (GEMINI_API_KEY).' })
+    const doc = await loadQuote(reply, params.id)
+    if (!doc) return
+    const [ctx, table] = await Promise.all([desk.request(doc.requestId), desk.rateTable(doc.rateTableId)])
+    if (!ctx || !table) return conflict(reply, 'not_found', 404)
+    if (ctx.moduleKey !== 'other') return reply.code(409).send({ code: 'NOT_OTHER', statusMessage: 'AI drafts are only for "Something else" requests. Other industries are priced by the rate table.' })
+    const d = ctx.answers.details ?? {}
+    const description = typeof d.description === 'string' ? d.description.trim() : ''
+    if (!description) return reply.code(409).send({ code: 'NO_DESCRIPTION', statusMessage: 'The client did not describe the place, so there is nothing to draft from.' })
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+    const prompt = draftPrompt({ description, setting: typeof d.setting === 'string' ? d.setting : null, areas: num(d.areas), floors: num(d.floors) }, table)
+    let raw: string
+    try {
+      raw = await aiDraft(prompt)
+    } catch (err) {
+      fastify.log.error({ err: err instanceof Error ? err.message : String(err), quoteId: doc.id }, 'quote: AI draft failed')
+      return reply.code(502).send({ code: 'AI_FAILED', statusMessage: 'The AI did not answer. Try again in a minute, or price it by hand.' })
+    }
+    const draft = readDraft(raw, table)
+    // Who asked and how many lines came back; never the description itself
+    fastify.log.info({ staffId: request.quoteStaff!.id, quoteId: doc.id, lines: draft.lines.length, dropped: draft.dropped }, 'quote: AI draft made')
+    return draft
+  })
+
   fastify.post('/quotes/:id/check', async (request, reply) => {
     if (!allowed(request, reply, 'quotes:write')) return
     const params = parseWithSchema(reply, id, request.params)
