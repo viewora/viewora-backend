@@ -27,6 +27,7 @@ export interface ReportRow {
   jobValue: number | null          // before VAT, in the job currency
   currency: 'KES' | 'USD' | null
   firstStaffMinutes: number | null
+  abVariant: string | null         // the contact-step A/B test (Phase 5c)
 }
 
 export interface Visitors {
@@ -55,6 +56,8 @@ export interface Report {
   dropOff: Array<{ step: number; count: number }>
   byIndustry: GroupRow[]
   bySource: GroupRow[]
+  // Only forms that were in the test; empty while it is off
+  byVariant: GroupRow[]
   kpis: {
     completed: number
     quoted: number
@@ -116,6 +119,7 @@ export function buildReport(rows: ReportRow[], visitors: Visitors): Report {
     dropOff,
     byIndustry: group(rows, r => r.industry),
     bySource: group(rows, r => r.source ?? 'direct'),
+    byVariant: group(rows.filter(r => r.abVariant), r => r.abVariant!),
     kpis: {
       completed: counts.completed,
       quoted: counts.quoted,
@@ -145,7 +149,7 @@ export function reportCsv(report: Report): string {
   }
   const pct = (b: number | null) => (b === null ? '' : `${b / 100}%`)
   const lines = [['Group', 'Name', 'Started', 'Completed', 'Quoted', 'Booked', 'Win rate', 'Average job value (KES, before VAT)'].join(',')]
-  for (const [label, rows] of [['Industry', report.byIndustry], ['Source', report.bySource]] as const) {
+  for (const [label, rows] of [['Industry', report.byIndustry], ['Source', report.bySource], ['Contact test', report.byVariant]] as const) {
     for (const r of rows) lines.push([label, r.key, r.started, r.completed, r.quoted, r.booked, pct(r.winRate), r.avgJobValue].map(cell).join(','))
   }
   return lines.join('\n') + '\n'

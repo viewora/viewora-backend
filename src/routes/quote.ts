@@ -57,7 +57,8 @@ const startSchema = z.object({
     partnerCode: z.string().trim().regex(/^[A-Za-z0-9-]{2,20}$/).optional().catch(undefined),
     code: codeSchema.optional().catch(undefined),   // the /q/:code link it came from
   }).optional(),
-  abVariant: z.string().trim().max(20).optional(),
+  // The contact-step A/B test; anything else is dropped, never a reason to refuse
+  abVariant: z.enum(['contact_first', 'contact_late']).optional().catch(undefined),
   website: z.string().optional(),          // honeypot: people never see or fill it
 })
 
@@ -84,6 +85,7 @@ const stepSchema = z.discriminatedUnion('step', [
     }).refine(l => !!l.town || (l.lat !== undefined && l.lng !== undefined), 'location required'),
     timing: z.enum(['this_week', 'this_month', 'planning']),
     note: z.string().trim().max(1000).optional(),
+    currency: z.enum(['KES', 'USD']).optional(),
   }),
 ])
 
@@ -440,13 +442,14 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
       location: body.location,
       timing: body.timing,
       ...(body.note ? { note: sanitizeLeadText(body.note, 1000) } : {}),
+      ...(body.currency === 'USD' ? { currency: 'USD' as const } : {}),
     }
     const result = price(module, {
       clientType: req.clientType ?? undefined,
       details: answers.details,
       addons: answers.addons,
       location: answers.location,
-    }, table)
+    }, table, { currency: answers.currency })
     const quoteId = await store.saveQuote(req.id, result, {
       validUntil: nairobiDate(messaging.now(), table.settings.quoteValidityDays),
       depositBp: table.settings.depositBp,

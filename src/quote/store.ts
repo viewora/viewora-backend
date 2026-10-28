@@ -16,6 +16,7 @@ export interface StoredAnswers {
   location?: { town?: string; lat?: number; lng?: number }
   timing?: 'this_week' | 'this_month' | 'planning'
   note?: string
+  currency?: 'KES' | 'USD'   // the visitor asked for dollars (Phase 5c)
 }
 
 export interface EntryInfo {

@@ -12,7 +12,7 @@ import type { DeskStore, LinkHit } from '../quote/deskStore.js'
 import type { JobStore } from '../quote/jobStore.js'
 import { publicQuote } from '../quote/publicQuote.js'
 import { renderQuotePdf } from '../quote/pdf.js'
-import { payBlocker } from '../quote/jobs.js'
+import { payBlocker, usdPaymentsOn } from '../quote/jobs.js'
 import { publicJob } from '../quote/payments.js'
 
 const tokenParams = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{43}$/) })
@@ -52,7 +52,7 @@ export default async function quotePublicRoutes(fastify: FastifyInstance, opts: 
     const quote = publicQuote(hit, now())
     if (!opts.jobs || quote.state === 'gone' || quote.state === 'replaced' || quote.state === 'closed') return { quote, whatsapp: whatsappNumber }
     const job = await opts.jobs.jobForRequest(hit.quote.requestId)
-    const blocker = payBlocker(hit.quote, quote.state, { hasJob: !!job, paymentsOn: !!opts.paymentsOn })
+    const blocker = payBlocker(hit.quote, quote.state, { hasJob: !!job, paymentsOn: !!opts.paymentsOn, usdPayments: usdPaymentsOn() })
     return {
       quote, whatsapp: whatsappNumber,
       // A job only shows on the quote it was paid from

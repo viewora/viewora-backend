@@ -54,6 +54,7 @@ export function memoryReportStore(data: () => MemoryData): ReportStore {
             jobValue: option?.net ?? null,
             currency: job?.currency ?? null,
             firstStaffMinutes: firstStaff ? minutesBetween(r.completedAt!, firstStaff) : null,
+            abVariant: r.abVariant,
           }
         })
     },
@@ -78,6 +79,7 @@ export function supabaseReportStore(db: SupabaseClient): ReportStore {
         jobValue: r.job_value ?? null,
         currency: r.currency ?? null,
         firstStaffMinutes: r.first_staff_minutes ?? null,
+        abVariant: r.ab_variant ?? null,
       }))
     },
   }

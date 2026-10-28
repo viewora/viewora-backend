@@ -23,7 +23,7 @@ const as = (who: string) => ({ authorization: 'Bearer test-admin-secret', 'x-adm
 let n = 0
 const row = (patch: Partial<ReportRow> = {}): ReportRow => ({
   requestId: `r${++n}`, startedAt: '2026-11-02T09:00:00Z', industry: 'homes', source: 'site', stepReached: 5,
-  completed: true, quoted: false, booked: false, paid: false, jobValue: null, currency: null, firstStaffMinutes: null, ...patch,
+  completed: true, quoted: false, booked: false, paid: false, jobValue: null, currency: null, firstStaffMinutes: null, abVariant: null, ...patch,
 })
 const none: Visitors = { status: 'not_connected', total: null, bySource: {} }
 
@@ -173,4 +173,13 @@ test('reports route: drop-off by step, filters, first staff action, and commissi
   assert.equal(csv.headers['content-type'], 'text/csv; charset=utf-8')
   assert.match(String(csv.headers['content-disposition']), /quote-report-2026-11-01-to-2026-11-30\.csv/)
   assert.match(csv.body, /Industry,homes,2,0,0,0,,/)
+})
+
+test('report: the contact-step test compares only the forms that were in it', () => {
+  const r = buildReport([
+    row({ abVariant: 'contact_first', completed: false, stepReached: 2 }), row({ abVariant: 'contact_first' }),
+    row({ abVariant: 'contact_late' }), row({ abVariant: 'contact_late' }), row(),
+  ], none)
+  assert.deepEqual(r.byVariant.map(g => [g.key, g.started, g.completed]), [['contact_first', 2, 1], ['contact_late', 2, 2]])
+  assert.deepEqual(buildReport([row()], none).byVariant, [])
 })

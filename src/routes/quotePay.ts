@@ -12,7 +12,7 @@ import { parseWithSchema } from '../utils/validation.js'
 import { DeskError, type DeskStore } from '../quote/deskStore.js'
 import type { JobStore } from '../quote/jobStore.js'
 import { publicQuote } from '../quote/publicQuote.js'
-import { DEFAULT_BOOKING, WINDOWS, bookingDays, payBlocker, slotOpen } from '../quote/jobs.js'
+import { DEFAULT_BOOKING, WINDOWS, bookingDays, payBlocker, slotOpen, usdPaymentsOn } from '../quote/jobs.js'
 import { PaystackError, signatureValid } from '../quote/paystack.js'
 import {
   PaymentsOff, REFERENCE, confirmPayment, publicJob, startDeposit, type PaymentDeps,
@@ -30,6 +30,7 @@ const MESSAGES: Record<string, string> = {
   no_option: 'That option has changed. Refresh the page and try again.',
   amount_mismatch: 'That option has changed. Refresh the page and try again.',
   payments_off: 'Paying online is not open yet. WhatsApp us and we will book you in.',
+  usd_by_link: 'Your quote is in US dollars. We will send you a payment link on WhatsApp.',
   slot_full: 'Someone has just taken that slot. Pick another day or time.',
   date_locked: 'Your shoot day is already confirmed. WhatsApp us if you need to change it.',
   no_job: 'Pay the deposit first, then pick your shoot day.',
@@ -64,7 +65,7 @@ export default async function quotePayRoutes(fastify: FastifyInstance, opts: Pay
     const { hit, token } = found
     const view = publicQuote(hit, now())
     const job = await jobs.jobForRequest(hit.quote.requestId)
-    const blocker = payBlocker(hit.quote, view.state, { hasJob: !!job, paymentsOn: !!payments.paystack })
+    const blocker = payBlocker(hit.quote, view.state, { hasJob: !!job, paymentsOn: !!payments.paystack, usdPayments: usdPaymentsOn() })
     if (blocker) return fail(reply, blocker)
     const email = hit.lead?.email ?? body.email
     if (!email) return reply.code(422).send({ code: 'EMAIL_NEEDED', statusMessage: 'Add your email address. Paystack sends your receipt there.' })

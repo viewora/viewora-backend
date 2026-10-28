@@ -119,14 +119,19 @@ export interface SettleResult {
 }
 
 // Why a quote can't take a deposit right now (null = it can)
-export type PayBlocker = 'not_open' | 'not_final' | 'no_deposit' | 'already_booked' | 'payments_off'
+export type PayBlocker = 'not_open' | 'not_final' | 'no_deposit' | 'already_booked' | 'payments_off' | 'usd_by_link'
 
-export function payBlocker(doc: QuoteDoc, state: PublicState, opts: { hasJob: boolean; paymentsOn: boolean }): PayBlocker | null {
+// USD card payments wait until Paystack confirms USD on our account
+// (QUOTE_PAYSTACK_USD=1); until then staff send a USD quote a payment link.
+export const usdPaymentsOn = () => process.env.QUOTE_PAYSTACK_USD === '1'
+
+export function payBlocker(doc: QuoteDoc, state: PublicState, opts: { hasJob: boolean; paymentsOn: boolean; usdPayments?: boolean }): PayBlocker | null {
   if (!opts.paymentsOn) return 'payments_off'
   if (opts.hasJob || doc.status === 'accepted') return 'already_booked'
   if (state !== 'open') return 'not_open'
   if (doc.mode === 'range' || doc.options.some(o => o.lines.some(l => l.tbc))) return 'not_final'
   if (!doc.options.some(o => o.deposit > 0)) return 'no_deposit'
+  if (doc.currency === 'USD' && !opts.usdPayments) return 'usd_by_link'
   return null
 }
 

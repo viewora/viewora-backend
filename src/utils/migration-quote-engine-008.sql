@@ -25,6 +25,7 @@ LANGUAGE sql STABLE SET search_path = public AS $$
     'industry', COALESCE(r.hint, r.module_key),
     'source', COALESCE(r.answers->'entry'->>'source', l.source),
     'step_reached', r.step_reached,
+    'ab_variant', r.ab_variant,
     'completed', r.completed_at IS NOT NULL,
     'quoted', EXISTS (SELECT 1 FROM qe_quotes q WHERE q.request_id = r.id AND q.sent_at IS NOT NULL),
     'booked', j.id IS NOT NULL,
