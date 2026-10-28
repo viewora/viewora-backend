@@ -17,6 +17,8 @@ const INDUSTRY_LABELS: Record<string, string> = {
   malls: 'Malls and retail',
   institutions: 'Offices, schools and clinics',
   farms: 'Farms and factories',
+  wayfinding: 'Venue maps and wayfinding',
+  floorplans: 'Floor plans',
 }
 
 export const CLIENT_TYPE_LABELS: Record<string, string> = {

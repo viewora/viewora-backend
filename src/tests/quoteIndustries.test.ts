@@ -4,7 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { price } from '../quote/engine/price.js'
-import { modules } from '../quote/modules/index.js'
+import { modules, validateModule } from '../quote/modules/index.js'
 import { rateTableV1 } from '../quote/seed/rateTable.v1.js'
 import type { Answers, PriceResult } from '../quote/engine/types.js'
 
@@ -99,5 +99,23 @@ test('industries: all ten modules are enabled, and the five planned ones are rea
   for (const key of ['restaurants', 'developers', 'malls', 'institutions', 'farms']) {
     assert.equal(modules[key]?.enabled, true, key)
     assert.notEqual(modules[key].resultMode, 'custom', key)
+  }
+})
+
+test('industries: wayfinding and floor plans always go to staff, with no price shown', () => {
+  const jobs = [
+    ['wayfinding', { venue: 'mall', floors: 3, destinations: 120, tour: 'yes', plans: 'cad' }],
+    ['wayfinding', { venue: 'hospital', floors: 1, destinations: 10, tour: 'no', plans: 'none' }],
+    ['floorplans', { place: 'home', floors: 1, size: 's', deliverable: 'redraw' }],
+    ['floorplans', { place: 'building', floors: 12, size: 'xl', deliverable: 'measured' }],
+  ] as const
+  for (const [module, details] of jobs) {
+    const r = run(module, details as Answers['details'], { addons: { website_embed: 1 } })
+    assert.deepEqual([r.mode, r.options.length], ['custom', 0], `${module} ${JSON.stringify(details)}`)
+  }
+  for (const key of ['wayfinding', 'floorplans']) {
+    assert.equal(modules[key].resultMode, 'custom', key)
+    assert.equal(modules[key].pricing.base, undefined, `${key} has no base price yet`)
+    assert.deepEqual(validateModule(modules[key], rateTableV1), [], key)
   }
 })

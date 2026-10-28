@@ -30,7 +30,7 @@ test('quote API: config lists enabled modules with rate-table prices and consent
   const res = await fastify.inject({ method: 'GET', url: '/quote/config' })
   assert.equal(res.statusCode, 200)
   const body = res.json()
-  assert.deepEqual(body.modules.map((m: any) => m.key), ['homes', 'airbnb', 'hotels', 'vehicles', 'restaurants', 'developers', 'malls', 'institutions', 'farms', 'other'])
+  assert.deepEqual(body.modules.map((m: any) => m.key), ['homes', 'airbnb', 'hotels', 'vehicles', 'restaurants', 'developers', 'malls', 'institutions', 'farms', 'wayfinding', 'floorplans', 'other'])
   const homes = body.modules[0]
   assert.equal(homes.from, 4500)
   assert.equal(homes.questions[0].options.find((o: any) => o.value === '2br').price, 7000)

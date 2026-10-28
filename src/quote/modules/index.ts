@@ -414,7 +414,87 @@ export const farms: IndustryModule = {
   },
 }
 
-export const modules: Record<string, IndustryModule> = { homes, airbnb, hotels, vehicles, restaurants, developers, malls, institutions, farms, other }
+// Phase 5e: venue maps with shop-to-shop routes, and floor plans on their
+// own. Neither has a published price yet, so both always go to staff
+// ("we'll confirm"): no base item, and the answers are what staff need to
+// scope the job. Give them a base in the rate table once prices are set.
+export const wayfinding: IndustryModule = {
+  key: 'wayfinding',
+  version: 1,
+  label: 'Venue maps and wayfinding',
+  enabled: true,
+  resultMode: 'custom',
+  questions: [
+    { id: 'venue', type: 'choice', label: 'What kind of place is it?', required: true,
+      options: [
+        { value: 'mall', label: 'Shopping mall' },
+        { value: 'hospital', label: 'Hospital or clinic' },
+        { value: 'campus', label: 'School or university campus' },
+        { value: 'office', label: 'Office block or business park' },
+        { value: 'other', label: 'Something else' },
+      ] },
+    { id: 'floors', type: 'number', label: 'How many floors or levels?', help: 'Count parking levels if people should find their way there too.',
+      min: 1, max: 60, required: true },
+    { id: 'destinations', type: 'number', label: 'Roughly how many shops, rooms or places should people be able to find?',
+      help: 'A rough number is fine.', min: 1, max: 2000, required: true },
+    { id: 'tour', type: 'choice', label: 'Do you also want a 360° tour of the common areas?', default: 'yes',
+      options: [{ value: 'yes', label: 'Yes, with the map' }, { value: 'no', label: 'No, just the map' }] },
+    { id: 'plans', type: 'choice', label: 'What plans do you already have?', required: true,
+      options: [
+        { value: 'cad', label: 'CAD or PDF floor plans' },
+        { value: 'photos', label: 'Photos or a printed directory' },
+        { value: 'none', label: 'Nothing yet' },
+      ] },
+    { id: 'notes', type: 'text', label: 'Anything we should know? (optional)', help: 'For example, "routes from the parking to each shop".' },
+  ],
+  pricing: {
+    sector: 'business',
+    addons: ['website_embed', 'google_maps', 'branding', 'scoping_visit', 'rush'],
+    premiumAddons: [],
+    hostingKey: 'hosting_business',
+  },
+}
+
+export const floorplans: IndustryModule = {
+  key: 'floorplans',
+  version: 1,
+  label: 'Floor plans',
+  enabled: true,
+  resultMode: 'custom',
+  questions: [
+    { id: 'place', type: 'choice', label: 'What is the floor plan for?', required: true,
+      options: [
+        { value: 'home', label: 'A home or apartment' },
+        { value: 'office', label: 'An office or shop' },
+        { value: 'venue', label: 'A hotel, school or venue' },
+        { value: 'building', label: 'A whole building' },
+      ] },
+    { id: 'floors', type: 'number', label: 'How many floors?', min: 1, max: 60, default: 1, required: true },
+    { id: 'size', type: 'choice', label: 'About how big is each floor?', required: true,
+      options: [
+        { value: 's', label: 'Up to 1,500 sq ft' },
+        { value: 'm', label: '1,500 to 5,000 sq ft' },
+        { value: 'l', label: '5,000 to 20,000 sq ft' },
+        { value: 'xl', label: 'More than 20,000 sq ft' },
+        { value: 'unsure', label: 'Not sure' },
+      ] },
+    { id: 'deliverable', type: 'choice', label: 'What do you need?', required: true,
+      options: [
+        { value: 'redraw', label: 'Clean up and redraw a plan I have' },
+        { value: 'draw', label: 'A new plan drawn on site' },
+        { value: 'measured', label: 'A measured plan, with room sizes' },
+      ] },
+    { id: 'notes', type: 'text', label: 'Anything we should know? (optional)' },
+  ],
+  pricing: {
+    sector: 'business',
+    addons: ['website_embed', 'branding', 'rush', 'extra_revision'],
+    premiumAddons: [],
+    hostingKey: 'hosting_business',
+  },
+}
+
+export const modules: Record<string, IndustryModule> = { homes, airbnb, hotels, vehicles, restaurants, developers, malls, institutions, farms, wayfinding, floorplans, other }
 
 // Every rate key a module points at must exist in the table it prices
 // against. Run on startup and in tests so a typo can't reach a visitor.
