@@ -17,6 +17,8 @@ import { supabaseJobStore, type JobStore } from '../quote/jobStore.js'
 import { paymentDeps, type PaymentDeps } from '../quote/payments.js'
 import { followupStoreFor, type FollowupStore } from '../quote/followupStore.js'
 import quoteFollowupRoutes from './quoteFollowups.js'
+import { linkStoreFor, type LinkStore } from '../quote/linkStore.js'
+import quoteLinkRoutes from './quoteLinks.js'
 
 export { answersView } from '../quote/answersView.js'
 import { answersView } from '../quote/answersView.js'
@@ -38,7 +40,7 @@ const leadParams = z.object({ id: z.string().uuid() })
 
 export default async function quoteAdminRoutes(fastify: FastifyInstance, opts: Omit<DeskRouteOptions, 'adminStore' | 'store' | 'desk'> & {
   adminStore?: QuoteAdminStore; store?: QuoteStore; desk?: DeskStore
-  jobs?: JobStore; payments?: Partial<PaymentDeps>; followups?: FollowupStore
+  jobs?: JobStore; payments?: Partial<PaymentDeps>; followups?: FollowupStore; links?: LinkStore
 }) {
   const store = opts.adminStore ?? supabaseAdminStore(fastify.supabase)
   const quoteStore = opts.store ?? supabaseStore(fastify.supabase)
@@ -79,7 +81,7 @@ export default async function quoteAdminRoutes(fastify: FastifyInstance, opts: O
   })
 
   // Child routes share the staff check above (not the prefix: Fastify already applied it)
-  const { prefix: _prefix, jobs: _jobs, payments: _payments, followups: _followups, ...deskOpts } = opts as typeof opts & { prefix?: string }
+  const { prefix: _prefix, jobs: _jobs, payments: _payments, followups: _followups, links: _links, ...deskOpts } = opts as typeof opts & { prefix?: string }
   const followups = opts.followups ?? followupStoreFor(quoteStore, fastify.supabase)
   await fastify.register(quoteDeskRoutes, { ...deskOpts, adminStore: store, store: quoteStore, desk, followups })
   await fastify.register(quoteRatesRoutes, { desk })
@@ -93,4 +95,8 @@ export default async function quoteAdminRoutes(fastify: FastifyInstance, opts: O
   })
   await fastify.register(quoteJobsRoutes, { desk, store: quoteStore, jobs, payments, followups })
   await fastify.register(quoteFollowupRoutes, { followups, now: opts.now ?? (() => new Date()) })
+  await fastify.register(quoteLinkRoutes, {
+    links: opts.links ?? linkStoreFor(quoteStore, fastify.supabase), store: quoteStore, now: opts.now ?? (() => new Date()),
+    publicUrl: (opts.publicUrl ?? process.env.QUOTE_PUBLIC_URL ?? 'https://app.viewora.software').replace(/\/$/, ''),
+  })
 }

@@ -26,6 +26,8 @@ import quotePayRoutes from './quotePay.js'
 import { supabaseJobStore, type JobStore } from '../quote/jobStore.js'
 import { paymentDeps, type PaymentDeps } from '../quote/payments.js'
 import { followupStoreFor, type FollowupStore } from '../quote/followupStore.js'
+import { linkStoreFor, type LinkStore } from '../quote/linkStore.js'
+import { codeSchema, linkState, storedKey } from '../quote/links.js'
 import { formCompleted, formSaved, messagingDeps, optOutValid, type MessagingDeps } from '../quote/messaging.js'
 
 // Step order: industry first, then contact (the lead exists from step 2).
@@ -49,7 +51,9 @@ const startSchema = z.object({
   entry: z.object({
     source: z.string().trim().max(40).optional(),
     utm: z.record(z.string().regex(/^utm_[a-z]+$/), z.string().trim().max(100)).optional(),
-    partnerCode: z.string().trim().max(40).optional(),
+    // A mistyped ?p= or link code is dropped, never a reason to refuse the form
+    partnerCode: z.string().trim().regex(/^[A-Za-z0-9-]{2,20}$/).optional().catch(undefined),
+    code: codeSchema.optional().catch(undefined),   // the /q/:code link it came from
   }).optional(),
   abVariant: z.string().trim().max(20).optional(),
   website: z.string().optional(),          // honeypot: people never see or fill it
@@ -123,6 +127,7 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
   webhookSecret?: string
   followups?: FollowupStore
   messaging?: Partial<MessagingDeps>
+  links?: LinkStore
 }) {
   const store = opts.store ?? supabaseStore(fastify.supabase)
   const alerts = opts.alerts ?? alertConfigFromEnv(sendPlainEmail)
@@ -130,6 +135,11 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
   const jobs = opts.jobs ?? supabaseJobStore(fastify.supabase)
   const followups = opts.followups ?? followupStoreFor(store, fastify.supabase)
   const messaging = messagingDeps({ store, desk, jobs, followups, alerts, log: fastify.log }, opts.messaging)
+  const links = opts.links ?? linkStoreFor(store, fastify.supabase)
+
+  // A /q/:code link: a DM code is looked up by its hash, a campaign code as typed
+  const findEntryLink = async (code: string) =>
+    (await links.findLink(storedKey('dm', code))) ?? (await links.findLink(storedKey('campaign', code)))
 
   // Follow-ups never hold up or break the form: they run after the answer
   // is saved, and a failure is logged (the answers are already stored)
@@ -222,6 +232,29 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
     return { mode: result.mode, currency: result.currency, beforeTravel: picked.total - travel }
   })
 
+  // GET /quote/entry/:code: what a /q/:code link fills in. Only the first
+  // name, industry and town: never the lead's number or anything staff typed.
+  fastify.get('/entry/:code', {
+    config: { rateLimit: { max: 20, timeWindow: '1 minute', keyGenerator: (req: any) => req.ip } },
+  }, async (request, reply) => {
+    const params = parseWithSchema(reply, z.object({ code: codeSchema }), request.params)
+    if (!params) return
+    const link = await findEntryLink(params.code)
+    if (!link) return reply.code(404).send({ code: 'NOT_FOUND', statusMessage: 'We could not find that link.' })
+    const state = linkState(link, messaging.now())
+    if (state !== 'active') return reply.code(410).send({ code: 'LINK_EXPIRED', statusMessage: 'This link no longer works.' })
+    const p = link.prefill
+    return {
+      kind: link.kind,
+      prefill: {
+        ...(p.firstName ? { firstName: p.firstName } : {}),
+        ...(p.moduleKey && modules[p.moduleKey]?.enabled ? { moduleKey: p.moduleKey } : {}),
+        ...(p.industryHint ? { industryHint: p.industryHint } : {}),
+        ...(p.town ? { town: p.town } : {}),
+      },
+    }
+  })
+
   // POST /quote/requests: step 1, start a request
   fastify.post('/requests', {
     config: { rateLimit: { max: 10, timeWindow: '1 minute', keyGenerator: (req: any) => req.ip } },
@@ -234,11 +267,26 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
       return reply.code(201).send({ token, request: { moduleKey: body.moduleKey, stepReached: 1, completed: false } })
     }
     const module = modules[body.moduleKey]
+    // A link counts a use when the form starts; one that stopped working is ignored
+    // (the form already told the visitor) and the visitor carries on without it
+    let link: { key: string; source?: string; partnerCode?: string } | null = null
+    if (body.entry?.code) {
+      const found = await findEntryLink(body.entry.code)
+      if (found) {
+        const used = await links.useLink(found.key, messaging.now())
+        if (used.state === 'active') link = { key: found.key, source: found.prefill.source, partnerCode: found.prefill.partnerCode }
+      }
+    }
     const created = await store.createRequest({
       moduleKey: module.key,
       moduleVersion: module.version,
       clientType: body.clientType ?? null,
-      entry: { source: body.entry?.source, utm: body.entry?.utm, partnerCode: body.entry?.partnerCode },
+      entry: {
+        source: link?.source ?? body.entry?.source,
+        utm: body.entry?.utm,
+        partnerCode: (link?.partnerCode ?? body.entry?.partnerCode)?.toUpperCase(),
+        ...(link ? { linkKey: link.key } : {}),
+      },
       abVariant: body.abVariant ?? null,
       device: { ua: String(request.headers['user-agent'] ?? '').slice(0, 200) },
       stepReached: 1,
@@ -315,6 +363,12 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
         utm: req.entry.utm ?? {},
       })
       const next = await store.updateRequest(req.id, { leadId: lead.id, stepReached: reached, ...(body.clientType ? { clientType: body.clientType } : {}) })
+      // Who brought them: the DM link's maker owns a new lead, a partner code credits the partner.
+      // Neither may stop the form, so a failure is only logged.
+      await Promise.all([
+        req.entry.linkKey ? links.attachLead(req.entry.linkKey, lead.id) : null,
+        req.entry.partnerCode ? links.creditPartner(lead.id, req.entry.partnerCode) : null,
+      ].map(p => p?.catch(err => fastify.log.error({ err: err instanceof Error ? err.message : String(err), leadId: lead.id }, 'quote: attribution failed'))))
       if (!next.completedAt) followUp('start', lead.id, () => formSaved(messaging, lead.id, { first: true }))
       if (lead.created) {
         fastify.log.info({ requestId: req.id, module: req.moduleKey }, 'quote: new lead')

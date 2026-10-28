@@ -7,6 +7,7 @@ import type { ClientType, PriceResult, RateTable } from './engine/types.js'
 import { docFromEngine, type QuoteDoc } from './desk.js'
 import { DEFAULT_BOOKING, type BookingSettings, type JobCost, type JobRecord, type PaymentRecord } from './jobs.js'
 import { DEFAULT_MESSAGING, type MessagingSettings, type SequenceKey } from './followups.js'
+import type { EntryLink, Partner } from './links.js'
 
 export interface StoredAnswers {
   details: Record<string, string | number | boolean>
@@ -20,6 +21,7 @@ export interface EntryInfo {
   source?: string
   utm?: Record<string, string>
   partnerCode?: string
+  linkKey?: string        // the /q/:code link it came from (stored key: a hash for DM links)
 }
 
 export interface RequestRecord {
@@ -103,7 +105,7 @@ export interface QuoteStore {
 
 export type MemoryLead = LeadInput & {
   id: string; stage: string; createdAt: string; lastActivityAt: string; consentAt: string | null; deletedAt: string | null
-  ownerStaffId: string | null; optedOutAt: string | null
+  ownerStaffId: string | null; optedOutAt: string | null; partnerId: string | null
 }
 
 export interface MemoryStaff {
@@ -154,6 +156,10 @@ export interface MemoryData {
   }>
   templates: Array<{ key: string; channel: 'whatsapp' | 'email'; version: number; subject: string | null; body: string; updatedBy: string | null; updatedAt: string }>
   messageTasks: Record<string, { doneBy: string | null; doneAt: string | null }>
+  // Phase 4b: /q/:code links, partners and payouts (migration 007)
+  entryLinks: Array<Omit<EntryLink, 'leadName' | 'createdByName'> & { key: string }>
+  partners: Array<Omit<Partner, 'leads'>>
+  payouts: Array<{ id: string; partnerId: string; jobId: string; amount: number; currency: 'KES' | 'USD'; reference: string | null; paidAt: string; paidBy: string | null }>
   // The memory stores' clock (tests and the dev server move it); real time otherwise
   clock: () => Date
 }
@@ -172,7 +178,7 @@ export function memoryStore(seed: {
     requests: [], leads: [], quotes: [], links: [], messages: [], notes: [], audit: [],
     payments: [], jobs: [], jobCosts: [], invoices: [],
     settings: { booking: structuredClone(DEFAULT_BOOKING), messaging: structuredClone(DEFAULT_MESSAGING) },
-    sequences: [], messageTasks: {}, clock,
+    sequences: [], messageTasks: {}, clock, entryLinks: [], partners: [], payouts: [],
     templates: Object.entries(seed.templates ?? {}).map(([k, t]) => {
       const [key, channel] = k.split(':') as [string, 'whatsapp' | 'email']
       return { key, channel, version: t.version, subject: t.subject, body: t.body, updatedBy: null, updatedAt: now() }
@@ -221,7 +227,7 @@ export function memoryStore(seed: {
       }
       const id = randomUUID()
       const consentAt = input.consentWhatsapp || input.consentEmail ? now() : null
-      state.leads.push({ ...input, id, stage: 'new', createdAt: now(), lastActivityAt: now(), consentAt, deletedAt: null, ownerStaffId: null, optedOutAt: null })
+      state.leads.push({ ...input, id, stage: 'new', createdAt: now(), lastActivityAt: now(), consentAt, deletedAt: null, ownerStaffId: null, optedOutAt: null, partnerId: null })
       return { id, created: true }
     },
     async getLead(id) {

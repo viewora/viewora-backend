@@ -75,6 +75,7 @@ export function supabaseStore(db: SupabaseClient): QuoteStore {
         module_version: input.moduleVersion,
         client_type: input.clientType,
         answers: { answers: { details: {}, addons: {} }, entry: input.entry },
+        entry_link_code: input.entry.linkKey ?? null,
         step_reached: input.stepReached,
         resume_token_hash: tokenHash,
         ab_variant: input.abVariant,
