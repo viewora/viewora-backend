@@ -106,8 +106,8 @@ test('industries: wayfinding and floor plans always go to staff, with no price s
   const jobs = [
     ['wayfinding', { venue: 'mall', floors: 3, destinations: 120, tour: 'yes', plans: 'cad' }],
     ['wayfinding', { venue: 'hospital', floors: 1, destinations: 10, tour: 'no', plans: 'none' }],
-    ['floorplans', { place: 'home', floors: 1, size: 's', deliverable: 'redraw' }],
-    ['floorplans', { place: 'building', floors: 12, size: 'xl', deliverable: 'measured' }],
+    ['floorplans', { place: 'home', floors: 1, floor_size: 's', deliverable: 'redraw' }],
+    ['floorplans', { place: 'building', floors: 12, floor_size: 'xl', deliverable: 'measured' }],
   ] as const
   for (const [module, details] of jobs) {
     const r = run(module, details as Answers['details'], { addons: { website_embed: 1 } })

@@ -470,7 +470,7 @@ export const floorplans: IndustryModule = {
         { value: 'building', label: 'A whole building' },
       ] },
     { id: 'floors', type: 'number', label: 'How many floors?', min: 1, max: 60, default: 1, required: true },
-    { id: 'size', type: 'choice', label: 'About how big is each floor?', required: true,
+    { id: 'floor_size', type: 'choice', label: 'About how big is each floor?', required: true,
       options: [
         { value: 's', label: 'Up to 1,500 sq ft' },
         { value: 'm', label: '1,500 to 5,000 sq ft' },
