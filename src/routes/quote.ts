@@ -30,6 +30,7 @@ import { linkStoreFor, type LinkStore } from '../quote/linkStore.js'
 import { codeSchema, linkState, storedKey } from '../quote/links.js'
 import { accountStoreFor, type AccountStore } from '../quote/accountStore.js'
 import quoteAccountRoutes, { type AccountRouteOptions } from './quoteAccount.js'
+import { deliveryStoreFor, type DeliveryStore } from '../quote/deliveryStore.js'
 import { formCompleted, formSaved, messagingDeps, optOutValid, type MessagingDeps } from '../quote/messaging.js'
 
 // Step order: industry first, then contact (the lead exists from step 2).
@@ -135,6 +136,7 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
   // Ordering from a Viewora account; tests and the dev server pass their own sign-in check
   accounts?: AccountStore
   authenticate?: AccountRouteOptions['authenticate']
+  deliveries?: DeliveryStore
 }) {
   const store = opts.store ?? supabaseStore(fastify.supabase)
   const alerts = opts.alerts ?? alertConfigFromEnv(sendPlainEmail)
@@ -501,6 +503,9 @@ export default async function quoteRoutes(fastify: FastifyInstance, opts: {
   // Only where there is a sign-in check to run: the app server's, or the one a test passes
   const authenticate = opts.authenticate ?? (fastify.hasDecorator('authenticate') ? fastify.authenticate : null)
   if (authenticate) {
-    await fastify.register(quoteAccountRoutes, { prefix: '/account', accounts, store, authenticate, loadRequest, saveContact, publicView })
+    await fastify.register(quoteAccountRoutes, {
+      prefix: '/account', accounts, store, authenticate, loadRequest, saveContact, publicView,
+      deliveries: opts.deliveries ?? deliveryStoreFor(store, fastify.supabase), jobs, now: messaging.now,
+    })
   }
 }

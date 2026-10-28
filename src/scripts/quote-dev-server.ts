@@ -29,6 +29,8 @@ process.env.ADMIN_SECRET ||= 'dev-secret'
 const DEV_ADMIN_ID = '00000000-0000-4000-8000-000000000001'
 const DEV_SALES_ID = '00000000-0000-4000-8000-000000000002'
 const DEV_CLIENT_ID = '00000000-0000-4000-8000-0000000000c1'
+// The studio account staff build tours in (QUOTE_STUDIO_USER_ID in production)
+const DEV_STUDIO_ID = '00000000-0000-4000-8000-0000000000a1'
 const port = Number(process.env.PORT ?? 4010)
 
 // The follow-up wording, read from migration 006 so the two never drift
@@ -94,6 +96,7 @@ const store = memoryStore({
       body: '{{name}} paid a {{amount}} deposit for {{industry}} ({{option}}, quote {{quote_ref}}).\n\nThey will pick a shoot day on the quote page. Open the job: {{admin_link}}',
     },
     ...migrationTemplates('migration-quote-engine-006.sql'),
+    ...migrationTemplates('migration-quote-engine-010.sql'),
   },
   recipients: ['staff@localhost'],
   staff: [
@@ -102,6 +105,11 @@ const store = memoryStore({
   ],
   // A signed-in app user for "Order a capture": any session whose token says this id
   profiles: { [DEV_CLIENT_ID]: { fullName: 'Dev Client', phone: '0711 000 111', email: 'client@example.com' } },
+  // Two finished tours in the studio account, to try delivery with
+  tours: [
+    { id: '00000000-0000-4000-8000-0000000000d1', userId: DEV_STUDIO_ID, title: 'Dev tour: 2-bedroom, Kilimani', slug: 'dev-kilimani', coverUrl: null, isPublished: true, updatedAt: new Date().toISOString(), storageBytes: 40_000_000 },
+    { id: '00000000-0000-4000-8000-0000000000d2', userId: DEV_STUDIO_ID, title: 'Dev tour: café, Westlands', slug: 'dev-westlands', coverUrl: null, isPublished: false, updatedAt: new Date(Date.now() - 86_400_000).toISOString(), storageBytes: 12_000_000 },
+  ],
 })
 const app = Fastify({ logger: { level: 'info' } })
 
@@ -140,7 +148,7 @@ const fakeAiDraft = async ({ user }: { user: string }) => {
 await app.register(quoteAdminRoutes, {
   prefix: '/admin/quote', store, desk, jobs, payments, followups, adminStore: memoryAdminStore(() => store.dump()),
   ...(process.env.GEMINI_API_KEY ? {} : { aiDraft: fakeAiDraft }),
-  messagesLive: false, publicUrl, now: clock,
+  messagesLive: false, publicUrl, now: clock, studioUserId: DEV_STUDIO_ID,
 })
 // Peek at what the form saved: http://localhost:4010/dev/dump
 app.get('/dev/dump', async () => store.dump())

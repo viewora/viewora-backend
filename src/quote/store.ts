@@ -3,6 +3,7 @@
 // (qe_* tables from migration-quote-engine-001.sql).
 
 import type { MemoryAccounts } from './accountStore.js'
+import type { MemoryDeliveries } from './deliveryStore.js'
 import { randomUUID } from 'node:crypto'
 import type { ClientType, PriceResult, RateTable } from './engine/types.js'
 import { docFromEngine, type QuoteDoc } from './desk.js'
@@ -165,6 +166,8 @@ export interface MemoryData {
   payouts: Array<{ id: string; partnerId: string; jobId: string; amount: number; currency: 'KES' | 'USD'; reference: string | null; paidAt: string; paidBy: string | null }>
   // Phase 5b: orders from a signed-in account (migration 009)
   accounts: MemoryAccounts
+  // Phase 5: tours handed to the client's account (migration 010)
+  deliveries: MemoryDeliveries
   // The memory stores' clock (tests and the dev server move it); real time otherwise
   clock: () => Date
 }
@@ -177,6 +180,7 @@ export function memoryStore(seed: {
   staff?: MemoryStaff[]
   clock?: () => Date
   profiles?: MemoryAccounts['profiles']
+  tours?: MemoryDeliveries['tours']
 }): QuoteStore & { dump(): MemoryData } {
   const clock = seed.clock ?? (() => new Date())
   const now = () => clock().toISOString()
@@ -186,6 +190,7 @@ export function memoryStore(seed: {
     settings: { booking: structuredClone(DEFAULT_BOOKING), messaging: structuredClone(DEFAULT_MESSAGING) },
     sequences: [], messageTasks: {}, clock, entryLinks: [], partners: [], payouts: [],
     accounts: { requests: {}, profiles: structuredClone(seed.profiles ?? {}) },
+    deliveries: { tours: structuredClone(seed.tours ?? []), rows: [], usage: {} },
     templates: Object.entries(seed.templates ?? {}).map(([k, t]) => {
       const [key, channel] = k.split(':') as [string, 'whatsapp' | 'email']
       return { key, channel, version: t.version, subject: t.subject, body: t.body, updatedBy: null, updatedAt: now() }

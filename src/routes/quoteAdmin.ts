@@ -21,6 +21,8 @@ import { linkStoreFor, type LinkStore } from '../quote/linkStore.js'
 import quoteLinkRoutes from './quoteLinks.js'
 import { reportStoreFor, type ReportStore } from '../quote/reportStore.js'
 import { posthogVisitors, type VisitorsFn } from '../quote/posthogVisitors.js'
+import quoteDeliveryRoutes from './quoteDeliveries.js'
+import { deliveryStoreFor, type DeliveryStore } from '../quote/deliveryStore.js'
 import quoteReportRoutes from './quoteReports.js'
 
 export { answersView } from '../quote/answersView.js'
@@ -45,6 +47,7 @@ export default async function quoteAdminRoutes(fastify: FastifyInstance, opts: O
   adminStore?: QuoteAdminStore; store?: QuoteStore; desk?: DeskStore
   jobs?: JobStore; payments?: Partial<PaymentDeps>; followups?: FollowupStore; links?: LinkStore
   reports?: ReportStore; visitors?: VisitorsFn
+  deliveries?: DeliveryStore; studioUserId?: string | null
 }) {
   const store = opts.adminStore ?? supabaseAdminStore(fastify.supabase)
   const quoteStore = opts.store ?? supabaseStore(fastify.supabase)
@@ -103,6 +106,12 @@ export default async function quoteAdminRoutes(fastify: FastifyInstance, opts: O
   await fastify.register(quoteReportRoutes, {
     reports: opts.reports ?? reportStoreFor(quoteStore, fastify.supabase), visitors: opts.visitors ?? posthogVisitors(),
     links, now: opts.now ?? (() => new Date()),
+  })
+  await fastify.register(quoteDeliveryRoutes, {
+    deliveries: opts.deliveries ?? deliveryStoreFor(quoteStore, fastify.supabase), store: quoteStore, desk, jobs,
+    studioUserId: opts.studioUserId !== undefined ? opts.studioUserId : (process.env.QUOTE_STUDIO_USER_ID || null),
+    publicUrl: (opts.publicUrl ?? process.env.QUOTE_PUBLIC_URL ?? 'https://app.viewora.software').replace(/\/$/, ''),
+    now: opts.now ?? (() => new Date()),
   })
   await fastify.register(quoteLinkRoutes, {
     links, store: quoteStore, now: opts.now ?? (() => new Date()),

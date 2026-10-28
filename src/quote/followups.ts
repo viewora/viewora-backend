@@ -240,6 +240,8 @@ export const TEMPLATE_CATALOG: TemplateInfo[] = [
     channels: ['email'], placeholders: ['name', 'amount', 'balance', 'option', 'quote_ref', 'industry'] },
   { key: 'balance_request', label: 'Balance request', when: 'Staff send it from the job page after delivery',
     channels: ['whatsapp'], placeholders: ['name', 'amount', 'pay_link'], needs: ['pay_link'] },
+  { key: 'tour_delivery', label: 'Tour delivery link', when: 'Staff send it from the job page when the tour is ready',
+    channels: ['whatsapp'], placeholders: ['name', 'delivery_link', 'expires_on'], needs: ['delivery_link'] },
   { key: 'staff_new_lead', label: 'Staff: new lead', when: 'A new lead gives their number', staff: true,
     channels: ['email'], placeholders: ['name', 'industry', 'client_type', 'source', 'admin_link'] },
   { key: 'staff_high_value', label: 'Staff: high-value lead', when: 'A form quote at or above the high-value amount', staff: true,

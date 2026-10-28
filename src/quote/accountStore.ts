@@ -18,6 +18,7 @@ export interface AccountStore {
   markRequest(requestId: string, userId: string): Promise<boolean>   // false if another account has it
   requestUser(requestId: string): Promise<string | null>
   linkLead(leadId: string, userId: string): Promise<boolean>
+  leadUser(leadId: string): Promise<string | null>
   consentedLead(userId: string): Promise<AccountLead | null>
   orders(userId: string, limit: number): Promise<AccountOrder[]>
 }
@@ -54,6 +55,9 @@ export function memoryAccountStore(data: () => MemoryData): AccountStore {
       lead.userId = userId
       d().audit.push({ id: d().audit.length + 1, actorId: null, entityType: 'lead', entityId: leadId, action: 'account_linked', before: null, after: { userId }, reason: null, createdAt: d().clock().toISOString() })
       return true
+    },
+    async leadUser(leadId) {
+      return d().leads.find(l => l.id === leadId)?.userId ?? null
     },
     async consentedLead(userId) {
       const lead = leadsOf(userId).filter(l => l.consentWhatsapp && !l.optedOutAt && l.whatsappE164)
@@ -102,6 +106,11 @@ export function supabaseAccountStore(db: SupabaseClient): AccountStore {
       const { data, error } = await db.rpc('qe_lead_link_account', { p_lead: leadId, p_user: userId })
       fail(error, 'link lead')
       return data === true
+    },
+    async leadUser(leadId) {
+      const { data, error } = await db.from('qe_leads').select('user_id').eq('id', leadId).maybeSingle()
+      fail(error, 'lead user')
+      return data?.user_id ?? null
     },
     async consentedLead(userId) {
       const { data, error } = await db.from('qe_leads').select('id, first_name, whatsapp_e164, email')

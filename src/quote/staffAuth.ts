@@ -12,7 +12,7 @@ import type { DeskStore } from './deskStore.js'
 
 export type Permission = 'leads:read' | 'leads:write' | 'quotes:write' | 'quotes:approve' | 'rates:read' | 'rates:write'
   | 'jobs:read' | 'jobs:write' | 'payments:write' | 'jobs:export' | 'settings:write' | 'templates:write'
-  | 'partners:write' | 'commission:read' | 'reports:read'
+  | 'partners:write' | 'commission:read' | 'reports:read' | 'tours:deliver' | 'tours:undo'
 
 export const PERMISSIONS: Record<Permission, StaffRole[]> = {
   'leads:read': ['admin', 'sales', 'viewer'],
@@ -34,6 +34,9 @@ export const PERMISSIONS: Record<Permission, StaffRole[]> = {
   'commission:read': ['admin'],
   // Funnel and win rates: counts only, no personal data
   'reports:read': ['admin', 'sales', 'viewer'],
+  // Sending a finished tour to the client; moving one back is admin-only
+  'tours:deliver': ['admin', 'sales'],
+  'tours:undo': ['admin'],
 }
 
 export interface QuoteStaff {

@@ -7,6 +7,8 @@
 //   GET  /account/me                        what the order form can prefill, and past orders
 //   POST /account/requests/:token/claim     this request is mine (straight after starting it)
 //   POST /account/requests/:token/contact   skip the contact step with the number on file
+//   GET  /account/deliveries/:token         a tour the studio is handing over (quoteDeliveries.ts)
+//   POST /account/deliveries/:token/accept  move it into this account
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
@@ -14,8 +16,12 @@ import { parseWithSchema } from '../utils/validation.js'
 import type { QuoteStore, RequestRecord } from '../quote/store.js'
 import type { AccountStore } from '../quote/accountStore.js'
 import { normalisePhone } from '../quote/engine/phone.js'
+import type { DeliveryStore } from '../quote/deliveryStore.js'
+import type { JobStore } from '../quote/jobStore.js'
+import { hashToken } from '../quote/messaging.js'
 
 const tokenParams = z.object({ token: z.string().min(20).max(100).regex(/^[A-Za-z0-9_-]+$/) })
+const deliveryParams = z.object({ token: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/) })
 
 export interface AccountRouteOptions {
   accounts: AccountStore
@@ -24,13 +30,16 @@ export interface AccountRouteOptions {
   loadRequest: (token: string, reply: FastifyReply) => Promise<RequestRecord | null>
   saveContact: (req: RequestRecord, reached: number, c: { firstName: string; whatsappE164: string; email: string | null; consent: boolean }) => Promise<RequestRecord>
   publicView: (req: RequestRecord) => unknown
+  deliveries: DeliveryStore
+  jobs: JobStore
+  now: () => Date
 }
 
 // "Peter Musis" → "Peter"
 const firstNameOf = (full: string | null) => full?.trim().split(/\s+/)[0]?.slice(0, 60) || null
 
 export default async function quoteAccountRoutes(fastify: FastifyInstance, opts: AccountRouteOptions) {
-  const { accounts, store, loadRequest, saveContact, publicView } = opts
+  const { accounts, store, loadRequest, saveContact, publicView, deliveries, jobs, now } = opts
   const limit = (max: number) => ({ rateLimit: { max, timeWindow: '1 minute', keyGenerator: (r: any) => r.user?.sub ?? r.ip } })
   fastify.addHook('preHandler', opts.authenticate)
 
@@ -91,5 +100,59 @@ export default async function quoteAccountRoutes(fastify: FastifyInstance, opts:
       firstName: onFile.firstName ?? 'there', whatsappE164: onFile.whatsappE164, email: onFile.email, consent: false,
     })
     return { request: publicView(next) }
+  })
+
+  // ── Tour delivery ─────────────────────────────────────────────────────
+  // The link is the credential, so every way it can fail looks the same
+  const gone = (reply: FastifyReply) => reply.code(404).send({ code: 'LINK_GONE', statusMessage: 'This link has expired or was already used. Ask us on WhatsApp for a new one.' })
+
+  // An open link, and the job it belongs to, for this signed-in user
+  async function openDelivery(request: FastifyRequest, reply: FastifyReply) {
+    const userId = userOf(request, reply)
+    if (!userId) return null
+    const params = parseWithSchema(reply, deliveryParams, request.params)
+    if (!params) return null
+    const delivery = await deliveries.byToken(hashToken(params.token))
+    if (!delivery) { gone(reply); return null }
+    // Opened again by the account that accepted it: show where it went
+    if (delivery.status === 'accepted' && delivery.toUserId === userId) return { userId, delivery }
+    if (delivery.status !== 'pending' || delivery.expiresAt < now().toISOString()) { gone(reply); return null }
+    const job = await jobs.job(delivery.jobId)
+    if (!job || job.status === 'cancelled') { gone(reply); return null }
+    // A lead already tied to an account only takes delivery into that account
+    const leadUser = await accounts.leadUser(job.leadId)
+    if (leadUser && leadUser !== userId) {
+      reply.code(403).send({ code: 'OTHER_ACCOUNT', statusMessage: 'This tour is for a different Viewora account. Sign in with the account you ordered from.' })
+      return null
+    }
+    return { userId, delivery, leadId: job.leadId }
+  }
+
+  const deliveryView = async (d: { propertyId: string; status: string; expiresAt: string }) => {
+    const tour = await deliveries.tour(d.propertyId)
+    return { status: d.status, expiresAt: d.expiresAt, tour: tour ? { id: tour.id, title: tour.title, coverUrl: tour.coverUrl } : null }
+  }
+
+  fastify.get('/deliveries/:token', { config: limit(30) }, async (request, reply) => {
+    const open = await openDelivery(request, reply)
+    if (!open) return
+    reply.header('Cache-Control', 'private, no-store')
+    return deliveryView(open.delivery)
+  })
+
+  fastify.post('/deliveries/:token/accept', { config: limit(10) }, async (request, reply) => {
+    const open = await openDelivery(request, reply)
+    if (!open) return
+    if (open.delivery.status === 'accepted') return deliveryView(open.delivery)
+    const result = await deliveries.accept(open.delivery.id, open.userId)
+    if (result === 'owner_changed') {
+      request.log.error({ deliveryId: open.delivery.id }, 'quote delivery: tour left the studio account before it was accepted')
+      return reply.code(409).send({ code: 'NOT_READY', statusMessage: 'We could not move this tour right now. We have been told and will send a new link.' })
+    }
+    if (result !== 'ok') return gone(reply)
+    // The lead is theirs from now on, if it was not already
+    if (open.leadId) await accounts.linkLead(open.leadId, open.userId)
+    request.log.info({ deliveryId: open.delivery.id }, 'quote delivery: accepted')
+    return deliveryView((await deliveries.get(open.delivery.id))!)
   })
 }
