@@ -257,6 +257,9 @@ fastify.addHook('onResponse', async (request, reply) => {
 fastify.addHook('onSend', async (request, reply, payload) => {
   const statusCode = reply.statusCode
   if (statusCode === 204 || statusCode === 304) return payload
+  // Quote engine routes keep their own shape ({ code, statusMessage,
+  // problems } on errors): the quote pages read it as is
+  if (/^\/(admin\/)?quote(\/|\?|$)/.test(request.url)) return payload
 
   const contentTypeHeader = reply.getHeader('content-type')
   const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader.toLowerCase() : ''
