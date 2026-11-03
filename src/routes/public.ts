@@ -297,6 +297,17 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // Social links, fresh like the gallery (the cached blob above has no hook for
+    // them). Before the migration has run the column is missing: no icons.
+    if (data.space?.id) {
+      const { data: social } = await fastify.supabase
+        .from('properties')
+        .select('social_links')
+        .eq('id', data.space.id)
+        .maybeSingle()
+      data.space.social_links = (social as any)?.social_links ?? {}
+    }
+
     // Gallery photos are fetched fresh on every request rather than folded
     // into the cached RPC blob above — uploads.ts has no cache-invalidation
     // hook, so caching this would mean a newly processed gallery photo

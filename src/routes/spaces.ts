@@ -8,6 +8,7 @@ import { sendTourPublishedEmail } from '../email/index.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
 import { generateListingDescription } from '../utils/aiDescription.js'
 import { consumeAi, AiLimitError } from '../utils/aiUsage.js'
+import { sanitizeSocialLinks, SOCIAL_KEYS } from '../utils/socialLinks.js'
 
 // Converts a space title into a URL-safe slug.
 // "Modern 3-Bed Villa, Westlands" → "modern-3-bed-villa-westlands"
@@ -95,6 +96,8 @@ const updateSpaceBodySchema = z.object({
   cta_button_text: z.string().max(80).nullable().optional(),
   cta_action: z.enum(['link', 'email', 'phone']).nullable().optional(),
   cta_destination: z.string().max(2048).nullable().optional(),
+  // { instagram: '@name' | link, ... } — cleaned to valid network links on save
+  social_links: z.object(Object.fromEntries(SOCIAL_KEYS.map(k => [k, z.string().max(300).nullable().optional()]))).nullable().optional(),
   ...listingFactsSchema,
 })
 
@@ -187,7 +190,7 @@ export default async function (fastify: FastifyInstance) {
         id, title, slug, description, property_type, location_text, location_lat, location_lng,
         logo_url, phone, email, cover_image_url, has_360, has_gallery, is_published, published_at,
         visibility, lead_form_enabled, branding_enabled,
-        cta_enabled, cta_button_text, cta_action, cta_destination,
+        cta_enabled, cta_button_text, cta_action, cta_destination, social_links,
         claim_state, created_via,
         price_kes, listing_status, transaction_type, price_period,
         bedrooms, bathrooms, area_sqm,
@@ -324,6 +327,7 @@ export default async function (fastify: FastifyInstance) {
     if (body.cta_button_text !== undefined) updates.cta_button_text = body.cta_button_text
     if (body.cta_action !== undefined) updates.cta_action = body.cta_action
     if (body.cta_destination !== undefined) updates.cta_destination = body.cta_destination
+    if (body.social_links !== undefined) updates.social_links = body.social_links ? sanitizeSocialLinks(body.social_links) : {}
     if (body.space_type !== undefined) updates.property_type = body.space_type
     if (body.lead_form_enabled !== undefined) updates.lead_form_enabled = body.lead_form_enabled
     if (body.branding_enabled !== undefined) updates.branding_enabled = body.branding_enabled
