@@ -4,6 +4,7 @@ import { parseWithSchema } from '../utils/validation.js'
 import { LISTING_SELECT_FRAGMENT, mapListingRow } from '../utils/listingMapper.js'
 import { mergeSceneGroups, publicAerialMaps } from './aerial.js'
 import { mergeScenePlanPins, publicFloorPlans } from './floorPlans.js'
+import { brandingEntitled } from '../utils/quotas.js'
 
 const tourParamsSchema = z.object({
   slug: z.string().min(3).max(120).regex(/^[a-z0-9-]+$/, 'Invalid slug'),
@@ -127,6 +128,11 @@ export default async function publicRoutes(fastify: FastifyInstance) {
     const formattedData = {
       space: formattedSpace,
       scenes: (spaceData as any).scenes.sort((a: any, b: any) => (a.order_index || 0) - (b.order_index || 0))
+    }
+
+    // Same rule as the public tour, so the owner's preview matches what visitors see.
+    if (formattedSpace.branding_enabled && (await brandingEntitled(fastify, userId)) === false) {
+      formattedSpace.branding_enabled = false
     }
 
     const aerial_maps = await publicAerialMaps(fastify, params.id)
@@ -334,10 +340,16 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       // verification/brokerage-licensing system to back them honestly.
       const { data: ownerRow } = await fastify.supabase
         .from('properties')
-        .select('profiles:profiles!properties_user_id_fkey ( id, full_name, avatar_url, bio, company_name )')
+        .select('user_id, profiles:profiles!properties_user_id_fkey ( id, full_name, avatar_url, bio, company_name )')
         .eq('id', data.space.id)
         .maybeSingle()
       data.seller = (ownerRow as any)?.profiles ?? null
+      // White-label only while the owner's plan still includes it. user_id is
+      // used here and never sent to the client.
+      const ownerId = (ownerRow as any)?.user_id as string | undefined
+      if (data.space.branding_enabled && ownerId && (await brandingEntitled(fastify, ownerId)) === false) {
+        data.space = { ...data.space, branding_enabled: false }
+      }
       // Aerial plot maps — fetched fresh like gallery (own table, not in the cached RPC blob).
       data.aerial_maps = await publicAerialMaps(fastify, data.space.id)
       // Scene categories — merged fresh like gallery/aerial (not in the cached RPC blob).
