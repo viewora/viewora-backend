@@ -206,22 +206,37 @@ export function isValidFileType(contentType: string, mediaType: string): boolean
 }
 
 /**
- * Is this owner currently entitled to white-label (remove Viewora branding)?
- * The flag on a space is only checked when the owner turns it on, so a later
- * downgrade or lapsed subscription would otherwise keep the white-label for
- * good. Public tour responses call this to turn the flag off in that case.
+ * What a tour owner's plan includes *right now*, for features that a space
+ * switches on itself (white-label, lead form). Those space flags are only
+ * checked when the owner turns them on, so a later downgrade or lapsed
+ * subscription would otherwise keep them for good. Public routes call this to
+ * treat the flag as off in that case.
  *
- * Grace-period owners keep it (they have paid and are still being billed).
- * Returns null when the plan can't be read: callers then leave the stored flag
- * alone rather than flash Viewora branding on a paying customer's embed
- * because of a short database outage.
+ * Grace-period owners keep their features (they have paid and are still being
+ * billed). Returns null when the plan can't be read: callers then leave the
+ * stored flags alone rather than strip a paying customer's features because of
+ * a short database outage.
  */
-export async function brandingEntitled(fastify: FastifyInstance, userId: string): Promise<boolean | null> {
+export interface OwnerEntitlements {
+  branding: boolean
+  leadCapture: boolean
+}
+
+export async function ownerEntitlements(fastify: FastifyInstance, userId: string): Promise<OwnerEntitlements | null> {
   try {
     const { plan, canWrite, isGrace } = await checkUserQuota(fastify, userId)
-    return Boolean(plan?.branding_customization_enabled) && (canWrite || isGrace)
+    const paid = canWrite || isGrace
+    return {
+      branding: Boolean(plan?.branding_customization_enabled) && paid,
+      leadCapture: Boolean(plan?.lead_capture_enabled) && paid,
+    }
   } catch (err: any) {
-    fastify.log.warn({ err: err?.message, userId }, 'brandingEntitled: could not read plan')
+    fastify.log.warn({ err: err?.message, userId }, 'ownerEntitlements: could not read plan')
     return null
   }
+}
+
+/** White-label only: true/false, or null when the plan can't be read. */
+export async function brandingEntitled(fastify: FastifyInstance, userId: string): Promise<boolean | null> {
+  return (await ownerEntitlements(fastify, userId))?.branding ?? null
 }

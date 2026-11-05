@@ -54,3 +54,29 @@ test('plan unreadable returns null (callers keep the stored flag) and logs', asy
   assert.equal(await brandingEntitled(fastify, 'u1'), null)
   assert.equal(warnings.length, 1)
 })
+
+// ── lead capture shares the same lookup ──────────────────────────────────────
+import { ownerEntitlements } from '../utils/quotas.js'
+
+test('lead capture follows the plan flag independently of branding', async () => {
+  const plan = { branding_customization_enabled: false, lead_capture_enabled: true }
+  const { fastify } = fakeFastify({ subscription: { status: 'active' }, plan })
+  assert.deepEqual(await ownerEntitlements(fastify, 'u1'), { branding: false, leadCapture: true })
+})
+
+test('downgrade to Free turns off both entitlements', async () => {
+  const plan = { branding_customization_enabled: false, lead_capture_enabled: false }
+  const { fastify } = fakeFastify({ subscription: { status: 'active' }, plan })
+  assert.deepEqual(await ownerEntitlements(fastify, 'u1'), { branding: false, leadCapture: false })
+})
+
+test('expired subscription turns off lead capture even on a paid plan', async () => {
+  const plan = { branding_customization_enabled: true, lead_capture_enabled: true }
+  const { fastify } = fakeFastify({ subscription: { status: 'expired' }, plan })
+  assert.deepEqual(await ownerEntitlements(fastify, 'u1'), { branding: false, leadCapture: false })
+})
+
+test('ownerEntitlements returns null when the plan is unreadable', async () => {
+  const { fastify } = fakeFastify(null, { dbThrows: true })
+  assert.equal(await ownerEntitlements(fastify, 'u1'), null)
+})

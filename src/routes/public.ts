@@ -4,7 +4,7 @@ import { parseWithSchema } from '../utils/validation.js'
 import { LISTING_SELECT_FRAGMENT, mapListingRow } from '../utils/listingMapper.js'
 import { mergeSceneGroups, publicAerialMaps } from './aerial.js'
 import { mergeScenePlanPins, publicFloorPlans } from './floorPlans.js'
-import { brandingEntitled } from '../utils/quotas.js'
+import { ownerEntitlements } from '../utils/quotas.js'
 
 const tourParamsSchema = z.object({
   slug: z.string().min(3).max(120).regex(/^[a-z0-9-]+$/, 'Invalid slug'),
@@ -131,8 +131,12 @@ export default async function publicRoutes(fastify: FastifyInstance) {
     }
 
     // Same rule as the public tour, so the owner's preview matches what visitors see.
-    if (formattedSpace.branding_enabled && (await brandingEntitled(fastify, userId)) === false) {
-      formattedSpace.branding_enabled = false
+    if (formattedSpace.branding_enabled || formattedSpace.lead_form_enabled) {
+      const ent = await ownerEntitlements(fastify, userId)
+      if (ent) {
+        formattedSpace.branding_enabled = Boolean(formattedSpace.branding_enabled) && ent.branding
+        formattedSpace.lead_form_enabled = Boolean(formattedSpace.lead_form_enabled) && ent.leadCapture
+      }
     }
 
     const aerial_maps = await publicAerialMaps(fastify, params.id)
@@ -344,11 +348,18 @@ export default async function publicRoutes(fastify: FastifyInstance) {
         .eq('id', data.space.id)
         .maybeSingle()
       data.seller = (ownerRow as any)?.profiles ?? null
-      // White-label only while the owner's plan still includes it. user_id is
-      // used here and never sent to the client.
+      // White-label and the lead form only while the owner's plan still includes
+      // them. user_id is used here and never sent to the client.
       const ownerId = (ownerRow as any)?.user_id as string | undefined
-      if (data.space.branding_enabled && ownerId && (await brandingEntitled(fastify, ownerId)) === false) {
-        data.space = { ...data.space, branding_enabled: false }
+      if ((data.space.branding_enabled || data.space.lead_form_enabled) && ownerId) {
+        const ent = await ownerEntitlements(fastify, ownerId)
+        if (ent) {
+          data.space = {
+            ...data.space,
+            branding_enabled: Boolean(data.space.branding_enabled) && ent.branding,
+            lead_form_enabled: Boolean(data.space.lead_form_enabled) && ent.leadCapture,
+          }
+        }
       }
       // Aerial plot maps — fetched fresh like gallery (own table, not in the cached RPC blob).
       data.aerial_maps = await publicAerialMaps(fastify, data.space.id)

@@ -4,6 +4,7 @@ import { parseWithSchema } from '../utils/validation.js'
 import { sanitizeLeadPhone, sanitizeLeadText } from '../utils/sanitize.js'
 import { sendLeadNotification } from '../email/index.js'
 import { trackServer } from '../utils/analytics.js'
+import { ownerEntitlements } from '../utils/quotas.js'
 
 const leadBodySchema = z.object({
   spaceId: z.string().uuid().optional(),
@@ -61,7 +62,7 @@ export default async function (fastify: FastifyInstance) {
     // the contact buttons are available regardless of lead capture plan.
     const { data: space, error: spaceErr } = await fastify.supabase
       .from('properties')
-      .select('id, is_published, lead_form_enabled')
+      .select('id, is_published, lead_form_enabled, user_id')
       .eq('id', finalId)
       .single()
 
@@ -73,6 +74,15 @@ export default async function (fastify: FastifyInstance) {
     }
     if (!isClickOnly && !space.lead_form_enabled) {
       return reply.code(403).send({ statusMessage: 'Lead capture is disabled for this tour' })
+    }
+    // The flag is only checked when the owner switches it on; a downgrade must
+    // stop the form accepting leads too, not just hide it. null (plan unreadable)
+    // lets the lead through so a database blip never loses one.
+    if (!isClickOnly && (space as any).user_id) {
+      const ent = await ownerEntitlements(fastify, (space as any).user_id)
+      if (ent && !ent.leadCapture) {
+        return reply.code(403).send({ statusMessage: 'Lead capture is not available for this tour' })
+      }
     }
 
     const { data, error } = await fastify.supabase
