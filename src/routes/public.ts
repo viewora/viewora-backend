@@ -323,31 +323,45 @@ export default async function publicRoutes(fastify: FastifyInstance) {
     // hook, so caching this would mean a newly processed gallery photo
     // could take up to an hour to appear.
     if (data.space?.id) {
-      const { data: galleryRows } = await fastify.supabase
-        .from('property_media')
-        .select('id, public_url, is_primary, sort_order')
-        .eq('property_id', data.space.id)
-        .eq('media_type', 'gallery_image')
-        .eq('processing_status', 'complete')
-        .order('is_primary', { ascending: false })
-        .order('sort_order', { ascending: true })
+      // These lookups don't depend on each other, so they run together. Run one
+      // after another they cost ~2.5 s per request (a database round trip each);
+      // in parallel the slowest one sets the time.
+      const spaceId = data.space.id
+      const [galleryRes, ownerRes, aerialMaps, floorPlans] = await Promise.all([
+        fastify.supabase
+          .from('property_media')
+          .select('id, public_url, is_primary, sort_order')
+          .eq('property_id', spaceId)
+          .eq('media_type', 'gallery_image')
+          .eq('processing_status', 'complete')
+          .order('is_primary', { ascending: false })
+          .order('sort_order', { ascending: true }),
+        // Same "fetch fresh, don't bake into the cached RPC blob" reasoning as
+        // gallery — a seller editing their profile shouldn't wait for the tour
+        // cache to expire to see it reflected. get_tour_data()'s 'space' object
+        // deliberately never includes user_id (see migration-fix-public-tour-leak.sql)
+        // so it's looked up here instead, never handed to the client directly — only
+        // these public-safe profile fields are. No "Verified" or license fields:
+        // Viewora has no verification/brokerage-licensing system to back them honestly.
+        fastify.supabase
+          .from('properties')
+          .select('user_id, profiles:profiles!properties_user_id_fkey ( id, full_name, avatar_url, bio, company_name )')
+          .eq('id', spaceId)
+          .maybeSingle(),
+        // Aerial plot maps — own table, not in the cached RPC blob.
+        publicAerialMaps(fastify, spaceId),
+        // Floor plans — same.
+        publicFloorPlans(fastify, spaceId),
+        // Scene categories — merged onto the scene objects (different field from the pins below).
+        mergeSceneGroups(fastify, spaceId, data.scenes),
+      ])
 
-      data.gallery = (galleryRows || []).map((r: any) => ({ id: r.id, url: r.public_url, is_primary: r.is_primary }))
-
-      // Same "fetch fresh, don't bake into the cached RPC blob" reasoning as
-      // gallery above — a seller editing their profile shouldn't wait for
-      // the tour cache to expire to see it reflected. get_tour_data()'s
-      // 'space' object deliberately never includes user_id (see
-      // migration-fix-public-tour-leak.sql) so it's looked up here instead,
-      // never handed to the client directly — only these public-safe
-      // profile fields are. No "Verified" or license fields: Viewora has no
-      // verification/brokerage-licensing system to back them honestly.
-      const { data: ownerRow } = await fastify.supabase
-        .from('properties')
-        .select('user_id, profiles:profiles!properties_user_id_fkey ( id, full_name, avatar_url, bio, company_name )')
-        .eq('id', data.space.id)
-        .maybeSingle()
+      data.gallery = (galleryRes.data || []).map((r: any) => ({ id: r.id, url: r.public_url, is_primary: r.is_primary }))
+      const ownerRow = ownerRes.data
       data.seller = (ownerRow as any)?.profiles ?? null
+      data.aerial_maps = aerialMaps
+      data.floor_plans = floorPlans
+
       // White-label and the lead form only while the owner's plan still includes
       // them. user_id is used here and never sent to the client.
       const ownerId = (ownerRow as any)?.user_id as string | undefined
@@ -361,13 +375,8 @@ export default async function publicRoutes(fastify: FastifyInstance) {
           }
         }
       }
-      // Aerial plot maps — fetched fresh like gallery (own table, not in the cached RPC blob).
-      data.aerial_maps = await publicAerialMaps(fastify, data.space.id)
-      // Scene categories — merged fresh like gallery/aerial (not in the cached RPC blob).
-      await mergeSceneGroups(fastify, data.space.id, data.scenes)
-      // Floor plans + scene pins — fetched fresh like aerial maps.
-      data.floor_plans = await publicFloorPlans(fastify, data.space.id)
-      if (data.floor_plans.length) await mergeScenePlanPins(fastify, data.space.id, data.scenes)
+      // Scene pins only exist when there are floor plans.
+      if (data.floor_plans.length) await mergeScenePlanPins(fastify, spaceId, data.scenes)
     } else {
       data.gallery = []
       data.seller = null
