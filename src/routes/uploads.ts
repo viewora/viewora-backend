@@ -12,6 +12,8 @@ const idParamsSchema = z.object({
 
 // Floor plans are flat drawings — far smaller than panoramas.
 const MAX_FLOOR_PLAN_IMAGE_BYTES = 15 * 1048576
+// Exterior car photos are ordinary photos; 25 MB covers a phone's full-size JPEG.
+const MAX_VEHICLE_VIEW_BYTES = 25 * 1048576
 
 const uploadMediaTypeSchema = z.enum([
   'panorama',
@@ -24,6 +26,8 @@ const uploadMediaTypeSchema = z.enum([
   // Uploaded floor-plan image for a floor (floor_plans table). Separate from
   // 'floor_plan', which aerial maps use and the publish check counts.
   'floor_plan_image',
+  // One exterior photo of a single car (vehicle_views table).
+  'vehicle_view',
   'branding_logo',
   'audio',
   'avatar',
@@ -110,6 +114,10 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(413).send({ statusMessage: `File too large. Floor plans can be up to ${MAX_FLOOR_PLAN_IMAGE_BYTES / 1048576} MB.` })
     }
 
+    if (mediaType === 'vehicle_view' && Number(fileSize) > MAX_VEHICLE_VIEW_BYTES) {
+      return reply.code(413).send({ statusMessage: `File too large. Car photos can be up to ${MAX_VEHICLE_VIEW_BYTES / 1048576} MB.` })
+    }
+
     // 2. Check subscription status and quotas
     const { plan, canWrite, isGrace } = await checkUserQuota(fastify, userId)
 
@@ -154,6 +162,7 @@ export default async function (fastify: FastifyInstance) {
     else if (mediaType === 'thumb' || mediaType === 'thumbnail') folder = 'thumb'
     else if (mediaType === 'floor_plan') folder = 'floor_plan'
     else if (mediaType === 'floor_plan_image') folder = 'floor_plan_image'
+    else if (mediaType === 'vehicle_view') folder = 'vehicle'
     else if (mediaType === 'audio') folder = 'audio'
     else if (mediaType === 'logo' || mediaType === 'branding_logo') folder = 'branding'
     else if (mediaType === 'avatar') folder = 'avatar'

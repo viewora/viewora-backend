@@ -190,7 +190,7 @@ export function checkFileSizeLimit(plan: Record<string, any>, fileSize: number):
 export function isValidFileType(contentType: string, mediaType: string): boolean {
   const allowedImages = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
 
-  if (['panorama', 'gallery', 'gallery_image', 'thumb', 'thumbnail', 'logo', 'branding_logo', 'floor_plan', 'avatar'].includes(mediaType)) {
+  if (['panorama', 'gallery', 'gallery_image', 'thumb', 'thumbnail', 'logo', 'branding_logo', 'floor_plan', 'avatar', 'vehicle_view'].includes(mediaType)) {
     return allowedImages.includes(contentType)
   }
 

@@ -4,6 +4,7 @@ import { parseWithSchema } from '../utils/validation.js'
 import { LISTING_SELECT_FRAGMENT, mapListingRow } from '../utils/listingMapper.js'
 import { mergeSceneGroups, publicAerialMaps } from './aerial.js'
 import { mergeScenePlanPins, publicFloorPlans } from './floorPlans.js'
+import { publicVehicleViews } from './vehicleViews.js'
 import { ownerEntitlements } from '../utils/quotas.js'
 
 const tourParamsSchema = z.object({
@@ -327,7 +328,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       // after another they cost ~2.5 s per request (a database round trip each);
       // in parallel the slowest one sets the time.
       const spaceId = data.space.id
-      const [galleryRes, ownerRes, aerialMaps, floorPlans] = await Promise.all([
+      const [galleryRes, ownerRes, aerialMaps, floorPlans, vehicleViews] = await Promise.all([
         fastify.supabase
           .from('property_media')
           .select('id, public_url, is_primary, sort_order')
@@ -352,6 +353,8 @@ export default async function publicRoutes(fastify: FastifyInstance) {
         publicAerialMaps(fastify, spaceId),
         // Floor plans — same.
         publicFloorPlans(fastify, spaceId),
+        // Exterior photos of a single car — same.
+        data.space.space_type === 'automotive' ? publicVehicleViews(fastify, spaceId) : Promise.resolve([]),
         // Scene categories — merged onto the scene objects (different field from the pins below).
         mergeSceneGroups(fastify, spaceId, data.scenes),
       ])
@@ -361,6 +364,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       data.seller = (ownerRow as any)?.profiles ?? null
       data.aerial_maps = aerialMaps
       data.floor_plans = floorPlans
+      data.vehicle_views = vehicleViews
 
       // White-label and the lead form only while the owner's plan still includes
       // them. user_id is used here and never sent to the client.
