@@ -61,6 +61,18 @@ const ReorderBody = z.object({ orderedIds: z.array(z.string().uuid()).min(1).max
 
 const COLUMNS = 'id, space_id, media_id, image_url, label, angle, width, height, order_index, created_at'
 
+/**
+ * Owner-only routes: say what the database actually answered, so a missing table or a stale API
+ * schema cache is obvious instead of a bare "failed". (Never used on public routes.)
+ */
+function dbFailure(base: string, error: { code?: string; message?: string }): string {
+  const text = `${error.code ?? ''} ${error.message ?? ''}`
+  if (/PGRST205|PGRST200|42P01|schema cache|does not exist/i.test(text)) {
+    return `${base}: the database has no car photo table the API can see yet. Run the car photo migration, then run: NOTIFY pgrst, 'reload schema';`
+  }
+  return `${base} (${(error.code ?? 'db').toString().slice(0, 20)}: ${(error.message ?? 'unknown').slice(0, 160)})`
+}
+
 export default async function vehicleViewRoutes(fastify: FastifyInstance) {
   async function ownsSpace(spaceId: string, userId: string) {
     const { data } = await fastify.supabase
@@ -85,7 +97,7 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
       .order('order_index', { ascending: true }).order('created_at', { ascending: true })
     if (error) {
       fastify.log.error(error)
-      return reply.code(500).send({ statusMessage: 'Failed to load car photos' })
+      return reply.code(500).send({ statusMessage: dbFailure('Failed to load car photos', error) })
     }
     return reply.send({ vehicle_views: await withHotspots(fastify, data ?? []) })
   })
@@ -122,7 +134,7 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
       .select(COLUMNS).single()
     if (error) {
       fastify.log.error(error)
-      return reply.code(500).send({ statusMessage: 'Failed to add car photo' })
+      return reply.code(500).send({ statusMessage: dbFailure('Failed to add car photo', error) })
     }
     await invalidateSpaceCache(fastify, params.spaceId)
     return reply.code(201).send({ vehicle_view: data })
@@ -206,7 +218,7 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
       .select(HOTSPOT_COLUMNS).single()
     if (error) {
       fastify.log.error(error)
-      return reply.code(500).send({ statusMessage: 'Failed to add hotspot' })
+      return reply.code(500).send({ statusMessage: dbFailure('Failed to add hotspot', error) })
     }
     await invalidateSpaceCache(fastify, owned.space_id)
     return reply.code(201).send({ hotspot: data })
