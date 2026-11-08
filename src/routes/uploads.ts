@@ -89,7 +89,8 @@ export default async function (fastify: FastifyInstance) {
   fastify.post('/create-signed-url', {
     config: {
       rateLimit: {
-        max: 20,
+        // 60: a 36-frame car spin uploads a frame every second or two.
+        max: 60,
         timeWindow: '1 minute',
         keyGenerator: (request: any) => request.user?.sub || request.ip,
       },
@@ -243,7 +244,8 @@ export default async function (fastify: FastifyInstance) {
   fastify.post('/complete', {
     config: {
       rateLimit: {
-        max: 20,
+        // 60: a 36-frame car spin uploads a frame every second or two.
+        max: 60,
         timeWindow: '1 minute',
         keyGenerator: (request: any) => request.user?.sub || request.ip,
       },
