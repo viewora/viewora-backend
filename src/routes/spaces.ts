@@ -714,6 +714,15 @@ export default async function (fastify: FastifyInstance) {
       .order('order_index', { ascending: true })
       .limit(8)
 
+    // A car listed by its exterior photos has no 360° scenes: show the model those instead.
+    let describedScenes = (scenes ?? []).map(s => ({ name: s.name, thumbnailUrl: s.thumbnail_url, flat: false }))
+    if (!describedScenes.length && body.space_type === 'automotive') {
+      const { data: carViews } = await fastify.supabase
+        .from('vehicle_views').select('label, image_url').eq('space_id', id)
+        .order('angle', { ascending: true }).limit(8)
+      describedScenes = (carViews ?? []).map(v => ({ name: v.label, thumbnailUrl: v.image_url, flat: true }))
+    }
+
     try {
       const description = await generateListingDescription({
         title: body.title ?? null,
@@ -733,7 +742,7 @@ export default async function (fastify: FastifyInstance) {
         listing_status: body.listing_status ?? null,
         transaction_type: body.transaction_type ?? null,
         price_period: body.price_period ?? null,
-      }, apiKey, (scenes ?? []).map(s => ({ name: s.name, thumbnailUrl: s.thumbnail_url })))
+      }, apiKey, describedScenes)
       return reply.send({ description })
     } catch (err: any) {
       fastify.log.warn({ err: err.message, spaceId: id }, '[generate-description] failed')

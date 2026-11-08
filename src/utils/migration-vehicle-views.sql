@@ -42,3 +42,7 @@ ALTER TABLE property_media
     'panorama', 'gallery_image', 'thumbnail', 'logo', 'branding_logo', 'floor_plan', 'audio',
     'floor_plan_image', 'vehicle_view'
   ));
+
+-- Make the new table visible to the API straight away (otherwise it can answer
+-- a 500 / "table not found" until its schema cache refreshes).
+NOTIFY pgrst, 'reload schema';

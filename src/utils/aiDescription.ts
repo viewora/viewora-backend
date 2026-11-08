@@ -66,7 +66,8 @@ function buildFactLines(space: SpaceForDescription): string[] {
   return lines
 }
 
-export type SceneForDescription = { name: string | null; thumbnailUrl: string }
+// flat: an ordinary photo (e.g. a car's exterior shot) rather than a 2:1 equirectangular panorama.
+export type SceneForDescription = { name: string | null; thumbnailUrl: string; flat?: boolean }
 
 // Enough to recognise rooms and finishes; keeps the request small for the free tier
 const MAX_SCENE_IMAGES   = 8
@@ -92,12 +93,14 @@ Style:
 - Length: two short paragraphs, 90–170 words total. With very few facts and no photos, write 2–3 honest sentences instead of padding.
 - Output ONLY the description text — no preamble, no quotes, no labels.`
 
-async function loadSceneImage(url: string): Promise<string | null> {
+async function loadSceneImage(url: string, flat = false): Promise<string | null> {
   try {
     const res = await fetch(url)
     if (!res.ok) return null
-    const jpeg = await sharp(Buffer.from(await res.arrayBuffer()))
-      .resize(SCENE_IMAGE_WIDTH, SCENE_IMAGE_WIDTH / 2, { fit: 'fill' })
+    const input = sharp(Buffer.from(await res.arrayBuffer()), { failOn: 'none' })
+    const jpeg = await (flat
+      ? input.rotate().resize(SCENE_IMAGE_WIDTH, SCENE_IMAGE_WIDTH, { fit: 'inside', withoutEnlargement: true })
+      : input.resize(SCENE_IMAGE_WIDTH, SCENE_IMAGE_WIDTH / 2, { fit: 'fill' }))
       .jpeg({ quality: 80 })
       .toBuffer()
     return jpeg.toString('base64')
@@ -118,10 +121,13 @@ export async function generateListingDescription(
   ]
 
   const picked = scenes.slice(0, MAX_SCENE_IMAGES)
-  const images = await Promise.all(picked.map(s => loadSceneImage(s.thumbnailUrl)))
+  const images = await Promise.all(picked.map(s => loadSceneImage(s.thumbnailUrl, s.flat)))
   const seen   = picked.flatMap((s, i) => images[i] ? [{ name: s.name, data: images[i]! }] : [])
   if (seen.length) {
-    parts.push({ text: `TOUR PHOTOS: ${seen.length} equirectangular 360° panoramas (the left and right edges join up). Scene names were typed by the owner and may be generic.` })
+    const flat = picked.every(s => s.flat)
+    parts.push({ text: flat
+      ? `CAR PHOTOS: ${seen.length} ordinary photos of the outside of this one car, taken from different sides. Describe only what is clearly visible: colour, body style, wheels, lights, roof features, visible condition. Do not guess the model or trim from the shape alone; use the title.`
+      : `TOUR PHOTOS: ${seen.length} equirectangular 360° panoramas (the left and right edges join up). Scene names were typed by the owner and may be generic.` })
     seen.forEach((s, i) => {
       parts.push({ text: `Scene ${i + 1}${s.name ? ` — "${s.name}"` : ''}:` })
       parts.push({ inline_data: { mime_type: 'image/jpeg', data: s.data } })
