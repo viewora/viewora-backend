@@ -9,7 +9,7 @@ export const LISTING_SELECT_FRAGMENT = `
   bedrooms, bathrooms, area_sqm, vehicle_year, vehicle_mileage_km,
   vehicle_transmission, vehicle_fuel_type, amenities, phone, cover_image_url, created_at,
   scenes ( thumbnail_url, order_index ),
-  property_media ( public_url, media_type, sort_order, is_primary, processing_status )
+  property_media ( public_url, media_type, sort_order, is_primary, processing_status, created_at )
 `
 
 export function mapListingRow(row: any) {
@@ -23,6 +23,12 @@ export function mapListingRow(row: any) {
   const galleryPhoto = (row.property_media || [])
     .filter((m: any) => m.media_type === 'gallery_image' && m.processing_status === 'complete' && m.public_url)
     .sort((a: any, b: any) => (b.is_primary ? 1 : 0) - (a.is_primary ? 1 : 0) || (a.sort_order ?? 0) - (b.sort_order ?? 0))[0]?.public_url
+
+  // A car that is only exterior photos has no scene or gallery photo: use its
+  // first-uploaded exterior photo (the Front slot in a normal shoot).
+  const carPhoto = (row.property_media || [])
+    .filter((m: any) => m.media_type === 'vehicle_view' && m.processing_status === 'complete' && m.public_url)
+    .sort((a: any, b: any) => String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')))[0]?.public_url
 
   return {
     id: row.id,
@@ -46,7 +52,7 @@ export function mapListingRow(row: any) {
     // Distinguishes a real 360° scene thumbnail from a flat gallery/cover
     // photo — the frontend must not badge the latter as "360°".
     has_360: Boolean(sceneThumb),
-    hero_image: sceneThumb || galleryPhoto || row.cover_image_url || null,
+    hero_image: sceneThumb || galleryPhoto || carPhoto || row.cover_image_url || null,
     created_at: row.created_at,
   }
 }

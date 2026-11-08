@@ -604,8 +604,15 @@ export default async function (fastify: FastifyInstance) {
           .from('aerial_maps').select('id', { count: 'exact', head: true }).eq('space_id', currentSpace.id)
         hasAerialPhoto = (count ?? 0) > 0 // errors (table not created yet) → count null → false
       }
+      // A car can be just its exterior photos (vehicle_views). Errors (table not created yet) → false.
+      let hasVehicleViews = false
       if (!hasPanorama && !hasGalleryPhoto && !hasAerialPhoto) {
-        return reply.code(400).send({ statusMessage: 'Add a 360° scene, a photo or an aerial plot map before publishing.' })
+        const { count } = await fastify.supabase
+          .from('vehicle_views').select('id', { count: 'exact', head: true }).eq('space_id', currentSpace.id)
+        hasVehicleViews = (count ?? 0) > 0
+      }
+      if (!hasPanorama && !hasGalleryPhoto && !hasAerialPhoto && !hasVehicleViews) {
+        return reply.code(400).send({ statusMessage: 'Add a 360° scene, a photo, an exterior car photo or an aerial plot map before publishing.' })
       }
     }
     
