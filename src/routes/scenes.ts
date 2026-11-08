@@ -43,7 +43,71 @@ const BulkCategoryBodySchema = z.object({
   group_name: z.string().trim().max(40).transform(v => (v ? v : null)).nullable(),
 })
 
+const SceneOrderBodySchema = z.object({
+  scene_ids: z.array(z.string().uuid()).min(1).max(1000),
+})
+
 export default async function scenesRoutes(fastify: FastifyInstance) {
+
+  // ── REORDER SCENES ─────────────────────────────────────────
+  // One request for the whole dock order. The editor used to send one PATCH
+  // per scene on every drop, which went over the per-user rate limit (100/min)
+  // on large tours, and parallel PATCHes could collide on the unique
+  // (space_id, order_index) constraint while two scenes swapped places.
+  // Here the moved scenes first go to free indexes above every current one,
+  // then to their final ones, so no update ever lands on an index still held.
+  fastify.put('/spaces/:spaceId/scenes/order', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, spaceParamsSchema, (req as any).params)
+    if (!params) return
+    const body = parseWithSchema(reply, SceneOrderBodySchema, req.body)
+    if (!body) return
+
+    const [{ data: space }, { data: current, error: listError }] = await Promise.all([
+      fastify.supabase.from('properties').select('id').eq('id', params.spaceId).eq('user_id', userId).maybeSingle(),
+      fastify.supabase.from('scenes').select('id, order_index').eq('space_id', params.spaceId).order('order_index', { ascending: true }),
+    ])
+    if (!space) return reply.code(404).send({ statusMessage: 'Space not found' })
+    if (listError || !current) {
+      fastify.log.error(listError)
+      return reply.code(500).send({ statusMessage: 'Failed to load scenes' })
+    }
+
+    // Requested order first (ids from other spaces ignored), then any scene the
+    // editor didn't know about yet (e.g. added from another tab), in their order.
+    const inSpace = new Set(current.map(s => s.id))
+    const requested = [...new Set(body.scene_ids)].filter(id => inSpace.has(id))
+    const requestedSet = new Set(requested)
+    const finalIds = [...requested, ...current.filter(s => !requestedSet.has(s.id)).map(s => s.id)]
+
+    const was = new Map(current.map(s => [s.id, s.order_index as number]))
+    const moves = finalIds.map((id, index) => ({ id, index })).filter(m => was.get(m.id) !== m.index)
+    if (!moves.length) return reply.send({ updated: 0 })
+
+    const base = Math.max(-1, ...current.map(s => s.order_index as number)) + 1
+    const runPhase = async (indexOf: (m: { id: string; index: number }, i: number) => number) => {
+      for (let i = 0; i < moves.length; i += 25) {
+        const chunk = moves.slice(i, i + 25)
+        const results = await Promise.all(chunk.map((m, j) =>
+          fastify.supabase.from('scenes').update({ order_index: indexOf(m, i + j) }).eq('id', m.id).eq('space_id', params.spaceId),
+        ))
+        const failed = results.find(r => r.error)
+        if (failed) throw failed.error
+      }
+    }
+
+    try {
+      await runPhase((_m, i) => base + i)
+      await runPhase(m => m.index)
+    } catch (err) {
+      fastify.log.error(err)
+      return reply.code(500).send({ statusMessage: 'Failed to save scene order' })
+    } finally {
+      await invalidateSpaceCache(fastify, params.spaceId)
+    }
+
+    return reply.send({ updated: moves.length })
+  })
 
   // ── LIST SCENES FOR A SPACE ────────────────────────────────
   fastify.get('/spaces/:spaceId/scenes', { preHandler: [fastify.authenticate] }, async (req, reply) => {
