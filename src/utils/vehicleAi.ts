@@ -128,3 +128,40 @@ export async function suggestHotspots(apiKey: string, imageUrl: string, context?
   }
   return out
 }
+
+const CAPTION_PROMPT = `You name close-up photos of ONE car for a dealer's virtual tour. Buyers see each name under the photo's thumbnail.
+
+For each numbered photo give "caption": what the photo shows, in 1 to 3 words, like "Front", "Rear", "Bonnet", "Engine bay", "Wheels", "Dashboard", "Infotainment", "Front seats", "Rear seats", "Boot", "Gear lever", "Odometer", "Sunroof", "Headlight", "Badge".
+Name what is actually in the photo. Do not mention condition, price or anything you cannot see. British / Kenyan English, capital first letter only.
+
+Return ONLY JSON: an array [{"n": <photo number>, "caption": "..."}].`
+
+/** Short names for detail photos ("Wheels", "Dashboard"), in the order given. Unreadable photos are left out. */
+export async function suggestCaptions(
+  apiKey: string,
+  photos: Array<{ id: string; url: string }>,
+): Promise<Array<{ id: string; caption: string }>> {
+  const images = await Promise.all(photos.map(p => loadPhoto(p.url)))
+  const parts: GeminiPart[] = [{ text: CAPTION_PROMPT }]
+  const sent: Array<{ id: string; n: number }> = []
+  photos.forEach((p, i) => {
+    if (!images[i]) return
+    const n = sent.length + 1
+    sent.push({ id: p.id, n })
+    parts.push({ text: `Photo ${n}:` })
+    parts.push({ inline_data: { mime_type: 'image/jpeg', data: images[i]! } })
+  })
+  if (!sent.length) throw new Error('No readable photos')
+  const text = await generateGemini({ apiKey, parts, json: true, maxOutputTokens: 2048 })
+  let rows: any[]
+  try { rows = JSON.parse(text) } catch { throw new Error('AI returned unreadable JSON') }
+  if (!Array.isArray(rows)) throw new Error('AI returned an unexpected shape')
+  const byN = new Map(sent.map(s => [s.n, s.id]))
+  const out: Array<{ id: string; caption: string }> = []
+  for (const r of rows) {
+    const id = byN.get(Number(r?.n))
+    const caption = typeof r?.caption === 'string' ? r.caption.trim().slice(0, 40) : ''
+    if (id && caption) out.push({ id, caption })
+  }
+  return out
+}

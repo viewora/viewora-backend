@@ -360,6 +360,16 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       ])
 
       data.gallery = (galleryRes.data || []).map((r: any) => ({ id: r.id, url: r.public_url, is_primary: r.is_primary }))
+      // Names of a car's detail photos ("Wheels"): own query, so a database without the
+      // caption column (migration-car-tour-photos.sql not run yet) still serves the photos.
+      if (data.space.space_type === 'automotive' && data.gallery.length) {
+        const { data: caps, error: capsError } = await fastify.supabase
+          .from('property_media').select('id, caption').in('id', data.gallery.map((g: any) => g.id))
+        if (!capsError) {
+          const byId = new Map((caps ?? []).map((c: any) => [c.id, c.caption ?? null]))
+          data.gallery = data.gallery.map((g: any) => ({ ...g, caption: byId.get(g.id) ?? null }))
+        }
+      }
       const ownerRow = ownerRes.data
       data.seller = (ownerRow as any)?.profiles ?? null
       data.aerial_maps = aerialMaps
