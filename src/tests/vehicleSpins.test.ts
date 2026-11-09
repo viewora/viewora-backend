@@ -125,3 +125,45 @@ test('start angle must be a whole degree in 0-359', async () => {
   const res = await app.inject({ method: 'PATCH', url: `/vehicle-spins/${SPIN_A}`, payload: { start_angle: 400 } })
   assert.equal(res.statusCode, 400)
 })
+
+test('public spins: camera-height rows ride inside their main spin', async () => {
+  const ROW = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+  const sb = supabaseStub(({ table }) => {
+    if (table === 'vehicle_views') return { data: [view('v1', 0, SPIN_A), view('v2', 0, ROW), view('v3', 0, SPIN_B)], error: null }
+    if (table === 'vehicle_spins') {
+      return { data: [
+        { id: SPIN_A, title: 'Roof up', start_angle: 0, order_index: 0, row_of: null, elevation: 0 },
+        { id: ROW, title: 'Roof up · high', start_angle: 0, order_index: 1, row_of: SPIN_A, elevation: 30 },
+        { id: SPIN_B, title: 'Roof down', start_angle: 0, order_index: 2, row_of: null, elevation: 0 },
+      ], error: null }
+    }
+    return { data: [], error: null }
+  })
+  const spins: any[] = await publicVehicleSpins({ supabase: sb } as any, SPACE_ID)
+  assert.deepEqual(spins.map((s: any) => s.title), ['Roof up', 'Roof down'])
+  assert.equal(spins[0].rows.length, 1)
+  assert.equal(spins[0].rows[0].elevation, 30)
+  assert.deepEqual(spins[0].rows[0].views.map((v: any) => v.id), ['v2'])
+  assert.equal(spins[1].rows, undefined)
+})
+
+test('a height row cannot hang off another height row', async () => {
+  const ROW = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+  const app = await buildApp(ownerStub([
+    { id: SPIN_A, title: 'Exterior', start_angle: 0, order_index: 0, row_of: null, elevation: 0 },
+    { id: ROW, title: 'Exterior · high', start_angle: 0, order_index: 1, row_of: SPIN_A, elevation: 30 },
+  ]))
+  const res = await app.inject({ method: 'POST', url: `/spaces/${SPACE_ID}/vehicle-spins`, payload: { title: 'Higher still', row_of: ROW } })
+  assert.equal(res.statusCode, 400)
+})
+
+test('a height row before its migration names the file to run', async () => {
+  const app = await buildApp(ownerStub([{ id: SPIN_A, title: 'Exterior', start_angle: 0, order_index: 0 }], (ctx) => (
+    ctx.table === 'vehicle_spins' && ctx.op === 'insert'
+      ? { data: null, error: { code: 'PGRST204', message: "Could not find the 'row_of' column of 'vehicle_spins'" } }
+      : null
+  )))
+  const res = await app.inject({ method: 'POST', url: `/spaces/${SPACE_ID}/vehicle-spins`, payload: { title: 'Exterior · high', row_of: SPIN_A, elevation: 30 } })
+  assert.equal(res.statusCode, 503)
+  assert.match(res.json().statusMessage, /migration-vehicle-spin-rows\.sql/)
+})

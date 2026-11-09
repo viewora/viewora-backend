@@ -17,14 +17,27 @@ const spinParams = z.object({ spinId: z.string().uuid() })
 
 export const MAX_VEHICLE_SPINS = 6
 const spinTitle = z.string().trim().min(1).max(40)
-export const CreateVehicleSpinBody = z.object({ title: spinTitle })
+/** Camera height of a spin, in degrees: 0 eye level, positive higher, negative lower. */
+const elevation = z.number().int().min(-60).max(80)
+export const CreateVehicleSpinBody = z.object({
+  title: spinTitle,
+  /** Makes this spin a camera-height row of another spin (same look, camera higher or lower). */
+  row_of: z.string().uuid().optional(),
+  elevation: elevation.optional(),
+})
 export const UpdateVehicleSpinBody = z.object({
   title: spinTitle.optional(),
   start_angle: z.number().int().min(0).max(359).optional(),
+  elevation: elevation.optional(),
 })
 const SpinOrderBody = z.object({ orderedIds: z.array(z.string().uuid()).min(1).max(MAX_VEHICLE_SPINS) })
 const AiSortBody = z.object({ spin_id: z.string().uuid().optional().nullable() }).optional().nullable()
 const SPIN_COLUMNS = 'id, space_id, title, start_angle, order_index, created_at'
+const SPIN_ROW_COLUMNS = `${SPIN_COLUMNS}, row_of, elevation`
+const ROWS_MIGRATION_MSG = "Spins at several camera heights need a database update first: run migration-vehicle-spin-rows.sql, then NOTIFY pgrst, 'reload schema';"
+function missingColumn(error: { code?: string; message?: string } | null | undefined) {
+  return !!error && /PGRST20[0-9]|42703|schema cache|does not exist|Could not find/i.test(`${error.code ?? ''} ${error.message ?? ''}`)
+}
 
 const safeUrl = z.string().url().refine(u => /^https?:\/\//i.test(u), { message: 'URL must use http or https' })
 
@@ -100,13 +113,19 @@ async function selectViews(fastify: FastifyInstance, spaceId: string) {
   return { rows: (legacy.data ?? []) as any[], error: legacy.error, spinColumn: false }
 }
 
-/** The car's spins in order, or null when the spins table does not exist yet. */
+/**
+ * The car's spins in order, or null when the spins table does not exist yet. Each has row_of and
+ * elevation; before migration-vehicle-spin-rows.sql they are null and 0 (every spin a main spin).
+ */
 async function selectSpins(fastify: FastifyInstance, spaceId: string) {
-  const { data, error } = await fastify.supabase
-    .from('vehicle_spins').select(SPIN_COLUMNS).eq('space_id', spaceId)
+  const query = (cols: string) => fastify.supabase
+    .from('vehicle_spins').select(cols).eq('space_id', spaceId)
     .order('order_index', { ascending: true }).order('created_at', { ascending: true })
-  if (error) return null
-  return (data ?? []) as any[]
+  const withRows = await query(SPIN_ROW_COLUMNS)
+  if (!withRows.error) return (withRows.data ?? []) as any[]
+  const plain = await query(SPIN_COLUMNS)
+  if (plain.error) return null
+  return ((plain.data ?? []) as any[]).map(s => ({ ...s, row_of: null, elevation: 0 }))
 }
 
 /**
@@ -207,12 +226,22 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
       return reply.code(503).send({ statusMessage: "A second spin needs a database update first: run migration-vehicle-spins.sql, then NOTIFY pgrst, 'reload schema';" })
     }
     if (spins.length >= MAX_VEHICLE_SPINS) return reply.code(400).send({ statusMessage: `Up to ${MAX_VEHICLE_SPINS} spins per car.` })
+    const row: Record<string, unknown> = { space_id: params.spaceId, title: body.title, order_index: spins.length }
+    if (body.row_of) {
+      // A height row belongs to a main spin of the same car (rows of rows are not allowed).
+      const parent = spins.find(s => s.id === body.row_of)
+      if (!parent) return reply.code(404).send({ statusMessage: 'Spin not found' })
+      if (parent.row_of) return reply.code(400).send({ statusMessage: 'Add the height to the main spin, not to another height.' })
+      row.row_of = body.row_of
+      row.elevation = body.elevation ?? 30
+    } else if (body.elevation != null) {
+      row.elevation = body.elevation
+    }
     const { data, error } = await fastify.supabase
-      .from('vehicle_spins')
-      .insert({ space_id: params.spaceId, title: body.title, order_index: spins.length })
-      .select(SPIN_COLUMNS).single()
+      .from('vehicle_spins').insert(row).select('*').single()
     if (error) {
       fastify.log.error(error)
+      if ((body.row_of || body.elevation != null) && missingColumn(error)) return reply.code(503).send({ statusMessage: ROWS_MIGRATION_MSG })
       return reply.code(500).send({ statusMessage: dbFailure('Failed to add the spin', error) })
     }
     await invalidateSpaceCache(fastify, params.spaceId)
@@ -230,9 +259,10 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
     const { data, error } = await fastify.supabase
       .from('vehicle_spins')
       .update({ ...body, updated_at: new Date().toISOString() })
-      .eq('id', params.spinId).select(SPIN_COLUMNS).single()
+      .eq('id', params.spinId).select('*').single()
     if (error) {
       fastify.log.error(error)
+      if (body.elevation != null && missingColumn(error)) return reply.code(503).send({ statusMessage: ROWS_MIGRATION_MSG })
       return reply.code(500).send({ statusMessage: 'Failed to save the spin' })
     }
     await invalidateSpaceCache(fastify, owned.space_id)
@@ -261,7 +291,10 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
     if (!params) return
     const owned = await ownedSpin(params.spinId, userId)
     if (!owned) return reply.code(404).send({ statusMessage: 'Spin not found' })
-    const { data: views } = await fastify.supabase.from('vehicle_views').select('media_id').eq('spin_id', params.spinId)
+    // Its height rows go with it (on delete cascade): collect their photos' files too.
+    const rows = await fastify.supabase.from('vehicle_spins').select('id').eq('row_of', params.spinId)
+    const spinIds = [params.spinId, ...((rows.error ? [] : rows.data ?? []) as any[]).map(r => r.id)]
+    const { data: views } = await fastify.supabase.from('vehicle_views').select('media_id').in('spin_id', spinIds)
     const { error } = await fastify.supabase.from('vehicle_spins').delete().eq('id', params.spinId)
     if (error) return reply.code(500).send({ statusMessage: 'Failed to delete the spin' })
     await invalidateSpaceCache(fastify, owned.space_id)
@@ -552,12 +585,22 @@ export async function publicVehicleSpins(fastify: FastifyInstance, spaceId: stri
   if (!spins || !spins.length) {
     return [{ id: LEGACY_SPIN_ID, title: 'Exterior', start_angle: 0, views: photos }]
   }
-  const firstId = spins[0].id
-  return spins
-    .map(s => ({
-      id: s.id, title: s.title, start_angle: s.start_angle ?? 0,
-      // Photos saved without a spin (an older app) show in the first one.
-      views: photos.filter((p: any) => (p.spin_id ?? firstId) === s.id),
-    }))
+  const mains = spins.filter(s => !s.row_of)
+  const firstId = (mains[0] ?? spins[0]).id
+  const viewsOf = (id: string) => photos.filter((p: any) => (p.spin_id ?? firstId) === id)
+  return mains
+    .map(s => {
+      // Camera-height rows ride inside their main spin (older apps simply ignore `rows`).
+      const rows = spins
+        .filter(r => r.row_of === s.id)
+        .map(r => ({ id: r.id, title: r.title, elevation: r.elevation ?? 0, start_angle: r.start_angle ?? 0, views: viewsOf(r.id) }))
+        .filter(r => r.views.length > 0)
+      return {
+        id: s.id, title: s.title, start_angle: s.start_angle ?? 0, elevation: s.elevation ?? 0,
+        // Photos saved without a spin (an older app) show in the first one.
+        views: viewsOf(s.id),
+        ...(rows.length ? { rows } : {}),
+      }
+    })
     .filter(s => s.views.length > 0)
 }
