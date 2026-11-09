@@ -370,6 +370,13 @@ export default async function publicRoutes(fastify: FastifyInstance) {
           data.gallery = data.gallery.map((g: any) => ({ ...g, caption: byId.get(g.id) ?? null }))
         }
       }
+      // A car's VIN, make, model and trim: own query, so a database without these columns
+      // (migration-vehicle-identity.sql not run yet) still serves the tour.
+      if (data.space.space_type === 'automotive') {
+        const { data: ident, error: identError } = await fastify.supabase
+          .from('properties').select('vehicle_vin, vehicle_make, vehicle_model, vehicle_trim').eq('id', spaceId).maybeSingle()
+        if (!identError && ident) data.space = { ...data.space, ...(ident as any) }
+      }
       const ownerRow = ownerRes.data
       data.seller = (ownerRow as any)?.profiles ?? null
       data.aerial_maps = aerialMaps
