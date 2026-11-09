@@ -15,7 +15,8 @@ const viewParams = z.object({ viewId: z.string().uuid() })
 
 const safeUrl = z.string().url().refine(u => /^https?:\/\//i.test(u), { message: 'URL must use http or https' })
 
-export const MAX_VEHICLE_VIEWS = 36
+// Per spin. 72 leaves room for a 64-frame video spin.
+export const MAX_VEHICLE_VIEWS = 72
 
 export const CreateVehicleViewBody = z.object({
   image_url: safeUrl,
