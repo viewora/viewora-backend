@@ -61,6 +61,9 @@ export const VenueBody = z.object({
     group: z.string().trim().min(1).max(80),
     kind: z.enum(['lift', 'escalator', 'stairs', 'ramp']).optional(),
   })).max(500),
+  // What the venue is: a mall says "Find a shop", everything else "Find a place".
+  // Missing = mall (maps made before this existed). Same list as the app's VENUE_KINDS.
+  kind: z.enum(['mall', 'restaurant', 'hotel', 'campus', 'hospital', 'events', 'other']).optional(),
 }).superRefine((v, ctx) => {
   const n = v.nodes.length
   if (v.edges.some(e => e[0] >= n || e[1] >= n)) ctx.addIssue({ code: 'custom', message: 'Walkway segment points to a missing point' })
