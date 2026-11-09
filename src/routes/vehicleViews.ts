@@ -1,17 +1,30 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { parseWithSchema } from '../utils/validation.js'
+import { parseWithSchema, sendValidationError } from '../utils/validation.js'
 import { checkUserQuota } from '../utils/quotas.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
 import { consumeAi, AiLimitError } from '../utils/aiUsage.js'
 import { suggestAngles, suggestHotspots } from '../utils/vehicleAi.js'
 
-// Single-vehicle exterior: a set of normal photos taken around the car.
+// Single-vehicle exterior: sets of normal photos taken around the car.
 // The viewer steps between them as the visitor drags (see
-// migration-vehicle-views.sql). Interior is a normal 360 scene.
+// migration-vehicle-views.sql). A car can have several spins, e.g. roof up and
+// roof down (migration-vehicle-spins.sql). Interior is a normal 360 scene.
 
 const spaceParams = z.object({ spaceId: z.string().uuid() })
 const viewParams = z.object({ viewId: z.string().uuid() })
+const spinParams = z.object({ spinId: z.string().uuid() })
+
+export const MAX_VEHICLE_SPINS = 6
+const spinTitle = z.string().trim().min(1).max(40)
+export const CreateVehicleSpinBody = z.object({ title: spinTitle })
+export const UpdateVehicleSpinBody = z.object({
+  title: spinTitle.optional(),
+  start_angle: z.number().int().min(0).max(359).optional(),
+})
+const SpinOrderBody = z.object({ orderedIds: z.array(z.string().uuid()).min(1).max(MAX_VEHICLE_SPINS) })
+const AiSortBody = z.object({ spin_id: z.string().uuid().optional().nullable() }).optional().nullable()
+const SPIN_COLUMNS = 'id, space_id, title, start_angle, order_index, created_at'
 
 const safeUrl = z.string().url().refine(u => /^https?:\/\//i.test(u), { message: 'URL must use http or https' })
 
@@ -19,6 +32,8 @@ const safeUrl = z.string().url().refine(u => /^https?:\/\//i.test(u), { message:
 export const MAX_VEHICLE_VIEWS = 72
 
 export const CreateVehicleViewBody = z.object({
+  /** Which spin the photo belongs to. Omitted: the car's first spin (created if needed). */
+  spin_id: z.string().uuid().optional().nullable(),
   image_url: safeUrl,
   media_id: z.string().uuid().optional().nullable(),
   label: z.string().trim().min(1).max(40).optional().nullable(),
@@ -60,7 +75,67 @@ const HOTSPOT_COLUMNS = 'id, view_id, kind, x, y, title, body, url'
 
 const ReorderBody = z.object({ orderedIds: z.array(z.string().uuid()).min(1).max(MAX_VEHICLE_VIEWS) })
 
-const COLUMNS = 'id, space_id, media_id, image_url, label, angle, width, height, order_index, created_at'
+const LEGACY_COLUMNS = 'id, space_id, media_id, image_url, label, angle, width, height, order_index, created_at'
+const COLUMNS = `${LEGACY_COLUMNS}, spin_id`
+
+/** True when the database answered "that table / column is not there" (a migration has not run yet). */
+function isMissingSchema(error: { code?: string; message?: string } | null | undefined): boolean {
+  if (!error) return false
+  return /PGRST20[0-9]|42P01|42703|schema cache|does not exist|Could not find/i.test(`${error.code ?? ''} ${error.message ?? ''}`)
+}
+
+/**
+ * A car's exterior photos, newest schema first. Before migration-vehicle-spins.sql has run there is
+ * no spin_id column: the photos are still served, as one spin.
+ */
+async function selectViews(fastify: FastifyInstance, spaceId: string) {
+  const first = await fastify.supabase
+    .from('vehicle_views').select(COLUMNS).eq('space_id', spaceId)
+    .order('order_index', { ascending: true }).order('created_at', { ascending: true })
+  if (!first.error) return { rows: (first.data ?? []) as any[], error: null, spinColumn: true }
+  if (!isMissingSchema(first.error)) return { rows: [] as any[], error: first.error, spinColumn: false }
+  const legacy = await fastify.supabase
+    .from('vehicle_views').select(LEGACY_COLUMNS).eq('space_id', spaceId)
+    .order('order_index', { ascending: true }).order('created_at', { ascending: true })
+  return { rows: (legacy.data ?? []) as any[], error: legacy.error, spinColumn: false }
+}
+
+/** The car's spins in order, or null when the spins table does not exist yet. */
+async function selectSpins(fastify: FastifyInstance, spaceId: string) {
+  const { data, error } = await fastify.supabase
+    .from('vehicle_spins').select(SPIN_COLUMNS).eq('space_id', spaceId)
+    .order('order_index', { ascending: true }).order('created_at', { ascending: true })
+  if (error) return null
+  return (data ?? []) as any[]
+}
+
+/**
+ * Makes sure every photo belongs to a spin: creates the car's first spin when it has none, and moves
+ * photos without one (saved by an older app) into it. Returns the spins, or null before the migration.
+ */
+async function ensureSpins(fastify: FastifyInstance, spaceId: string, views: any[]) {
+  let spins = await selectSpins(fastify, spaceId)
+  if (!spins) return null
+  const orphans = views.filter(v => !v.spin_id)
+  if (!spins.length && (orphans.length || !views.length)) {
+    const { data, error } = await fastify.supabase
+      .from('vehicle_spins').insert({ space_id: spaceId, title: 'Exterior', order_index: 0 }).select(SPIN_COLUMNS).single()
+    if (error || !data) return spins
+    spins = [data]
+  }
+  if (orphans.length && spins.length) {
+    const first = spins[0].id
+    await fastify.supabase.from('vehicle_views').update({ spin_id: first }).in('id', orphans.map(v => v.id))
+    for (const v of orphans) v.spin_id = first
+  }
+  return spins
+}
+
+/** Before the spins migration: one stand-in spin so the app can work the same way. */
+const LEGACY_SPIN_ID = '00000000-0000-0000-0000-000000000000'
+function legacySpin(spaceId: string) {
+  return { id: LEGACY_SPIN_ID, space_id: spaceId, title: 'Exterior', start_angle: 0, order_index: 0, created_at: null }
+}
 
 /**
  * Owner-only routes: say what the database actually answered, so a missing table or a stale API
@@ -93,14 +168,104 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
     const params = parseWithSchema(reply, spaceParams, (req as any).params)
     if (!params) return
     if (!(await ownsSpace(params.spaceId, userId))) return reply.code(404).send({ statusMessage: 'Space not found' })
-    const { data, error } = await fastify.supabase
-      .from('vehicle_views').select(COLUMNS).eq('space_id', params.spaceId)
-      .order('order_index', { ascending: true }).order('created_at', { ascending: true })
+    const { rows, error, spinColumn } = await selectViews(fastify, params.spaceId)
     if (error) {
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: dbFailure('Failed to load car photos', error) })
     }
-    return reply.send({ vehicle_views: await withHotspots(fastify, data ?? []) })
+    const spins = spinColumn ? await ensureSpins(fastify, params.spaceId, rows) : null
+    const views = spins ? rows : rows.map(v => ({ ...v, spin_id: LEGACY_SPIN_ID }))
+    return reply.send({
+      vehicle_views: await withHotspots(fastify, views),
+      vehicle_spins: spins ?? [legacySpin(params.spaceId)],
+      // False until migration-vehicle-spins.sql has run: the editor then offers one spin only.
+      spins_ready: !!spins,
+    })
+  })
+
+  // ── SPINS ─────────────────────────────────────────────────
+  async function ownedSpin(spinId: string, userId: string) {
+    const { data } = await fastify.supabase
+      .from('vehicle_spins')
+      .select('id, space_id, properties!inner(user_id)')
+      .eq('id', spinId).eq('properties.user_id', userId).maybeSingle()
+    return data
+  }
+
+  fastify.post('/spaces/:spaceId/vehicle-spins', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, spaceParams, (req as any).params)
+    if (!params) return
+    const body = parseWithSchema(reply, CreateVehicleSpinBody, req.body)
+    if (!body) return
+    const quota = await checkUserQuota(fastify, userId)
+    if (!quota.canWrite) return reply.code(403).send({ statusMessage: 'Your plan does not allow changes right now. Please renew to continue.' })
+    if (!(await ownsSpace(params.spaceId, userId))) return reply.code(404).send({ statusMessage: 'Space not found' })
+    const { rows } = await selectViews(fastify, params.spaceId)
+    const spins = await ensureSpins(fastify, params.spaceId, rows)
+    if (!spins) {
+      return reply.code(503).send({ statusMessage: "A second spin needs a database update first: run migration-vehicle-spins.sql, then NOTIFY pgrst, 'reload schema';" })
+    }
+    if (spins.length >= MAX_VEHICLE_SPINS) return reply.code(400).send({ statusMessage: `Up to ${MAX_VEHICLE_SPINS} spins per car.` })
+    const { data, error } = await fastify.supabase
+      .from('vehicle_spins')
+      .insert({ space_id: params.spaceId, title: body.title, order_index: spins.length })
+      .select(SPIN_COLUMNS).single()
+    if (error) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: dbFailure('Failed to add the spin', error) })
+    }
+    await invalidateSpaceCache(fastify, params.spaceId)
+    return reply.code(201).send({ vehicle_spin: data })
+  })
+
+  fastify.patch('/vehicle-spins/:spinId', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, spinParams, (req as any).params)
+    if (!params) return
+    const body = parseWithSchema(reply, UpdateVehicleSpinBody, req.body)
+    if (!body) return
+    const owned = await ownedSpin(params.spinId, userId)
+    if (!owned) return reply.code(404).send({ statusMessage: 'Spin not found' })
+    const { data, error } = await fastify.supabase
+      .from('vehicle_spins')
+      .update({ ...body, updated_at: new Date().toISOString() })
+      .eq('id', params.spinId).select(SPIN_COLUMNS).single()
+    if (error) {
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to save the spin' })
+    }
+    await invalidateSpaceCache(fastify, owned.space_id)
+    return reply.send({ vehicle_spin: data })
+  })
+
+  fastify.put('/spaces/:spaceId/vehicle-spins/order', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, spaceParams, (req as any).params)
+    if (!params) return
+    const body = parseWithSchema(reply, SpinOrderBody, req.body)
+    if (!body) return
+    if (!(await ownsSpace(params.spaceId, userId))) return reply.code(404).send({ statusMessage: 'Space not found' })
+    const results = await Promise.all(body.orderedIds.map((id, i) =>
+      fastify.supabase.from('vehicle_spins').update({ order_index: i }).eq('id', id).eq('space_id', params.spaceId)))
+    if (results.some(r => r.error)) return reply.code(500).send({ statusMessage: 'Failed to save the order' })
+    await invalidateSpaceCache(fastify, params.spaceId)
+    return reply.code(204).send()
+  })
+
+  // Deletes the spin with its photos and their hotspots. Answers the photos' media ids so the
+  // client can remove the files (same as deleting one photo).
+  fastify.delete('/vehicle-spins/:spinId', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, spinParams, (req as any).params)
+    if (!params) return
+    const owned = await ownedSpin(params.spinId, userId)
+    if (!owned) return reply.code(404).send({ statusMessage: 'Spin not found' })
+    const { data: views } = await fastify.supabase.from('vehicle_views').select('media_id').eq('spin_id', params.spinId)
+    const { error } = await fastify.supabase.from('vehicle_spins').delete().eq('id', params.spinId)
+    if (error) return reply.code(500).send({ statusMessage: 'Failed to delete the spin' })
+    await invalidateSpaceCache(fastify, owned.space_id)
+    return reply.send({ media_ids: (views ?? []).map(v => v.media_id).filter(Boolean) })
   })
 
   // The image is uploaded first via /uploads/create-signed-url (mediaType 'vehicle_view').
@@ -114,15 +279,25 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
     if (!quota.canWrite) return reply.code(403).send({ statusMessage: 'Your plan does not allow changes right now. Please renew to continue.' })
     if (!(await ownsSpace(params.spaceId, userId))) return reply.code(404).send({ statusMessage: 'Space not found' })
 
-    const { count } = await fastify.supabase
-      .from('vehicle_views').select('id', { count: 'exact', head: true }).eq('space_id', params.spaceId)
-    if ((count ?? 0) >= MAX_VEHICLE_VIEWS) {
-      return reply.code(400).send({ statusMessage: `Up to ${MAX_VEHICLE_VIEWS} exterior photos per car.` })
+    // Which spin: the one asked for (it must be this car's), else the car's first spin.
+    const { rows, spinColumn } = await selectViews(fastify, params.spaceId)
+    const spins = spinColumn ? await ensureSpins(fastify, params.spaceId, rows) : null
+    let spinId: string | null = null
+    if (spins) {
+      spinId = body.spin_id && spins.some(s => s.id === body.spin_id) ? body.spin_id : spins[0]?.id ?? null
+      if (body.spin_id && body.spin_id !== LEGACY_SPIN_ID && spinId !== body.spin_id) {
+        return reply.code(404).send({ statusMessage: 'Spin not found' })
+      }
+    }
+    const count = spins ? rows.filter(v => v.spin_id === spinId).length : rows.length
+    if (count >= MAX_VEHICLE_VIEWS) {
+      return reply.code(400).send({ statusMessage: `Up to ${MAX_VEHICLE_VIEWS} photos per spin.` })
     }
 
     const { data, error } = await fastify.supabase
       .from('vehicle_views')
       .insert({
+        ...(spinId ? { spin_id: spinId } : {}),
         space_id: params.spaceId,
         image_url: body.image_url,
         media_id: body.media_id ?? null,
@@ -130,15 +305,15 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
         angle: body.angle,
         width: body.width ?? null,
         height: body.height ?? null,
-        order_index: count ?? 0,
+        order_index: count,
       })
-      .select(COLUMNS).single()
+      .select(spins ? COLUMNS : LEGACY_COLUMNS).single()
     if (error) {
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: dbFailure('Failed to add car photo', error) })
     }
     await invalidateSpaceCache(fastify, params.spaceId)
-    return reply.code(201).send({ vehicle_view: data })
+    return reply.code(201).send({ vehicle_view: spins ? data : { ...(data as any), spin_id: LEGACY_SPIN_ID } })
   })
 
   fastify.patch('/vehicle-views/:viewId', { preHandler: [fastify.authenticate] }, async (req, reply) => {
@@ -152,7 +327,7 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
     const { data, error } = await fastify.supabase
       .from('vehicle_views')
       .update({ ...body, updated_at: new Date().toISOString() })
-      .eq('id', params.viewId).select(COLUMNS).single()
+      .eq('id', params.viewId).select(LEGACY_COLUMNS).single()
     if (error) {
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: 'Failed to save car photo' })
@@ -191,10 +366,9 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
         .eq('id', it.id).eq('space_id', params.spaceId)))
     if (results.some(r => r.error)) return reply.code(500).send({ statusMessage: 'Failed to save the new order' })
     await invalidateSpaceCache(fastify, params.spaceId)
-    const { data } = await fastify.supabase
-      .from('vehicle_views').select(COLUMNS).eq('space_id', params.spaceId)
-      .order('order_index', { ascending: true }).order('created_at', { ascending: true })
-    return reply.send({ vehicle_views: await withHotspots(fastify, data ?? []) })
+    const { rows, spinColumn } = await selectViews(fastify, params.spaceId)
+    const views = spinColumn ? rows : rows.map(v => ({ ...v, spin_id: LEGACY_SPIN_ID }))
+    return reply.send({ vehicle_views: await withHotspots(fastify, views) })
   })
 
   // ── HOTSPOTS ──────────────────────────────────────────────
@@ -276,11 +450,19 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
     const apiKey = process.env.GEMINI_API_KEY
     if (!apiKey) return reply.code(503).send({ statusMessage: 'AI is not configured on the server.' })
     if (!(await ownsSpace(params.spaceId, userId))) return reply.code(404).send({ statusMessage: 'Space not found' })
+    const parsedSort = AiSortBody.safeParse(req.body ?? null)
+    if (!parsedSort.success) return sendValidationError(reply, parsedSort.error)
+    const sortBody = parsedSort.data
 
-    const { data: views } = await fastify.supabase
-      .from('vehicle_views').select('id, image_url').eq('space_id', params.spaceId)
-      .order('created_at', { ascending: true }).limit(MAX_VEHICLE_VIEWS)
-    if (!views?.length) return reply.code(400).send({ statusMessage: 'Add some photos first.' })
+    // One spin at a time: frames of different spins share angles.
+    const { rows } = await selectViews(fastify, params.spaceId)
+    const wanted = sortBody?.spin_id && sortBody.spin_id !== LEGACY_SPIN_ID ? sortBody.spin_id : null
+    const views = rows
+      .filter(v => !wanted || v.spin_id === wanted)
+      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
+      .slice(0, MAX_VEHICLE_VIEWS)
+      .map(v => ({ id: v.id, image_url: v.image_url }))
+    if (!views.length) return reply.code(400).send({ statusMessage: 'Add some photos first.' })
 
     let refund: () => Promise<void>
     try { refund = await consumeAi(fastify, userId, 'prompts') } catch (err: any) {
@@ -354,15 +536,28 @@ async function withHotspots(fastify: FastifyInstance, views: any[]) {
   return views.map(v => ({ ...v, hotspots: byView.get(v.id) ?? [] }))
 }
 
-/** Public, read-only: exterior photos for a published space (fetched fresh, not cached). */
-export async function publicVehicleViews(fastify: FastifyInstance, spaceId: string) {
-  const { data, error } = await fastify.supabase
-    .from('vehicle_views')
-    .select('id, image_url, label, angle, width, height, order_index')
-    .eq('space_id', spaceId)
-    .order('order_index', { ascending: true })
-    .order('created_at', { ascending: true })
-  // Missing table (migration not run yet) must not break the public tour.
-  if (error) return []
-  return withHotspots(fastify, data ?? [])
+/**
+ * Public, read-only: a published car's spins, each with its photos and their hotspots
+ * (fetched fresh, not cached). Empty spins are left out. Before the spins migration, all
+ * photos come back as one spin. A missing table must never break the public tour.
+ */
+export async function publicVehicleSpins(fastify: FastifyInstance, spaceId: string) {
+  const { rows, error, spinColumn } = await selectViews(fastify, spaceId)
+  if (error || !rows.length) return []
+  const photos = (await withHotspots(fastify, rows)).map((v: any) => ({
+    id: v.id, image_url: v.image_url, label: v.label, angle: v.angle, width: v.width, height: v.height,
+    order_index: v.order_index, spin_id: v.spin_id ?? null, hotspots: v.hotspots,
+  }))
+  const spins = spinColumn ? await selectSpins(fastify, spaceId) : null
+  if (!spins || !spins.length) {
+    return [{ id: LEGACY_SPIN_ID, title: 'Exterior', start_angle: 0, views: photos }]
+  }
+  const firstId = spins[0].id
+  return spins
+    .map(s => ({
+      id: s.id, title: s.title, start_angle: s.start_angle ?? 0,
+      // Photos saved without a spin (an older app) show in the first one.
+      views: photos.filter((p: any) => (p.spin_id ?? firstId) === s.id),
+    }))
+    .filter(s => s.views.length > 0)
 }
