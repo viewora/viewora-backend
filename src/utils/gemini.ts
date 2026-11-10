@@ -9,24 +9,43 @@ export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
 export const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-lite-image'
 
 const MAX_RETRIES = 3
+// Cloudflare drops the client connection at 100 s and its 524 carries no CORS
+// headers, so the browser only sees "Failed to fetch". Finish well before that
+// so the route can still answer with a readable error and refund the credit.
+const TOTAL_BUDGET_MS = 75_000
+const MIN_ATTEMPT_MS  = 10_000
 
 export type GeminiPart =
   | { text: string }
   | { inline_data: { mime_type: string; data: string } }
 
 async function postGemini(model: string, apiKey: string, body: string): Promise<any> {
+  const deadline = Date.now() + TOTAL_BUDGET_MS
   let res: Response | null = null
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method:  'POST',
-      headers: { 'x-goog-api-key': apiKey, 'content-type': 'application/json' },
-      body,
-    })
+    const left = deadline - Date.now()
+    try {
+      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method:  'POST',
+        headers: { 'x-goog-api-key': apiKey, 'content-type': 'application/json' },
+        body,
+        signal:  AbortSignal.timeout(left),
+      })
+    } catch (err: any) {
+      if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+        throw new Error(`Gemini timed out after ${Math.round((TOTAL_BUDGET_MS - (deadline - Date.now())) / 1000)}s`)
+      }
+      throw err
+    }
     // Free tier is rate-limited per minute — back off and retry on 429 / transient 5xx
     if (res.ok || ![429, 500, 503].includes(res.status) || attempt === MAX_RETRIES) break
     const errText = await res.text()
     const hinted  = Number(errText.match(/"retryDelay":\s*"(\d+(?:\.\d+)?)s"/)?.[1])
     const waitMs  = Math.min(30_000, Number.isFinite(hinted) ? hinted * 1000 : 4000 * 2 ** attempt)
+    // No time left for a useful retry: give up now with Gemini's own error.
+    if (deadline - Date.now() - waitMs < MIN_ATTEMPT_MS) {
+      throw new Error(`Gemini ${res.status}: ${errText.slice(0, 200)}`)
+    }
     await new Promise(r => setTimeout(r, waitMs))
   }
 

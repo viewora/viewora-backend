@@ -10,7 +10,7 @@ const PHOTO_WIDTH = 1024
 
 async function loadPhoto(url: string): Promise<string | null> {
   try {
-    const res = await fetch(url)
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
     if (!res.ok) return null
     const jpeg = await sharp(Buffer.from(await res.arrayBuffer()), { failOn: 'none' })
       .rotate()
