@@ -15,6 +15,11 @@ async function streamToBuffer(body: unknown): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
+/** True when the image carries metadata that can identify a person or place (camera, GPS, author). */
+export function hasPrivateMetadata(m: { exif?: Buffer; xmp?: Buffer; iptc?: Buffer; comments?: unknown[] }): boolean {
+  return !!(m.exif?.length || m.xmp?.length || m.iptc?.length || (Array.isArray(m.comments) && m.comments.length))
+}
+
 export async function processMedia(
   fastify: FastifyInstance,
   mediaId: string,
@@ -48,6 +53,19 @@ export async function processMedia(
         fastify, mediaId, 'failed',
         `Image too large: ${width}×${height}. Max allowed: ${MAX_WIDTH_PX}×${MAX_HEIGHT_PX}`,
       )
+      return
+    }
+
+    // Nothing to strip (no EXIF, XMP or IPTC: e.g. car-spin frames drawn from a video in the
+    // browser)? Keep the file as uploaded. Re-encoding it at quality 92 only made it ~20% bigger for
+    // every buyer who loads it, and cost an extra upload per frame.
+    if ((fmt === 'jpeg' || fmt === 'webp') && !hasPrivateMetadata(metadata)) {
+      await fastify.supabase
+        .from('property_media')
+        .update({ width: width || null, height: height || null })
+        .eq('id', mediaId)
+      fastify.log.info({ mediaId, width, height, fmt, bytes: originalBuffer.length }, 'No metadata to strip; kept as uploaded')
+      await updateUploadStatus(fastify, mediaId, 'complete')
       return
     }
 
