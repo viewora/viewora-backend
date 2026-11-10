@@ -5,6 +5,7 @@ import { checkUserQuota } from '../utils/quotas.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
 import { consumeAi, AiLimitError } from '../utils/aiUsage.js'
 import { suggestAngles, suggestHotspots } from '../utils/vehicleAi.js'
+import { failureReason } from '../utils/gemini.js'
 
 // Single-vehicle exterior: sets of normal photos taken around the car.
 // The viewer steps between them as the visitor drags (see
@@ -507,7 +508,7 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       fastify.log.warn({ err: err.message, spaceId: params.spaceId }, '[vehicle ai-sort] failed')
       await refund().catch(() => {})
-      return reply.code(502).send({ statusMessage: 'Could not sort the photos right now. Try again shortly.' })
+      return reply.code(503).send({ reason: failureReason(err), statusMessage: 'Could not sort the photos right now. Try again shortly.' })
     }
   })
 
@@ -540,7 +541,7 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       fastify.log.warn({ err: err.message, viewId: params.viewId }, '[vehicle ai-hotspots] failed')
       await refund().catch(() => {})
-      return reply.code(502).send({ statusMessage: 'Could not suggest hotspots right now. Try again shortly.' })
+      return reply.code(503).send({ reason: failureReason(err), statusMessage: 'Could not suggest hotspots right now. Try again shortly.' })
     }
   })
 

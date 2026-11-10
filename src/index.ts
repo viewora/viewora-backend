@@ -310,6 +310,8 @@ fastify.addHook('onSend', async (request, reply, payload) => {
 
     envelope.meta = {
       requestId: request.id,
+      // Upstream failure detail (e.g. "Gemini 404: ...") from failureReason()
+      ...(typeof record.reason === 'string' ? { reason: record.reason } : {}),
       ...(isRecord(record.meta) ? record.meta : {}),
     }
 

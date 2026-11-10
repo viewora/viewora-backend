@@ -99,6 +99,16 @@ export async function generateGeminiImage(opts: {
   return Buffer.from((img.inlineData ?? img.inline_data).data, 'base64')
 }
 
+/**
+ * Short, key-free reason for an upstream failure, sent back next to the friendly
+ * message so a failing AI call can be diagnosed from the browser's Network tab.
+ * Routes answer these failures with 503, never 502: Cloudflare swaps an origin
+ * 502 for its own page without CORS headers, so the browser only sees "Failed to fetch".
+ */
+export function failureReason(err: any): string {
+  return String(err?.message ?? err ?? 'unknown').replace(/\s+/g, ' ').slice(0, 200)
+}
+
 /** Strips accidental ```json fences and parses. Throws on invalid JSON. */
 export function parseGeminiJson(text: string): any {
   return JSON.parse(text.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim() || '{}')

@@ -7,6 +7,7 @@ import { parseWithSchema } from '../utils/validation.js'
 import { sendTourPublishedEmail } from '../email/index.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
 import { generateListingDescription } from '../utils/aiDescription.js'
+import { failureReason } from '../utils/gemini.js'
 import { consumeAi, AiLimitError } from '../utils/aiUsage.js'
 import { sanitizeSocialLinks, SOCIAL_KEYS } from '../utils/socialLinks.js'
 
@@ -747,7 +748,7 @@ export default async function (fastify: FastifyInstance) {
     } catch (err: any) {
       fastify.log.warn({ err: err.message, spaceId: id }, '[generate-description] failed')
       await refundAi().catch(() => {})
-      return reply.code(502).send({ statusMessage: 'Could not generate a description right now — try again shortly.' })
+      return reply.code(503).send({ reason: failureReason(err), statusMessage: 'Could not generate a description right now — try again shortly.' })
     }
   })
 }

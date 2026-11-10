@@ -3,7 +3,7 @@ import { FastifyInstance } from 'fastify'
 import sharp from 'sharp'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
-import { generateGemini, parseGeminiJson, type GeminiPart } from '../utils/gemini.js'
+import { generateGemini, parseGeminiJson, failureReason, type GeminiPart } from '../utils/gemini.js'
 import { industryBrief } from '../utils/industry.js'
 import { consumeAi, getAiUsage, AiLimitError } from '../utils/aiUsage.js'
 import { previewEdit, renderRegionPreview } from '../utils/aiImageEdit.js'
@@ -256,7 +256,7 @@ export default async function aiAssistantRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       await refund().catch(() => {})
       fastify.log.warn({ err: err.message, spaceId: params.spaceId }, '[ai-assistant] failed')
-      return sendAiError(reply, err) ?? reply.code(502).send({ statusMessage: 'The AI assistant couldn’t answer right now — try again shortly. This request wasn’t counted.' })
+      return sendAiError(reply, err) ?? reply.code(503).send({ reason: failureReason(err), statusMessage: 'The AI assistant couldn’t answer right now — try again shortly. This request wasn’t counted.' })
     }
   })
 
@@ -296,7 +296,7 @@ export default async function aiAssistantRoutes(fastify: FastifyInstance) {
       await refund().catch(() => {})
       fastify.log.warn({ err: err.message, sceneId: scene.id }, '[ai-image-edit] preview failed')
       if (/declined/i.test(err.message)) return reply.code(422).send({ statusMessage: 'The image model couldn’t make that edit — try describing it differently. This edit wasn’t counted.' })
-      return sendAiError(reply, err) ?? reply.code(502).send({ statusMessage: 'Photo edit failed — try again shortly. This edit wasn’t counted.' })
+      return sendAiError(reply, err) ?? reply.code(503).send({ reason: failureReason(err), statusMessage: 'Photo edit failed — try again shortly. This edit wasn’t counted.' })
     }
   })
 

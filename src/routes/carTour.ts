@@ -4,6 +4,7 @@ import { parseWithSchema } from '../utils/validation.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
 import { consumeAi, AiLimitError } from '../utils/aiUsage.js'
 import { suggestCaptions } from '../utils/vehicleAi.js'
+import { failureReason } from '../utils/gemini.js'
 import { CHASSIS_RE, decodeVin, isDecodableVin, normalizeVin } from '../utils/vin.js'
 
 // One car = one tour: exterior spins + interior 360s + named detail photos + the car's
@@ -161,7 +162,7 @@ export default async function carTourRoutes(fastify: FastifyInstance) {
     let decoded
     try { decoded = await decodeVin(vin) } catch (err: any) {
       fastify.log.warn({ err: err.message }, '[vin decode] failed')
-      return reply.code(502).send({ statusMessage: 'The VIN lookup is not answering right now. Fill in the details yourself or try again shortly.' })
+      return reply.code(503).send({ reason: failureReason(err), statusMessage: 'The VIN lookup is not answering right now. Fill in the details yourself or try again shortly.' })
     }
     if (!decoded) return reply.code(404).send({ statusMessage: 'No match for this VIN. Check it, or fill in the details yourself.' })
     return reply.send({ vehicle: decoded })
@@ -222,7 +223,7 @@ export default async function carTourRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       fastify.log.warn({ err: err.message, spaceId: params.spaceId }, '[car ai-captions] failed')
       await refund().catch(() => {})
-      return reply.code(502).send({ statusMessage: 'Could not name the photos right now. Try again shortly.' })
+      return reply.code(503).send({ reason: failureReason(err), statusMessage: 'Could not name the photos right now. Try again shortly.' })
     }
     await Promise.all(captions.map(c => fastify.supabase.from('property_media').update({ caption: c.caption })
       .eq('id', c.id).eq('property_id', params.spaceId)))
