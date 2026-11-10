@@ -2,7 +2,7 @@
 // descriptions). Model is configurable because Google's free-tier quotas
 // differ per model — see GEMINI_MODEL in .env.example.
 
-export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash'
 // Photo edits (object removal / insertion). No free tier — every call is billed,
 // so it is only reachable through the plan's ai_image_edits_per_month allowance.
 // The Lite model is the cheapest; gemini-nano-banana-2.1 gives better quality.
