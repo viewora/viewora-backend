@@ -174,6 +174,20 @@ export default async function (fastify: FastifyInstance) {
       }
     })
 
+    // A car with only its exterior spin has no scene or gallery photo: its card shows the
+    // first frame of the spin. At most a few rows per car (the frames at the start), and a failed lookup only
+    // leaves those cards without a picture, never fails the list.
+    const bare = mappedData.filter((d: any) => !d.cover_image_url).map((d: any) => d.id)
+    if (bare.length) {
+      const { data: frames } = await fastify.supabase
+        .from('vehicle_views').select('space_id, image_url, created_at')
+        .in('space_id', bare).lt('order_index', 8)
+        .order('order_index', { ascending: true }).order('created_at', { ascending: true })
+      const first = new Map<string, string>()
+      for (const f of frames || []) if (f.image_url && !first.has(f.space_id)) first.set(f.space_id, f.image_url)
+      for (const d of mappedData) if (!d.cover_image_url && first.has(d.id)) d.cover_image_url = first.get(d.id)
+    }
+
     return reply.send({ data: mappedData, total: count ?? 0, page, limit })
   })
 
