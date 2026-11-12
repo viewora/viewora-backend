@@ -81,6 +81,8 @@ const hotspotFields = {
     pts: z.record(z.string().uuid(), z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]))
       .refine(p => Object.keys(p).length <= MAX_VEHICLE_VIEWS * 4, { message: 'Too many frames in the track' }),
     fixed: z.array(z.string().uuid()).max(MAX_VEHICLE_VIEWS).optional(),
+    // Which tracker made it: the editor re-follows pins made by an older one.
+    v: z.number().int().min(1).max(1000).optional(),
   }).optional().nullable(),
 }
 export const CreateVehicleHotspotBody = z.object(hotspotFields)

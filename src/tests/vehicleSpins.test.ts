@@ -215,7 +215,7 @@ function hotspotStub(trackColumn: boolean) {
   return { sb, writes }
 }
 
-const TRACK = { pts: { [VIEW_A]: [0.5, 0.42] as [number, number] }, fixed: [] }
+const TRACK = { pts: { [VIEW_A]: [0.5, 0.42] as [number, number] }, fixed: [], v: 2 }
 
 test('a pin saves where it sits on each frame', async () => {
   const { sb, writes } = hotspotStub(true)
