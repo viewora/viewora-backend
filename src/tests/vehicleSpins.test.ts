@@ -9,7 +9,7 @@ const SPIN_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const SPIN_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const OTHER_SPIN = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 
-type Ctx = { table: string; op: string; columns: string; filters: Record<string, unknown> }
+type Ctx = { table: string; op: string; columns: string; filters: Record<string, unknown>; selected?: string; payload?: any }
 
 // Chainable query-builder stub that remembers the selected columns and eq() filters,
 // so a test can answer "no such column" the way PostgREST does before a migration.
@@ -18,10 +18,10 @@ function supabaseStub(result: (ctx: Ctx) => { data: unknown; error: unknown; cou
     from(table: string) {
       const ctx: Ctx = { table, op: 'select', columns: '', filters: {} }
       const builder: any = {}
-      builder.select = (cols?: string) => { if (ctx.op === 'select') ctx.columns = cols ?? ''; return builder }
+      builder.select = (cols?: string) => { if (ctx.op === 'select') ctx.columns = cols ?? ''; ctx.selected = cols ?? ''; return builder }
       builder.eq = (k: string, v: unknown) => { ctx.filters[k] = v; return builder }
       for (const m of ['in', 'or', 'order', 'limit']) builder[m] = () => builder
-      for (const m of ['insert', 'update', 'delete']) builder[m] = () => { ctx.op = m; return builder }
+      for (const m of ['insert', 'update', 'delete']) builder[m] = (payload?: any) => { ctx.op = m; ctx.payload = payload; return builder }
       builder.single = async () => result(ctx)
       builder.maybeSingle = async () => result(ctx)
       builder.then = (resolve: any, reject: any) => Promise.resolve(result(ctx)).then(resolve, reject)
@@ -194,4 +194,56 @@ test('public spins before the hotspot photo migration: hotspots still load', asy
   const spins = await publicVehicleSpins({ supabase: sb } as any, SPACE_ID)
   assert.equal(spins[0].views[0].hotspots.length, 1)
   assert.equal(spins[0].views[0].hotspots[0].title, 'Engine')
+})
+
+const HOTSPOT_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+const VIEW_A = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+const TRACK_MISSING = { code: 'PGRST204', message: "Could not find the 'track' column of 'vehicle_hotspots' in the schema cache" }
+
+// The hotspot table before the track migration: any write or read that names `track` fails like PostgREST.
+function hotspotStub(trackColumn: boolean) {
+  const writes: any[] = []
+  const sb = supabaseStub((ctx) => {
+    if (ctx.table === 'subscriptions') return { data: { status: 'active', plans: { slug: 'pro' } }, error: null }
+    if (ctx.table !== 'vehicle_hotspots') return { data: null, error: null }
+    if (ctx.op === 'select' && ctx.selected?.includes('properties!inner')) return { data: { id: HOTSPOT_ID, space_id: SPACE_ID }, error: null }
+    const named = (ctx.selected ?? '').includes('track') || (ctx.payload && 'track' in ctx.payload)
+    if (!trackColumn && named) return { data: null, error: TRACK_MISSING }
+    if (ctx.op === 'update') writes.push(ctx.payload)
+    return { data: { id: HOTSPOT_ID, view_id: VIEW_A, kind: 'feature', x: 0.5, y: 0.5, title: 'Bonnet', ...(ctx.payload ?? {}) }, error: null }
+  })
+  return { sb, writes }
+}
+
+const TRACK = { pts: { [VIEW_A]: [0.5, 0.42] as [number, number] }, fixed: [] }
+
+test('a pin saves where it sits on each frame', async () => {
+  const { sb, writes } = hotspotStub(true)
+  const app = await buildApp(sb)
+  const res = await app.inject({ method: 'PATCH', url: `/vehicle-hotspots/${HOTSPOT_ID}`, payload: { track: TRACK } })
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(writes[0].track, TRACK)
+})
+
+test('before the track migration: saving a track names the file to run', async () => {
+  const { sb } = hotspotStub(false)
+  const app = await buildApp(sb)
+  const res = await app.inject({ method: 'PATCH', url: `/vehicle-hotspots/${HOTSPOT_ID}`, payload: { track: TRACK } })
+  assert.equal(res.statusCode, 503)
+  assert.match(res.json().statusMessage, /migration-vehicle-hotspot-track\.sql/)
+})
+
+test('before the track migration: other edits still save', async () => {
+  const { sb, writes } = hotspotStub(false)
+  const app = await buildApp(sb)
+  const res = await app.inject({ method: 'PATCH', url: `/vehicle-hotspots/${HOTSPOT_ID}`, payload: { title: 'Engine' } })
+  assert.equal(res.statusCode, 200)
+  assert.equal(writes[0].title, 'Engine')
+})
+
+test('a track must hold fractions of the photo', async () => {
+  const { sb } = hotspotStub(true)
+  const app = await buildApp(sb)
+  const res = await app.inject({ method: 'PATCH', url: `/vehicle-hotspots/${HOTSPOT_ID}`, payload: { track: { pts: { [VIEW_A]: [1.4, 0.2] } } } })
+  assert.equal(res.statusCode, 400)
 })

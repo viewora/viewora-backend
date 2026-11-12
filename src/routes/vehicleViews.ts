@@ -72,6 +72,16 @@ const hotspotFields = {
   url: safeUrl.max(500).optional().nullable(),
   /** A photo that opens from the pin (the engine under the bonnet, the tyre tread). */
   image_url: safeUrl.max(1000).optional().nullable(),
+  /**
+   * Where the pin sits on each frame of a smooth spin, worked out in the editor by following the
+   * part from frame to frame: { pts: { [viewId]: [x, y] } }. `fixed` are frames the seller corrected.
+   * Frames missing from `pts` are where the part is out of sight: the pin is hidden there.
+   */
+  track: z.object({
+    pts: z.record(z.string().uuid(), z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]))
+      .refine(p => Object.keys(p).length <= MAX_VEHICLE_VIEWS * 4, { message: 'Too many frames in the track' }),
+    fixed: z.array(z.string().uuid()).max(MAX_VEHICLE_VIEWS).optional(),
+  }).optional().nullable(),
 }
 export const CreateVehicleHotspotBody = z.object(hotspotFields)
 export const UpdateVehicleHotspotBody = z.object(hotspotFields).partial()
@@ -87,16 +97,49 @@ const AnglesBody = z.object({
 
 const hotspotParams = z.object({ hotspotId: z.string().uuid() })
 
-const HOTSPOT_COLUMNS_BASE = 'id, view_id, kind, x, y, title, body, url'
-const HOTSPOT_COLUMNS = `${HOTSPOT_COLUMNS_BASE}, image_url`
-const HOTSPOT_IMAGE_MIGRATION = 'Photos on hotspots need a database update: run migration-vehicle-hotspot-image.sql in Supabase.'
-
-/** Before migration-vehicle-hotspot-image.sql has run there is no image_url column: hotspots keep working without photos. */
-export function missingHotspotImageColumn(error: { code?: string; message?: string; details?: string } | null | undefined): boolean {
-  if (!error) return false
-  const text = `${error.code ?? ''} ${error.message ?? ''} ${error.details ?? ''}`
-  return /image_url/.test(text) && /42703|PGRST204|column|schema cache/i.test(text)
+const HOTSPOT_COLUMNS_BASE = ['id', 'view_id', 'kind', 'x', 'y', 'title', 'body', 'url']
+/** Columns added later, each with the migration that adds it. Until it has run, hotspots work without it. */
+const HOTSPOT_OPTIONAL: Record<string, { file: string; what: string }> = {
+  image_url: { file: 'migration-vehicle-hotspot-image.sql', what: 'Photos on hotspots' },
+  track: { file: 'migration-vehicle-hotspot-track.sql', what: 'Hotspots that follow the car' },
 }
+type DbError = { code?: string; message?: string; details?: string } | null | undefined
+
+/** The optional hotspot column a database error is about (the column does not exist yet), if any. */
+export function missingHotspotColumn(error: DbError): string | null {
+  if (!error) return null
+  const text = `${error.code ?? ''} ${error.message ?? ''} ${error.details ?? ''}`
+  if (!/42703|PGRST204|column|schema cache/i.test(text)) return null
+  return Object.keys(HOTSPOT_OPTIONAL).find(c => new RegExp(`[^a-z_]${c}[^a-z_]`).test(` ${text} `)) ?? null
+}
+/** Kept for callers of the first version. */
+export function missingHotspotImageColumn(error: DbError): boolean { return missingHotspotColumn(error) === 'image_url' }
+
+const hotspotColumns = (skip: Set<string>) =>
+  [...HOTSPOT_COLUMNS_BASE, ...Object.keys(HOTSPOT_OPTIONAL).filter(c => !skip.has(c))].join(', ')
+
+/**
+ * Runs a hotspot query, dropping optional columns the database does not have yet. A write that
+ * carries a value for a missing column answers which migration to run instead of losing it quietly.
+ */
+async function hotspotQuery(
+  run: (columns: string, skip: Set<string>) => PromiseLike<{ data: any; error: any }>,
+  sent: Record<string, unknown> = {},
+): Promise<{ data: any; error: any; migration?: string }> {
+  const skip = new Set<string>()
+  for (;;) {
+    const res = await run(hotspotColumns(skip), skip)
+    const col = missingHotspotColumn(res.error)
+    if (!col || skip.has(col)) return res
+    const v = sent[col]
+    if (v !== undefined && v !== null) {
+      const m = HOTSPOT_OPTIONAL[col]
+      return { data: null, error: res.error, migration: `${m.what} need a database update: run ${m.file} in Supabase.` }
+    }
+    skip.add(col)
+  }
+}
+const omit = (row: Record<string, unknown>, skip: Set<string>) => Object.fromEntries(Object.entries(row).filter(([k]) => !skip.has(k)))
 
 const ReorderBody = z.object({ orderedIds: z.array(z.string().uuid()).min(1).max(MAX_VEHICLE_VIEWS) })
 
@@ -433,13 +476,9 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
       return reply.code(400).send({ statusMessage: `Up to ${MAX_HOTSPOTS_PER_VIEW} hotspots per photo.` })
     }
     const row: Record<string, unknown> = { view_id: params.viewId, space_id: owned.space_id, ...body, body: body.body ?? null, url: body.url ?? null }
-    if (body.image_url !== undefined) row.image_url = body.image_url ?? null
-    let { data, error } = await fastify.supabase.from('vehicle_hotspots').insert(row).select(HOTSPOT_COLUMNS).single()
-    if (missingHotspotImageColumn(error)) {
-      if (body.image_url) return reply.code(503).send({ statusMessage: HOTSPOT_IMAGE_MIGRATION })
-      delete row.image_url
-      ;({ data, error } = await fastify.supabase.from('vehicle_hotspots').insert(row).select(HOTSPOT_COLUMNS_BASE).single())
-    }
+    const { data, error, migration } = await hotspotQuery(
+      (cols, skip) => fastify.supabase.from('vehicle_hotspots').insert(omit(row, skip)).select(cols).single(), body)
+    if (migration) return reply.code(503).send({ statusMessage: migration })
     if (error) {
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: dbFailure('Failed to add hotspot', error) })
@@ -465,14 +504,9 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
     const owned = await ownedHotspot(params.hotspotId, userId)
     if (!owned) return reply.code(404).send({ statusMessage: 'Hotspot not found' })
     const patch: Record<string, unknown> = { ...body, updated_at: new Date().toISOString() }
-    let { data, error } = await fastify.supabase
-      .from('vehicle_hotspots').update(patch).eq('id', params.hotspotId).select(HOTSPOT_COLUMNS).single()
-    if (missingHotspotImageColumn(error)) {
-      if (body.image_url) return reply.code(503).send({ statusMessage: HOTSPOT_IMAGE_MIGRATION })
-      delete patch.image_url
-      ;({ data, error } = await fastify.supabase
-        .from('vehicle_hotspots').update(patch).eq('id', params.hotspotId).select(HOTSPOT_COLUMNS_BASE).single())
-    }
+    const { data, error, migration } = await hotspotQuery(
+      (cols, skip) => fastify.supabase.from('vehicle_hotspots').update(omit(patch, skip)).eq('id', params.hotspotId).select(cols).single(), body)
+    if (migration) return reply.code(503).send({ statusMessage: migration })
     if (error) {
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: 'Failed to save hotspot' })
@@ -583,14 +617,9 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
 async function withHotspots(fastify: FastifyInstance, views: any[]) {
   if (!views.length) return views
   const ids = views.map(v => v.id)
-  let { data, error } = await fastify.supabase
-    .from('vehicle_hotspots').select(HOTSPOT_COLUMNS).in('view_id', ids)
-    .order('created_at', { ascending: true })
-  if (missingHotspotImageColumn(error)) {
-    ;({ data, error } = await fastify.supabase
-      .from('vehicle_hotspots').select(HOTSPOT_COLUMNS_BASE).in('view_id', ids)
-      .order('created_at', { ascending: true }) as any)
-  }
+  const { data, error } = await hotspotQuery(cols => fastify.supabase
+    .from('vehicle_hotspots').select(cols).in('view_id', ids)
+    .order('created_at', { ascending: true }))
   const byView = new Map<string, any[]>()
   if (!error) for (const h of data ?? []) byView.set(h.view_id, [...(byView.get(h.view_id) ?? []), h])
   return views.map(v => ({ ...v, hotspots: byView.get(v.id) ?? [] }))
