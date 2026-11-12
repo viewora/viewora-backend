@@ -215,7 +215,7 @@ test('runSpinLook: each camera height is planned on its own, and photos from els
 })
 
 // ── Back-fill of existing cars ──
-import { spinsToBackfill, queueSpinLookBackfill, BACKFILL_FLAG, BACKFILL_PRIORITY } from '../utils/spinLookJob.js'
+import { spinsToBackfill, queueSpinLookBackfill, chosenKey, BACKFILL_FLAG, BACKFILL_PRIORITY, BACKFILL_VERSION } from '../utils/spinLookJob.js'
 
 test('spinsToBackfill: main spins still on originals only; an owner choice and empty spins are left alone', () => {
   const o = (n: string) => `https://media.viewora.software/k/${n}.jpg`
@@ -231,30 +231,43 @@ test('spinsToBackfill: main spins still on originals only; an owner choice and e
   assert.deepEqual(spinsToBackfill(spins, views).map(s => s.id), ['a'])
 })
 
-test('queueSpinLookBackfill runs once, at low priority, and clears its flag when it fails', async () => {
+test('queueSpinLookBackfill: once, low priority, versioned ids; skips owner choices and spins finished before', async () => {
   const flags = new Map<string, string>()
   const redis = {
     set: async (k: string, v: string) => (flags.has(k) ? null : (flags.set(k, v), 'OK')),
     setEx: async (k: string, _s: number, v: string) => { flags.set(k, v) },
     del: async (k: any) => { flags.delete(k) },
+    exists: async (k: string) => (flags.has(k) ? 1 : 0),
   }
   const added: any[] = []
   const queue = { add: async (name: string, data: any, opts: any) => { added.push({ name, data, opts }) } }
-  const table = (rows: any[]) => ({ select: () => ({ in: async () => ({ data: rows, error: null }), then: (r: any) => r({ data: rows, error: null }) }) })
+  const url = (n: string) => `https://media.viewora.software/k/${n}.jpg`
+  const spins = [
+    { id: 'a', space_id: 's1', row_of: null },  // still original: queued
+    { id: 'b', space_id: 's2', row_of: null },  // owner chose a look in the editor
+    { id: 'c', space_id: 's3', row_of: null },  // finished before, then set back to original
+  ]
+  const views = [{ spin_id: 'a', image_url: url('a') }, { spin_id: 'b', image_url: url('b') }, { spin_id: 'c', image_url: url('c') }]
+  const query = (rows: any[]) => {
+    const q: any = { order: () => q, eq: (_c: string, v: string) => query(rows.filter(r => r.spin_id === v)), range: async (a: number, b: number) => ({ data: rows.slice(a, b + 1), error: null }) }
+    return q
+  }
   const fastify: any = {
     log: { info() {}, error() {} },
-    supabase: { from: (t: string) => t === 'vehicle_spins'
-      ? table([{ id: 'a', space_id: 's1', row_of: null }])
-      : table([{ spin_id: 'a', image_url: 'https://media.viewora.software/k/1.jpg' }]) },
+    supabase: { from: (t: string) => ({ select: () => query(t === 'vehicle_spins' ? spins : views) }) },
   }
-  assert.equal(await queueSpinLookBackfill(fastify, redis, queue), 1)
+  flags.set(chosenKey('b'), 'original')
+  const deps = { hasCopies: async (key: string) => key === 'k/c.jpg' }
+  assert.equal(await queueSpinLookBackfill(fastify, redis, queue, deps), 1)
+  assert.equal(added[0].data.spinId, 'a')
   assert.equal(added[0].data.look, 'natural')
   assert.equal(added[0].opts.priority, BACKFILL_PRIORITY)
-  assert.equal(await queueSpinLookBackfill(fastify, redis, queue), 0, 'second start does nothing')
+  assert.equal(added[0].opts.jobId, `spin-look-backfill-v${BACKFILL_VERSION}-a`)
+  assert.equal(await queueSpinLookBackfill(fastify, redis, queue, deps), 0, 'second start does nothing')
   assert.equal(added.length, 1)
 
   flags.clear()
-  const broken: any = { log: fastify.log, supabase: { from: () => ({ select: () => ({ then: (r: any) => r({ data: null, error: { message: 'down' } }) }) }) } }
-  assert.equal(await queueSpinLookBackfill(broken, redis, queue), 0)
+  const broken: any = { log: fastify.log, supabase: { from: () => ({ select: () => ({ order: () => ({ range: async () => ({ data: null, error: { message: 'down' } }) }) }) }) } }
+  assert.equal(await queueSpinLookBackfill(broken, redis, queue, deps), 0)
   assert.equal(flags.has(BACKFILL_FLAG), false, 'flag cleared so the next start retries')
 })

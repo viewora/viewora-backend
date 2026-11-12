@@ -11,7 +11,7 @@ import { updateUploadStatus } from './utils/uploads.js'
 import { processTileScene } from './utils/tile-processor.js'
 import { queueRetileScenes } from './utils/retile.js'
 import { applyEdit, editPanoramaUrl } from './utils/aiImageEdit.js'
-import { processSpinLook, queueSpinLookBackfill, SPIN_LOOK_JOB, type SpinLookJob } from './utils/spinLookJob.js'
+import { processSpinLook, queueSpinLookBackfill, r2HasCopies, SPIN_LOOK_JOB, type SpinLookJob } from './utils/spinLookJob.js'
 import {
   recordJobSuccess,
   recordJobFailure,
@@ -245,7 +245,7 @@ if (process.env.RETILE_ON_BOOT === 'true') {
 // One-off: give every car still on its original frames the studio finish (runs once, flag in Redis;
 // set SPIN_LOOK_BACKFILL=off to skip). Low priority, so uploads and owners' own requests go first.
 if (process.env.SPIN_LOOK_BACKFILL !== 'off') {
-  queueSpinLookBackfill(fastify, redis as any, metricsQueue)
+  queueSpinLookBackfill(fastify, redis as any, metricsQueue, { hasCopies: r2HasCopies(fastify) })
     .catch((err: any) => fastify.log.error({ error: err?.message }, 'Studio finish back-fill failed'))
 }
 

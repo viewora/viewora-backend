@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { checkUserQuota } from '../utils/quotas.js'
 import { LOOK_CHOICES, progressKey, spinLookSummary, type LookChoice, type SpinLookProgress } from '../utils/spinLook.js'
-import { PROGRESS_TTL_S, SPIN_LOOK_JOB, type SpinLookJob } from '../utils/spinLookJob.js'
+import { PROGRESS_TTL_S, SPIN_LOOK_JOB, chosenKey, type SpinLookJob } from '../utils/spinLookJob.js'
 
 // Studio finish for a car spin (owner only). The work runs in the worker: see utils/spinLookJob.ts.
 
@@ -66,6 +66,8 @@ export default async function spinLookRoutes(fastify: FastifyInstance) {
       return reply.code(409).send({ statusMessage: 'Still finishing the last change. It takes about a minute.', progress: running })
     }
 
+    // The owner's own choice: the one-off back-fill must never override it.
+    await fastify.redis?.set(chosenKey(mainId), body.look).catch(() => {})
     const progress: SpinLookProgress = { state: 'queued', look: body.look, done: 0, total: 0 }
     await fastify.redis?.setEx(progressKey(mainId), PROGRESS_TTL_S, JSON.stringify(progress)).catch(() => {})
     const job: SpinLookJob = { spinId: mainId, spaceId: spin.space_id, look: body.look }
