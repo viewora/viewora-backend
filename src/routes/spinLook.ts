@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { checkUserQuota } from '../utils/quotas.js'
+import { aiRestoreAvailable } from '../utils/aiRestore.js'
 import { LOOK_CHOICES, progressKey, spinLookSummary, type LookChoice, type SpinLookProgress } from '../utils/spinLook.js'
 import { PROGRESS_TTL_S, SPIN_LOOK_JOB, chosenKey, type SpinLookJob } from '../utils/spinLookJob.js'
 
@@ -42,7 +43,7 @@ export default async function spinLookRoutes(fastify: FastifyInstance) {
     const spin = await ownedSpin(params.spinId, userId)
     if (!spin) return reply.code(404).send({ statusMessage: 'Spin not found' })
     const [now, progress] = await Promise.all([currentLook(spin.row_of ?? spin.id), readProgress(spin.row_of ?? spin.id)])
-    return reply.send({ ...now, progress })
+    return reply.send({ ...now, progress, hd_available: aiRestoreAvailable() })
   })
 
   fastify.post('/vehicle-spins/:spinId/look', {
@@ -58,6 +59,7 @@ export default async function spinLookRoutes(fastify: FastifyInstance) {
     if (!quota.canWrite) return reply.code(403).send({ statusMessage: 'Your plan does not allow changes right now. Please renew to continue.' })
     const spin = await ownedSpin(params.spinId, userId)
     if (!spin) return reply.code(404).send({ statusMessage: 'Spin not found' })
+    if (body.look === 'hd' && !aiRestoreAvailable()) return reply.code(503).send({ statusMessage: 'AI HD is not set up yet.' })
     if (!fastify.uploadQueue) return reply.code(503).send({ statusMessage: 'Photo finishing is unavailable right now. Try again in a few minutes.' })
 
     const mainId = spin.row_of ?? spin.id

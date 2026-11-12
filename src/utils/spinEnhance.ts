@@ -11,8 +11,8 @@
 
 import sharp from 'sharp'
 
-export type SpinLook = 'natural' | 'vivid'
-export const SPIN_LOOKS: SpinLook[] = ['natural', 'vivid']
+export type SpinLook = 'natural' | 'vivid' | 'hd'
+export const SPIN_LOOKS: SpinLook[] = ['natural', 'vivid', 'hd']
 
 /** Bumped when the grade changes, so new copies never collide with old cached ones. */
 export const ENHANCE_VERSION = 1
@@ -44,6 +44,13 @@ export const LOOKS: Record<SpinLook, LookSettings> = {
     contrast: 0.35, gamma: 0.94, vibrance: 0.22, whiteBalance: 0.6,
     sharpen: { sigma: 0.9, m1: 0, m2: 2.2, x1: 9 },
     clarity: 0.35, shadows: 0.55, highlights: 0.35,
+  },
+  // AI HD: the frame is first restored by an AI model (Real-ESRGAN, see aiRestore.ts), which already
+  // gives clean edges, so no clarity or sharpening on top (that is what made frames look over-done).
+  hd: {
+    contrast: 0.3, gamma: 0.95, vibrance: 0.18, whiteBalance: 0.6,
+    sharpen: { sigma: 0.5, m1: 0, m2: 0, x1: 9 },
+    clarity: 0, shadows: 0.45, highlights: 0.3,
   },
   vivid: {
     contrast: 0.55, gamma: 0.88, vibrance: 0.38, whiteBalance: 0.75,
@@ -292,10 +299,24 @@ export function applyLocalTone(
   }
 }
 
-/** The finished copy of one frame: graded, clarity, sharpened, saved as a crisp JPEG. */
-export async function enhanceFrame(file: Buffer, grade: FrameGrade, look: SpinLook): Promise<{ buffer: Buffer; width: number; height: number }> {
+/** AI restoration of one frame (returns an image of any size; it is scaled back to the frame's size). */
+export type RestoreFn = (jpeg: Buffer) => Promise<Buffer>
+
+/** The finished copy of one frame: (AI restored,) graded, clarity, sharpened, saved as a crisp JPEG. */
+export async function enhanceFrame(file: Buffer, grade: FrameGrade, look: SpinLook, restore?: RestoreFn): Promise<{ buffer: Buffer; width: number; height: number }> {
   const set = LOOKS[look]
-  const { data, info } = await sharp(file, { failOn: 'none' })
+  let src = file
+  if (look === 'hd') {
+    if (!restore) throw new Error('AI HD needs the AI restore service')
+    const meta = await sharp(file, { failOn: 'none' }).rotate().metadata()
+    const W = meta.autoOrient?.width ?? meta.width ?? 0, H = meta.autoOrient?.height ?? meta.height ?? 0
+    // The model works on a 1280-wide copy and doubles it; the result is scaled back to the frame's own
+    // size, so files stay the same size and the restored detail is packed into every pixel.
+    const input = await sharp(file, { failOn: 'none' }).rotate().resize(1280, 1280, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 92 }).toBuffer()
+    const restored = await restore(input)
+    src = await sharp(restored).resize(W || undefined, H || undefined, { fit: 'fill', kernel: 'lanczos3' }).png({ compressionLevel: 1 }).toBuffer()
+  }
+  const { data, info } = await sharp(src, { failOn: 'none' })
     .rotate().removeAlpha().raw().toBuffer({ resolveWithObject: true })
   applyGrade(data, info.channels, grade)
   const raw = { raw: { width: info.width, height: info.height, channels: info.channels } } as const
@@ -307,8 +328,9 @@ export async function enhanceFrame(file: Buffer, grade: FrameGrade, look: SpinLo
     const [near, wide] = await Promise.all([blurred(Math.max(1, w / 25)), blurred(Math.max(1, w / 10))])
     applyLocalTone(data, info.channels, info.width, info.height, { data: small, w, h }, { data: near, w, h }, { data: wide, w, h }, set)
   }
-  const buffer = await sharp(data, raw)
-    .sharpen(set.sharpen)
+  let out = sharp(data, raw)
+  if (set.sharpen.m2 > 0) out = out.sharpen(set.sharpen)
+  const buffer = await out
     // 4:4:4 keeps colour edges clean (red tail lights, badges); mozjpeg keeps the file small.
     .jpeg({ quality: 86, mozjpeg: true, chromaSubsampling: '4:4:4', progressive: true })
     .toBuffer()

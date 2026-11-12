@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3'
 import { studioPrefix } from './spinLook.js'
+import { aiRestoreAvailable, replicateRestore } from './aiRestore.js'
 import { keyFromAny, lookOf, progressKey, runSpinLook, type LookChoice, type SpinLookProgress } from './spinLook.js'
 
 export const SPIN_LOOK_JOB = 'spin-look'
@@ -39,6 +40,7 @@ export async function processSpinLook(fastify: FastifyInstance, redis: Redis, da
     const spinIds = [data.spinId, ...((rows ?? []) as { id: string }[]).map(r => r.id)]
     const result = await runSpinLook({
       mediaDomains: mediaDomains(),
+      restore: aiRestoreAvailable() ? replicateRestore() : undefined,
       frames: async () => {
         const { data: views, error } = await fastify.supabase
           .from('vehicle_views').select('id, image_url, angle, spin_id').in('spin_id', spinIds)

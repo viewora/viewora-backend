@@ -271,3 +271,19 @@ test('queueSpinLookBackfill: once, low priority, versioned ids; skips owner choi
   assert.equal(await queueSpinLookBackfill(broken, redis, queue, deps), 0)
   assert.equal(flags.has(BACKFILL_FLAG), false, 'flag cleared so the next start retries')
 })
+
+test('AI HD: the restored frame is scaled back to the frame size, graded, and without a restore it refuses', async () => {
+  const file = await sharp({ create: { width: 320, height: 180, channels: 3, background: { r: 90, g: 100, b: 110 } } }).jpeg().toBuffer()
+  const plan = planSpinGrade([await (await import('../utils/spinEnhance.js')).measureFrame(file)], 'hd')
+  let sentWidth = 0
+  const restore = async (jpeg: Buffer) => {
+    const m = await sharp(jpeg).metadata(); sentWidth = m.width ?? 0
+    return sharp(jpeg).resize((m.width ?? 0) * 2, (m.height ?? 0) * 2).png().toBuffer() // stand-in for the 2x model
+  }
+  const out = await enhanceFrame(file, frameGrade(plan, 0), 'hd', restore)
+  assert.equal(sentWidth, 320, 'small frames are not enlarged before the model')
+  assert.equal(out.width, 320)
+  assert.equal(out.height, 180)
+  await assert.rejects(enhanceFrame(file, frameGrade(plan, 0), 'hd'))
+  assert.equal(lookOf('https://m.x/a.jpg.studio-hd-v1-deadbeef.jpg'), 'hd')
+})

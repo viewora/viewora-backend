@@ -9,12 +9,12 @@
 // a retried job finds its own copies and reuses them.
 
 import { createHash } from 'node:crypto'
-import { ENHANCE_VERSION, SPIN_LOOKS, enhanceFrame, frameGrade, measureFrame, planSpinGrade, type SpinLook } from './spinEnhance.js'
+import { ENHANCE_VERSION, SPIN_LOOKS, enhanceFrame, frameGrade, measureFrame, planSpinGrade, type RestoreFn, type SpinLook } from './spinEnhance.js'
 
 export type LookChoice = SpinLook | 'original'
 export const LOOK_CHOICES: LookChoice[] = ['original', ...SPIN_LOOKS]
 
-const SUFFIX = /\.studio-(natural|vivid)-v(\d+)(?:-[0-9a-f]{8})?\.jpg$/
+const SUFFIX = /\.studio-(natural|vivid|hd)-v(\d+)(?:-[0-9a-f]{8})?\.jpg$/
 
 /** Prefix shared by every finished copy of an original. */
 export const studioPrefix = (originalKey: string) => `${originalKey}.studio-`
@@ -105,6 +105,8 @@ export interface SpinLookDeps {
   progress: (p: SpinLookProgress) => Promise<void>
   /** Our media domains (the configured one first). A photo on none of them is left alone. */
   mediaDomains: string[]
+  /** AI restoration (needed for the 'hd' look). */
+  restore?: RestoreFn
 }
 
 /**
@@ -161,18 +163,26 @@ export async function runSpinLook(deps: SpinLookDeps, look: LookChoice): Promise
     const pid = planId(plan)
 
     // 2. Save each finished copy (reusing one already saved by an earlier, interrupted run).
-    for (let i = 0; i < lap.length; i++) {
-      const f = lap[i]
-      const outKey = studioKey(f.key!, look, pid)
-      if (!(await deps.exists(outKey))) {
-        const { buffer } = await enhanceFrame(originals.get(f.id)!, frameGrade(plan, i), look)
-        await deps.write(outKey, buffer)
+    //    AI HD waits on a GPU service, so several frames go at once; the local grade runs one by one.
+    const lapRows: ({ id: string; image_url: string } | null)[] = new Array(lap.length).fill(null)
+    let next = 0
+    const one = async () => {
+      while (next < lap.length) {
+        const i = next++
+        const f = lap[i]
+        const outKey = studioKey(f.key!, look, pid)
+        if (!(await deps.exists(outKey))) {
+          const { buffer } = await enhanceFrame(originals.get(f.id)!, frameGrade(plan, i), look, deps.restore)
+          await deps.write(outKey, buffer)
+        }
+        originals.delete(f.id)
+        const url = `${f.domain}/${outKey.split('/').map(encodeURIComponent).join('/')}`
+        if (url !== f.image_url) lapRows[i] = { id: f.id, image_url: url }
+        await deps.progress({ state: 'working', look, done: ++done, total })
       }
-      originals.delete(f.id)
-      const url = `${f.domain}/${outKey.split('/').map(encodeURIComponent).join('/')}`
-      if (url !== f.image_url) rows.push({ id: f.id, image_url: url })
-      await deps.progress({ state: 'working', look, done: ++done, total })
     }
+    await Promise.all(Array.from({ length: look === 'hd' ? 4 : 1 }, one))
+    for (const r of lapRows) if (r) rows.push(r)
   }
 
   // 3. Switch the whole car over at once.
