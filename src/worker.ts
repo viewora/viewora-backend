@@ -11,6 +11,7 @@ import { updateUploadStatus } from './utils/uploads.js'
 import { processTileScene } from './utils/tile-processor.js'
 import { queueRetileScenes } from './utils/retile.js'
 import { applyEdit, editPanoramaUrl } from './utils/aiImageEdit.js'
+import { processSpinLook, SPIN_LOOK_JOB, type SpinLookJob } from './utils/spinLookJob.js'
 import {
   recordJobSuccess,
   recordJobFailure,
@@ -114,6 +115,13 @@ async function processUploadJob(job: any) {
       }).eq('id', sceneId)
     }
     await processTileScene(fastify.s3, fastify.supabase, { sceneId, rawImageUrl: newRaw, spaceId, variant: editId }, redis)
+    return
+  }
+
+  // Studio finish for a car spin: grade every frame, then switch the spin over at once.
+  if (job.name === SPIN_LOOK_JOB) {
+    const finalAttempt = job.attemptsMade + 1 >= (job.opts?.attempts ?? 1)
+    await processSpinLook(fastify, redis, job.data as SpinLookJob, finalAttempt)
     return
   }
 

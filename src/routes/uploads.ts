@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify'
-import { PutObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
+import { PutObjectCommand, DeleteObjectCommand, HeadObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3'
+import { studioPrefix } from '../utils/spinLook.js'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { z } from 'zod'
 import { checkStorageQuota, checkFileSizeLimit, isValidFileType, checkUserQuota } from '../utils/quotas.js'
@@ -598,6 +599,17 @@ export default async function (fastify: FastifyInstance) {
         await fastify.s3.send(deleteCommand)
       } catch (err) {
         fastify.log.error(err, 'Failed to delete object from R2 during media cleanup')
+      }
+      // A car frame's studio-finish copies sit next to it (utils/spinLook.ts): remove them too.
+      if (media.media_type === 'vehicle_view') {
+        try {
+          const listed = await fastify.s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: studioPrefix(media.storage_key), MaxKeys: 50 }))
+          await Promise.all((listed.Contents ?? []).map(o => o.Key
+            ? fastify.s3.send(new DeleteObjectCommand({ Bucket: bucketName, Key: o.Key })).catch(() => {})
+            : null))
+        } catch (err) {
+          fastify.log.warn(err, 'Failed to delete studio copies of a car frame')
+        }
       }
     }
 
