@@ -34,6 +34,9 @@ const HotspotContentSchema = z.object({
   strokeScale: z.number().min(0.1).max(5).optional(),
   corners: z.array(sphericalPoint).length(4).optional(),
   button_label: z.string().max(40).optional(),
+  // scene_link drawn as a "See interior" badge on an object (a car in a
+  // showroom) instead of a floor chevron; the viewer offers a way back out.
+  link_style: z.enum(['interior']).optional(),
   // ── Land ──
   // zone = estate/phase outline; road may carry a 2+ point path drawn as a ground arrow
   kind: z.enum(['plot', 'beacon', 'road', 'zone']).optional(),
