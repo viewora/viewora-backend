@@ -6,6 +6,7 @@ import { mergeSceneGroups, publicAerialMaps } from './aerial.js'
 import { mergeScenePlanPins, publicFloorPlans } from './floorPlans.js'
 import { publicVehicleSpins } from './vehicleViews.js'
 import { ownerEntitlements } from '../utils/quotas.js'
+import { shareImageFor } from '../utils/shareImage.js'
 
 const tourParamsSchema = z.object({
   slug: z.string().min(3).max(120).regex(/^[a-z0-9-]+$/, 'Invalid slug'),
@@ -400,6 +401,9 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       }
       // Scene pins only exist when there are floor plans.
       if (data.floor_plans.length) await mergeScenePlanPins(fastify, spaceId, data.scenes)
+      // Link-preview picture (1200×630, cached on the media CDN). Null on a first
+      // render that takes too long; the page then uses its own image.
+      data.share_image = await shareImageFor(fastify, data)
     } else {
       data.gallery = []
       data.seller = null
