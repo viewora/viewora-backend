@@ -12,15 +12,28 @@ export const aiRestoreAvailable = () => !!process.env.REPLICATE_API_TOKEN
 
 let versionCache: { model: string; id: string } | null = null
 
+/** Out of credit: retrying cannot help, so the job stops at once with a plain reason. */
+export class NoCreditError extends Error {}
+
 async function call(path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<any> {
-  const res = await fetch(path.startsWith('http') ? path : `${API}${path}`, {
-    ...init,
-    headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) },
-    signal: AbortSignal.timeout(init.timeoutMs ?? 90_000),
-  })
-  const body = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(`Replicate ${res.status}: ${(body?.detail ?? body?.title ?? '').toString().slice(0, 200)}`)
-  return body
+  // Throttled (429) requests wait for the limit to reset and go again, up to ~3 minutes in all.
+  for (let tries = 0; ; tries++) {
+    const res = await fetch(path.startsWith('http') ? path : `${API}${path}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) },
+      signal: AbortSignal.timeout(init.timeoutMs ?? 90_000),
+    })
+    const body = await res.json().catch(() => ({}))
+    const detail = (body?.detail ?? body?.title ?? '').toString().slice(0, 200)
+    if (res.status === 429 && tries < 12) {
+      const secs = Number(res.headers.get('retry-after')) || Number(/~(\d+)m/.exec(detail)?.[1] ?? 0) * 60 + Number(/(\d+)s/.exec(detail)?.[1] ?? 10)
+      await new Promise(r => setTimeout(r, Math.min(Math.max(secs, 2), 60) * 1000 + Math.random() * 2000))
+      continue
+    }
+    if (res.status === 402) throw new NoCreditError('the Replicate account has no credit: add credit at replicate.com/account/billing')
+    if (!res.ok) throw new Error(`Replicate ${res.status}: ${detail}`)
+    return body
+  }
 }
 
 async function modelVersion(): Promise<string> {
@@ -57,6 +70,7 @@ export function replicateRestore(): RestoreFn {
         if (!img.ok) throw new Error(`Restored image download failed: ${img.status}`)
         return Buffer.from(await img.arrayBuffer())
       } catch (err) {
+        if (err instanceof NoCreditError) throw err
         lastErr = err
       }
     }
