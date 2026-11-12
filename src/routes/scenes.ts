@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { DeleteObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from '@aws-sdk/client-s3'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
-import { invalidateCacheBySceneId, invalidateSpaceCache, purgeSceneTiles } from '../utils/cache.js'
+import { invalidateSpaceCache, invalidateTourCache, purgeSceneTiles } from '../utils/cache.js'
 import { checkUserQuota, canCreateScene, quotaLimitMessage } from '../utils/quotas.js'
 
 // ── Param schemas ─────────────────────────────────────────────
@@ -258,7 +258,7 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     const { data: scene } = await fastify.supabase
       .from('scenes')
-      .select('id, space_id, properties!inner(user_id)')
+      .select('id, space_id, properties!inner(user_id, slug)')
       .eq('id', params.sceneId)
       .eq('properties.user_id', userId)
       .single()
@@ -288,8 +288,10 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ statusMessage: 'Failed to update scene' })
     }
 
-    // Invalidate public cache only after confirmed success
-    await invalidateCacheBySceneId(fastify, params.sceneId)
+    // Invalidate public cache only after confirmed success. Space id and slug
+    // are already known from the ownership check — no extra lookups.
+    const property = Array.isArray((scene as any).properties) ? (scene as any).properties[0] : (scene as any).properties
+    await invalidateTourCache(fastify, (scene as any).space_id, property?.slug ?? null)
     return reply.send({ scene: updated })
   })
 
@@ -347,21 +349,23 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     // Find the associated property_media record before deleting so we can free storage.
     // After an AI photo edit raw_image_url points at the edited copy — the upload is the original.
+    // Both lookups run in parallel: they're independent and each is a network round trip.
     const uploadedUrl = scene.original_raw_image_url ?? scene.raw_image_url
-    const { data: mediaRecord } = uploadedUrl
-      ? await fastify.supabase
-          .from('property_media')
-          .select('id, storage_key, file_size_bytes')
-          .eq('property_id', scene.space_id)
-          .eq('public_url', uploadedUrl)
-          .maybeSingle()
-      : { data: null }
-
-    // Count cross-scene nav arrows that will be removed by the CASCADE before deleting
-    const { count: removedLinks } = await fastify.supabase
-      .from('hotspots')
-      .select('id', { count: 'exact', head: true })
-      .eq('target_scene_id', params.sceneId)
+    const [{ data: mediaRecord }, { count: removedLinks }] = await Promise.all([
+      uploadedUrl
+        ? fastify.supabase
+            .from('property_media')
+            .select('id, storage_key, file_size_bytes')
+            .eq('property_id', scene.space_id)
+            .eq('public_url', uploadedUrl)
+            .maybeSingle()
+        : Promise.resolve({ data: null as any }),
+      // Count cross-scene nav arrows that will be removed by the CASCADE before deleting
+      fastify.supabase
+        .from('hotspots')
+        .select('id', { count: 'exact', head: true })
+        .eq('target_scene_id', params.sceneId),
+    ])
 
     const { error: deleteError } = await fastify.supabase.from('scenes').delete().eq('id', params.sceneId)
     if (deleteError) {
@@ -369,18 +373,43 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ statusMessage: 'Failed to delete scene from database' })
     }
 
-    // Delete the property_media record and decrement storage counter
-    if (mediaRecord) {
-      await fastify.supabase.from('property_media').delete().eq('id', mediaRecord.id)
-      if (mediaRecord.file_size_bytes) {
-        await fastify.supabase.rpc('decrement_storage_usage', { u_id: userId, bytes: Number(mediaRecord.file_size_bytes) })
-      }
-    }
+    // The scene row is gone — that's all the editor needs to know. Everything
+    // below is cleanup (storage accounting, R2 objects, caches) that used to
+    // hold the response for ~2s and block deleting the next scene. It runs
+    // after the reply; each step is best-effort and logs its own failure.
+    //
+    // order_index is deliberately NOT resequenced here: every reader sorts by
+    // it, so gaps are harmless, and renumbering from overlapping deletes raced
+    // on the unique (space_id, order_index) constraint. Reorder/repair compact it.
+    reply.send({ removedLinks: removedLinks ?? 0 })
 
-    // Clean up R2: tiles directory + original panorama (best-effort)
-    const bucketName = process.env.R2_BUCKET_NAME
-    if (bucketName) {
-      const tilesPrefix = `spaces/${scene.space_id}/scenes/${params.sceneId}/`
+    const spaceId = scene.space_id as string
+    const sceneId = params.sceneId
+    void (async () => {
+      // Public tour cache first: it's what visitors see.
+      await invalidateSpaceCache(fastify, spaceId).catch(() => {})
+
+      if (mediaRecord) {
+        try {
+          await fastify.supabase.from('property_media').delete().eq('id', mediaRecord.id)
+          if (mediaRecord.file_size_bytes) {
+            await fastify.supabase.rpc('decrement_storage_usage', { u_id: userId, bytes: Number(mediaRecord.file_size_bytes) })
+          }
+        } catch (err) {
+          fastify.log.error(err, `Failed to release storage for scene ${sceneId}`)
+        }
+      }
+
+      // Bust billing cache so next quota check sees the freed storage
+      if ((fastify as any).redis) {
+        await (fastify as any).redis.del(`billing:status:${userId}`).catch(() => {})
+        await purgeSceneTiles(fastify, sceneId)
+      }
+
+      // Clean up R2: tiles directory + original panorama
+      const bucketName = process.env.R2_BUCKET_NAME
+      if (!bucketName) return
+      const tilesPrefix = `spaces/${spaceId}/scenes/${sceneId}/`
       try {
         // Paged: AI-edited scenes keep one tile set per version, easily >1000 objects
         let token: string | undefined
@@ -393,43 +422,18 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
           token = listed.IsTruncated ? listed.NextContinuationToken : undefined
         } while (token)
       } catch (err) {
-        fastify.log.error(err, `Failed to delete R2 tiles for scene ${params.sceneId}`)
+        fastify.log.error(err, `Failed to delete R2 tiles for scene ${sceneId}`)
       }
       if (mediaRecord?.storage_key) {
         try {
           await fastify.s3.send(new DeleteObjectCommand({ Bucket: bucketName, Key: mediaRecord.storage_key }))
         } catch (err) {
-          fastify.log.error(err, `Failed to delete R2 panorama for scene ${params.sceneId}`)
+          fastify.log.error(err, `Failed to delete R2 panorama for scene ${sceneId}`)
         }
       }
-    }
+    })().catch(err => fastify.log.error(err, `Scene ${sceneId} post-delete cleanup failed`))
 
-    // Bust billing cache so next quota check sees the freed storage
-    if ((fastify as any).redis) {
-      await (fastify as any).redis.del(`billing:status:${userId}`).catch(() => {})
-      await purgeSceneTiles(fastify, params.sceneId)
-    }
-
-    // Resequence order_index for remaining scenes in the space so there are no gaps
-    const { data: remaining } = await fastify.supabase
-      .from('scenes')
-      .select('id, order_index')
-      .eq('space_id', scene.space_id)
-      .order('order_index', { ascending: true })
-
-    if (remaining?.length) {
-      await Promise.all(
-        remaining.map((s, i) =>
-          s.order_index !== i
-            ? fastify.supabase.from('scenes').update({ order_index: i }).eq('id', s.id)
-            : Promise.resolve()
-        )
-      )
-    }
-
-    if (scene?.space_id) await invalidateSpaceCache(fastify, scene.space_id)
-
-    return reply.send({ removedLinks: removedLinks ?? 0 })
+    return reply
   })
 
   // ── REPAIR SPACE ──────────────────────────────────────────
