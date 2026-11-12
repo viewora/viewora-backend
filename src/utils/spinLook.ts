@@ -58,6 +58,16 @@ export function keyFromUrl(url: string, mediaDomain: string): string | null {
   }
 }
 
+/** The key behind a URL on any of our media domains, and that domain (new copies are served from it too). */
+export function keyFromAny(url: string, domains: string[]): { key: string; domain: string } | null {
+  for (const d of domains) {
+    if (!d) continue
+    const key = keyFromUrl(url, d)
+    if (key) return { key, domain: d.replace(/\/+$/, '') }
+  }
+  return null
+}
+
 /** What the editor shows: the spin's look, and how many photos are not on it (added since). */
 export function spinLookSummary(urls: string[]): { look: LookChoice; behind: number } {
   if (!urls.length) return { look: 'original', behind: 0 }
@@ -93,7 +103,8 @@ export interface SpinLookDeps {
   /** Best-effort removal of finished copies no photo uses any more. */
   remove: (keys: string[]) => Promise<void>
   progress: (p: SpinLookProgress) => Promise<void>
-  mediaDomain: string
+  /** Our media domains (the configured one first). A photo on none of them is left alone. */
+  mediaDomains: string[]
 }
 
 /**
@@ -106,7 +117,10 @@ export async function runSpinLook(deps: SpinLookDeps, look: LookChoice): Promise
   const total = frames.length
   await deps.progress({ state: 'working', look, done: 0, total })
 
-  const keyed = frames.map(f => ({ ...f, key: keyFromUrl(originalOf(f.image_url), deps.mediaDomain) }))
+  const keyed = frames.map(f => {
+    const hit = keyFromAny(originalOf(f.image_url), deps.mediaDomains)
+    return { ...f, key: hit?.key ?? null, domain: hit?.domain ?? '' }
+  })
   const base = (f: typeof keyed[number]) => originalOf(f.image_url)
 
   /** Copies the photos pointed at before, once they point elsewhere. */
@@ -114,7 +128,7 @@ export async function runSpinLook(deps: SpinLookDeps, look: LookChoice): Promise
     const now = new Map(rows.map(r => [r.id, r.image_url]))
     return keyed
       .filter(f => f.image_url !== base(f) && now.has(f.id) && now.get(f.id) !== f.image_url)
-      .map(f => keyFromUrl(f.image_url, deps.mediaDomain))
+      .map(f => keyFromAny(f.image_url, deps.mediaDomains)?.key)
       .filter((k): k is string => !!k)
   }
   const tidy = async (keys: string[]) => { if (keys.length) await deps.remove(keys).catch(() => {}) }
@@ -155,7 +169,7 @@ export async function runSpinLook(deps: SpinLookDeps, look: LookChoice): Promise
         await deps.write(outKey, buffer)
       }
       originals.delete(f.id)
-      const url = `${deps.mediaDomain.replace(/\/+$/, '')}/${outKey.split('/').map(encodeURIComponent).join('/')}`
+      const url = `${f.domain}/${outKey.split('/').map(encodeURIComponent).join('/')}`
       if (url !== f.image_url) rows.push({ id: f.id, image_url: url })
       await deps.progress({ state: 'working', look, done: ++done, total })
     }

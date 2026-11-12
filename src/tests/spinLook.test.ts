@@ -155,7 +155,7 @@ async function fakeCar(frames: { id: string; angle: number; spin_id: string; v: 
   }
   const log: string[] = []
   const deps: SpinLookDeps = {
-    mediaDomain: DOMAIN,
+    mediaDomains: ['https://configured.example', DOMAIN],
     frames: async () => [...rows.values()].map(r => ({ ...r })),
     read: async k => { const b = store.get(k); if (!b) throw new Error('missing ' + k); return b },
     exists: async k => store.has(k),
@@ -212,4 +212,49 @@ test('runSpinLook: each camera height is planned on its own, and photos from els
   assert.equal(plan('c'), plan('d'))
   assert.notEqual(plan('a'), plan('c'), 'the high row has its own grade')
   assert.equal(car.log.at(-1), 'p:done:6')
+})
+
+// ── Back-fill of existing cars ──
+import { spinsToBackfill, queueSpinLookBackfill, BACKFILL_FLAG, BACKFILL_PRIORITY } from '../utils/spinLookJob.js'
+
+test('spinsToBackfill: main spins still on originals only; an owner choice and empty spins are left alone', () => {
+  const o = (n: string) => `https://media.viewora.software/k/${n}.jpg`
+  const f = (n: string) => `${o(n)}.studio-vivid-v1-deadbeef.jpg`
+  const spins = [
+    { id: 'a', space_id: 's1', row_of: null }, { id: 'a-high', space_id: 's1', row_of: 'a' },
+    { id: 'b', space_id: 's2', row_of: null }, { id: 'c', space_id: 's3', row_of: null },
+  ]
+  const views = [
+    { spin_id: 'a', image_url: o('1') }, { spin_id: 'a-high', image_url: o('2') },
+    { spin_id: 'b', image_url: f('3') }, { spin_id: 'b', image_url: o('4') }, // owner chose vivid; a frame added since
+  ]
+  assert.deepEqual(spinsToBackfill(spins, views).map(s => s.id), ['a'])
+})
+
+test('queueSpinLookBackfill runs once, at low priority, and clears its flag when it fails', async () => {
+  const flags = new Map<string, string>()
+  const redis = {
+    set: async (k: string, v: string) => (flags.has(k) ? null : (flags.set(k, v), 'OK')),
+    setEx: async (k: string, _s: number, v: string) => { flags.set(k, v) },
+    del: async (k: any) => { flags.delete(k) },
+  }
+  const added: any[] = []
+  const queue = { add: async (name: string, data: any, opts: any) => { added.push({ name, data, opts }) } }
+  const table = (rows: any[]) => ({ select: () => ({ in: async () => ({ data: rows, error: null }), then: (r: any) => r({ data: rows, error: null }) }) })
+  const fastify: any = {
+    log: { info() {}, error() {} },
+    supabase: { from: (t: string) => t === 'vehicle_spins'
+      ? table([{ id: 'a', space_id: 's1', row_of: null }])
+      : table([{ spin_id: 'a', image_url: 'https://media.viewora.software/k/1.jpg' }]) },
+  }
+  assert.equal(await queueSpinLookBackfill(fastify, redis, queue), 1)
+  assert.equal(added[0].data.look, 'natural')
+  assert.equal(added[0].opts.priority, BACKFILL_PRIORITY)
+  assert.equal(await queueSpinLookBackfill(fastify, redis, queue), 0, 'second start does nothing')
+  assert.equal(added.length, 1)
+
+  flags.clear()
+  const broken: any = { log: fastify.log, supabase: { from: () => ({ select: () => ({ then: (r: any) => r({ data: null, error: { message: 'down' } }) }) }) } }
+  assert.equal(await queueSpinLookBackfill(broken, redis, queue), 0)
+  assert.equal(flags.has(BACKFILL_FLAG), false, 'flag cleared so the next start retries')
 })

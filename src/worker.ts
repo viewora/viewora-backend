@@ -11,7 +11,7 @@ import { updateUploadStatus } from './utils/uploads.js'
 import { processTileScene } from './utils/tile-processor.js'
 import { queueRetileScenes } from './utils/retile.js'
 import { applyEdit, editPanoramaUrl } from './utils/aiImageEdit.js'
-import { processSpinLook, SPIN_LOOK_JOB, type SpinLookJob } from './utils/spinLookJob.js'
+import { processSpinLook, queueSpinLookBackfill, SPIN_LOOK_JOB, type SpinLookJob } from './utils/spinLookJob.js'
 import {
   recordJobSuccess,
   recordJobFailure,
@@ -240,6 +240,13 @@ if (process.env.RETILE_ON_BOOT === 'true') {
   queueRetileScenes(fastify.supabase, metricsQueue)
     .then(({ matching, queued }) => fastify.log.info({ matching, queued }, '[RETILE] Queued scenes for re-tiling'))
     .catch((err: any) => fastify.log.error({ error: err?.message }, '[RETILE] Failed to queue scenes'))
+}
+
+// One-off: give every car still on its original frames the studio finish (runs once, flag in Redis;
+// set SPIN_LOOK_BACKFILL=off to skip). Low priority, so uploads and owners' own requests go first.
+if (process.env.SPIN_LOOK_BACKFILL !== 'off') {
+  queueSpinLookBackfill(fastify, redis as any, metricsQueue)
+    .catch((err: any) => fastify.log.error({ error: err?.message }, 'Studio finish back-fill failed'))
 }
 
 // BullMQ emits 'error' for Redis connection issues; without a listener

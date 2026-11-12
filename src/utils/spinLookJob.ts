@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
-import { progressKey, runSpinLook, type LookChoice, type SpinLookProgress } from './spinLook.js'
+import { lookOf, progressKey, runSpinLook, type LookChoice, type SpinLookProgress } from './spinLook.js'
 
 export const SPIN_LOOK_JOB = 'spin-look'
 export interface SpinLookJob { spinId: string; spaceId: string; look: LookChoice }
@@ -8,7 +8,15 @@ export interface SpinLookJob { spinId: string; spaceId: string; look: LookChoice
 /** How long progress is kept. Refreshed after every frame, so a crashed job's "working" expires. */
 export const PROGRESS_TTL_S = 15 * 60
 
-export const mediaDomain = () => process.env.MEDIA_DOMAIN || `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`
+/**
+ * Our media domains: the configured one, the production CDN (in case the worker has no
+ * MEDIA_DOMAIN set), and the bucket's r2.dev address.
+ */
+export const mediaDomains = () => [
+  process.env.MEDIA_DOMAIN,
+  'https://media.viewora.software',
+  process.env.R2_ACCOUNT_ID ? `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev` : undefined,
+].filter((d): d is string => !!d)
 
 type Redis = { setEx: (k: string, s: number, v: string) => Promise<unknown>; del: (k: string | string[]) => Promise<unknown> } | null
 
@@ -29,7 +37,7 @@ export async function processSpinLook(fastify: FastifyInstance, redis: Redis, da
     const { data: rows } = await fastify.supabase.from('vehicle_spins').select('id').eq('row_of', data.spinId)
     const spinIds = [data.spinId, ...((rows ?? []) as { id: string }[]).map(r => r.id)]
     const result = await runSpinLook({
-      mediaDomain: mediaDomain(),
+      mediaDomains: mediaDomains(),
       frames: async () => {
         const { data: views, error } = await fastify.supabase
           .from('vehicle_views').select('id, image_url, angle, spin_id').in('spin_id', spinIds)
@@ -68,5 +76,70 @@ export async function processSpinLook(fastify: FastifyInstance, redis: Redis, da
     fastify.log.error({ ...data, err: err?.message }, 'Spin look failed')
     if (finalAttempt) await progress({ state: 'failed', look: data.look, done: 0, total: 0, error: 'We could not finish the photos. Your spin still shows its previous look. Try again in a few minutes.' })
     throw err
+  }
+}
+
+// ── One-off: give every existing car the studio finish ──
+
+/** Set once the back-fill has queued its jobs; bump the version to run it again. */
+export const BACKFILL_FLAG = 'spin-look:backfill:v1'
+/** Lower than an owner's own request (no priority = first), so uploads and clicks never wait on it. */
+export const BACKFILL_PRIORITY = 10
+
+type SpinRow = { id: string; space_id: string; row_of: string | null }
+type ViewRow = { spin_id: string; image_url: string }
+
+/** Main spins with photos, none of which has a look yet (an owner's own choice is never overridden). */
+export function spinsToBackfill(spins: SpinRow[], views: ViewRow[]): SpinRow[] {
+  const mainOf = new Map(spins.map(s => [s.id, s.row_of ?? s.id]))
+  const urls = new Map<string, string[]>()
+  for (const v of views) {
+    const main = mainOf.get(v.spin_id)
+    if (!main) continue
+    urls.set(main, [...(urls.get(main) ?? []), v.image_url])
+  }
+  return spins.filter(s => !s.row_of && (urls.get(s.id)?.length ?? 0) > 0 && urls.get(s.id)!.every(u => lookOf(u) === 'original'))
+}
+
+type Queue = { add: (name: string, data: any, opts?: any) => Promise<unknown> }
+type FlagRedis = {
+  set: (k: string, v: string, o: { NX: true }) => Promise<string | null>
+  setEx: (k: string, s: number, v: string) => Promise<unknown>
+  del: (k: string | string[]) => Promise<unknown>
+}
+
+/**
+ * Queues "studio" for every car that is still on its original frames, once (guarded by a Redis flag).
+ * Runs when the worker starts. A failure clears the flag so the next start tries again.
+ */
+export async function queueSpinLookBackfill(fastify: FastifyInstance, redis: FlagRedis, queue: Queue): Promise<number> {
+  const got = await redis.set(BACKFILL_FLAG, new Date().toISOString(), { NX: true }).catch(() => null)
+  if (got !== 'OK') return 0
+  try {
+    const { data: spins, error } = await fastify.supabase.from('vehicle_spins').select('id, space_id, row_of')
+    if (error) throw new Error(error.message)
+    const all = (spins ?? []) as SpinRow[]
+    const views: ViewRow[] = []
+    const ids = all.map(s => s.id)
+    for (let i = 0; i < ids.length; i += 12) { // ~64 frames a spin: stays under the 1000-row cap
+      const { data, error: e } = await fastify.supabase.from('vehicle_views').select('spin_id, image_url').in('spin_id', ids.slice(i, i + 12))
+      if (e) throw new Error(e.message)
+      views.push(...((data ?? []) as ViewRow[]))
+    }
+    const todo = spinsToBackfill(all, views)
+    for (const s of todo) {
+      const progress: SpinLookProgress = { state: 'queued', look: 'natural', done: 0, total: 0 }
+      await redis.setEx(progressKey(s.id), 2 * 60 * 60, JSON.stringify(progress)).catch(() => {})
+      const job: SpinLookJob = { spinId: s.id, spaceId: s.space_id, look: 'natural' }
+      await queue.add(SPIN_LOOK_JOB, job, {
+        jobId: `spin-look-backfill-${s.id}`, priority: BACKFILL_PRIORITY, attempts: 2, backoff: { type: 'exponential', delay: 30_000 },
+      })
+    }
+    fastify.log.info({ queued: todo.length, spins: all.length }, 'Studio finish back-fill queued')
+    return todo.length
+  } catch (err: any) {
+    fastify.log.error({ err: err?.message }, 'Studio finish back-fill failed; will retry on next start')
+    await redis.del(BACKFILL_FLAG).catch(() => {})
+    return 0
   }
 }
