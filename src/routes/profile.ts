@@ -7,6 +7,8 @@ const UpdateProfileBodySchema = z.object({
   full_name: z.string().max(120).optional(),
   phone: z.string().max(30).optional(),
   bio: z.string().max(500).optional(),
+  // Business name: shown on the owner's tours and car listings (brand card, "Listed by").
+  company_name: z.string().max(120).optional(),
   // Allows '' through as "clear the photo" (Remove button) — same trim-to-null
   // treatment as full_name/phone/bio below, not a real URL requirement on empty.
   avatar_url: z.union([z.string().url().max(2048), z.literal('')]).optional(),
@@ -21,7 +23,7 @@ export default async function (fastify: FastifyInstance) {
 
     const { data, error } = await fastify.supabase
       .from('profiles')
-      .select('id, full_name, avatar_url, phone, bio, created_at, updated_at')
+      .select('id, full_name, company_name, avatar_url, phone, bio, created_at, updated_at')
       .eq('id', userId)
       .single()
 
@@ -87,13 +89,14 @@ export default async function (fastify: FastifyInstance) {
     if (body.full_name !== undefined) updates.full_name = body.full_name.trim() || null
     if (body.phone !== undefined) updates.phone = body.phone.trim() || null
     if (body.bio !== undefined) updates.bio = body.bio.trim() || null
+    if (body.company_name !== undefined) updates.company_name = body.company_name.trim() || null
     if (body.avatar_url !== undefined) updates.avatar_url = body.avatar_url.trim() || null
 
     const { data, error } = await fastify.supabase
       .from('profiles')
       .update(updates)
       .eq('id', userId)
-      .select('id, full_name, avatar_url, phone, bio, created_at, updated_at')
+      .select('id, full_name, company_name, avatar_url, phone, bio, created_at, updated_at')
       .single()
 
     if (error) {
