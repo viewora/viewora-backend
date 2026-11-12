@@ -167,3 +167,31 @@ test('a height row before its migration names the file to run', async () => {
   assert.equal(res.statusCode, 503)
   assert.match(res.json().statusMessage, /migration-vehicle-spin-rows\.sql/)
 })
+
+const HOTSPOT_MISSING = { code: '42703', message: 'column vehicle_hotspots.image_url does not exist' }
+
+test('public spins: hotspots carry their photo', async () => {
+  const sb = supabaseStub(({ table }) => {
+    if (table === 'vehicle_views') return { data: [view('v1', 0, SPIN_A)], error: null }
+    if (table === 'vehicle_spins') return { data: [{ id: SPIN_A, title: 'Exterior', start_angle: 0, order_index: 0, row_of: null, elevation: 0 }], error: null }
+    if (table === 'vehicle_hotspots') return { data: [{ id: 'h1', view_id: 'v1', kind: 'feature', x: 0.5, y: 0.4, title: 'Engine', body: null, url: null, image_url: 'https://cdn.example.com/engine.jpg' }], error: null }
+    return { data: null, error: null }
+  })
+  const spins = await publicVehicleSpins({ supabase: sb } as any, SPACE_ID)
+  assert.equal(spins[0].views[0].hotspots[0].image_url, 'https://cdn.example.com/engine.jpg')
+})
+
+test('public spins before the hotspot photo migration: hotspots still load', async () => {
+  const sb = supabaseStub(({ table, columns }) => {
+    if (table === 'vehicle_views') return { data: [view('v1', 0, SPIN_A)], error: null }
+    if (table === 'vehicle_spins') return { data: [{ id: SPIN_A, title: 'Exterior', start_angle: 0, order_index: 0, row_of: null, elevation: 0 }], error: null }
+    if (table === 'vehicle_hotspots') {
+      if (columns.includes('image_url')) return { data: null, error: HOTSPOT_MISSING }
+      return { data: [{ id: 'h1', view_id: 'v1', kind: 'feature', x: 0.5, y: 0.4, title: 'Engine', body: null, url: null }], error: null }
+    }
+    return { data: null, error: null }
+  })
+  const spins = await publicVehicleSpins({ supabase: sb } as any, SPACE_ID)
+  assert.equal(spins[0].views[0].hotspots.length, 1)
+  assert.equal(spins[0].views[0].hotspots[0].title, 'Engine')
+})

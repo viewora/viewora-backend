@@ -70,6 +70,8 @@ const hotspotFields = {
   title: z.string().trim().min(1).max(60),
   body: z.string().trim().max(400).optional().nullable(),
   url: safeUrl.max(500).optional().nullable(),
+  /** A photo that opens from the pin (the engine under the bonnet, the tyre tread). */
+  image_url: safeUrl.max(1000).optional().nullable(),
 }
 export const CreateVehicleHotspotBody = z.object(hotspotFields)
 export const UpdateVehicleHotspotBody = z.object(hotspotFields).partial()
@@ -85,7 +87,16 @@ const AnglesBody = z.object({
 
 const hotspotParams = z.object({ hotspotId: z.string().uuid() })
 
-const HOTSPOT_COLUMNS = 'id, view_id, kind, x, y, title, body, url'
+const HOTSPOT_COLUMNS_BASE = 'id, view_id, kind, x, y, title, body, url'
+const HOTSPOT_COLUMNS = `${HOTSPOT_COLUMNS_BASE}, image_url`
+const HOTSPOT_IMAGE_MIGRATION = 'Photos on hotspots need a database update: run migration-vehicle-hotspot-image.sql in Supabase.'
+
+/** Before migration-vehicle-hotspot-image.sql has run there is no image_url column: hotspots keep working without photos. */
+export function missingHotspotImageColumn(error: { code?: string; message?: string; details?: string } | null | undefined): boolean {
+  if (!error) return false
+  const text = `${error.code ?? ''} ${error.message ?? ''} ${error.details ?? ''}`
+  return /image_url/.test(text) && /42703|PGRST204|column|schema cache/i.test(text)
+}
 
 const ReorderBody = z.object({ orderedIds: z.array(z.string().uuid()).min(1).max(MAX_VEHICLE_VIEWS) })
 
@@ -421,10 +432,14 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
     if ((count ?? 0) >= MAX_HOTSPOTS_PER_VIEW) {
       return reply.code(400).send({ statusMessage: `Up to ${MAX_HOTSPOTS_PER_VIEW} hotspots per photo.` })
     }
-    const { data, error } = await fastify.supabase
-      .from('vehicle_hotspots')
-      .insert({ view_id: params.viewId, space_id: owned.space_id, ...body, body: body.body ?? null, url: body.url ?? null })
-      .select(HOTSPOT_COLUMNS).single()
+    const row: Record<string, unknown> = { view_id: params.viewId, space_id: owned.space_id, ...body, body: body.body ?? null, url: body.url ?? null }
+    if (body.image_url !== undefined) row.image_url = body.image_url ?? null
+    let { data, error } = await fastify.supabase.from('vehicle_hotspots').insert(row).select(HOTSPOT_COLUMNS).single()
+    if (missingHotspotImageColumn(error)) {
+      if (body.image_url) return reply.code(503).send({ statusMessage: HOTSPOT_IMAGE_MIGRATION })
+      delete row.image_url
+      ;({ data, error } = await fastify.supabase.from('vehicle_hotspots').insert(row).select(HOTSPOT_COLUMNS_BASE).single())
+    }
     if (error) {
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: dbFailure('Failed to add hotspot', error) })
@@ -449,10 +464,15 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
     if (!body) return
     const owned = await ownedHotspot(params.hotspotId, userId)
     if (!owned) return reply.code(404).send({ statusMessage: 'Hotspot not found' })
-    const { data, error } = await fastify.supabase
-      .from('vehicle_hotspots')
-      .update({ ...body, updated_at: new Date().toISOString() })
-      .eq('id', params.hotspotId).select(HOTSPOT_COLUMNS).single()
+    const patch: Record<string, unknown> = { ...body, updated_at: new Date().toISOString() }
+    let { data, error } = await fastify.supabase
+      .from('vehicle_hotspots').update(patch).eq('id', params.hotspotId).select(HOTSPOT_COLUMNS).single()
+    if (missingHotspotImageColumn(error)) {
+      if (body.image_url) return reply.code(503).send({ statusMessage: HOTSPOT_IMAGE_MIGRATION })
+      delete patch.image_url
+      ;({ data, error } = await fastify.supabase
+        .from('vehicle_hotspots').update(patch).eq('id', params.hotspotId).select(HOTSPOT_COLUMNS_BASE).single())
+    }
     if (error) {
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: 'Failed to save hotspot' })
@@ -562,9 +582,15 @@ export default async function vehicleViewRoutes(fastify: FastifyInstance) {
 /** Adds each photo's hotspots. Read separately so a database without the hotspots table still serves photos. */
 async function withHotspots(fastify: FastifyInstance, views: any[]) {
   if (!views.length) return views
-  const { data, error } = await fastify.supabase
-    .from('vehicle_hotspots').select(HOTSPOT_COLUMNS).in('view_id', views.map(v => v.id))
+  const ids = views.map(v => v.id)
+  let { data, error } = await fastify.supabase
+    .from('vehicle_hotspots').select(HOTSPOT_COLUMNS).in('view_id', ids)
     .order('created_at', { ascending: true })
+  if (missingHotspotImageColumn(error)) {
+    ;({ data, error } = await fastify.supabase
+      .from('vehicle_hotspots').select(HOTSPOT_COLUMNS_BASE).in('view_id', ids)
+      .order('created_at', { ascending: true }) as any)
+  }
   const byView = new Map<string, any[]>()
   if (!error) for (const h of data ?? []) byView.set(h.view_id, [...(byView.get(h.view_id) ?? []), h])
   return views.map(v => ({ ...v, hotspots: byView.get(v.id) ?? [] }))
