@@ -307,7 +307,7 @@ export async function enhanceFrame(file: Buffer, grade: FrameGrade, look: SpinLo
   const set = LOOKS[look]
   let src = file
   if (look === 'hd') {
-    if (!restore) throw new Error('AI HD needs the AI restore service')
+    if (!restore) throw new Error('the worker has no REPLICATE_API_TOKEN: add it to the worker service in Railway')
     const meta = await sharp(file, { failOn: 'none' }).rotate().metadata()
     const W = meta.autoOrient?.width ?? meta.width ?? 0, H = meta.autoOrient?.height ?? meta.height ?? 0
     // The model works on a 1280-wide copy and doubles it; the result is scaled back to the frame's own

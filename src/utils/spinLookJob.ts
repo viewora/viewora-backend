@@ -77,7 +77,11 @@ export async function processSpinLook(fastify: FastifyInstance, redis: Redis, da
     fastify.log.info({ ...data, changed: result.changed }, 'Spin look applied')
   } catch (err: any) {
     fastify.log.error({ ...data, err: err?.message }, 'Spin look failed')
-    if (finalAttempt) await progress({ state: 'failed', look: data.look, done: 0, total: 0, error: 'We could not finish the photos. Your spin still shows its previous look. Try again in a few minutes.' })
+    if (finalAttempt) {
+      // Say why (owner-only screen), so a missing key or a billing problem is obvious without the logs.
+      const why = String(err?.message ?? 'unknown error').replace(/Bearer\s+\S+/gi, 'Bearer ***').slice(0, 180)
+      await progress({ state: 'failed', look: data.look, done: 0, total: 0, error: `We could not finish the photos (${why}). Your spin still shows its previous look.` })
+    }
     throw err
   }
 }
