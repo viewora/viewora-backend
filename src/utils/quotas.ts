@@ -99,20 +99,31 @@ export async function checkUserQuota(fastify: FastifyInstance, userId: string): 
   }
 }
 
+/**
+ * Fast pre-check for the tour limit so the API can answer with a friendly 403 before
+ * inserting. Counts the user's real tours (drafts included) rather than trusting
+ * usage_counters. The authoritative, race-free check is the properties_enforce_tour_limit
+ * trigger (migration-tour-quota-enforcement.sql) — see isTourLimitError().
+ */
 export async function canCreateSpace(fastify: FastifyInstance, userId: string, quota?: QuotaContext): Promise<boolean> {
   const { plan } = quota ?? await checkUserQuota(fastify, userId)
 
-  // NULL/0 max_active_spaces means unlimited (used for custom/Enterprise plans)
+  // NULL max_active_spaces means unlimited (used for custom/Enterprise plans)
   if (plan.max_active_spaces === null || plan.max_active_spaces === undefined) return true
 
-  const { data: counter } = await fastify.supabase
-    .from('usage_counters')
-    .select('active_properties_count')
+  const { count, error } = await fastify.supabase
+    .from('properties')
+    .select('id', { count: 'exact', head: true })
     .eq('user_id', userId)
-    .single()
 
-  const currentCount = counter?.active_properties_count || 0
-  return currentCount < plan.max_active_spaces
+  // Fail open here: the DB trigger still enforces the limit on insert.
+  if (error) return true
+  return (count ?? 0) < plan.max_active_spaces
+}
+
+/** True when an insert into properties was rejected by the tour-limit trigger. */
+export function isTourLimitError(error: { code?: string; message?: string } | null | undefined): boolean {
+  return !!error && error.code === 'P0001' && (error.message ?? '').includes('TOUR_LIMIT_REACHED')
 }
 
 /** Scenes-per-tour quota. NULL max_scenes_per_tour means unlimited (custom/Enterprise plans). */

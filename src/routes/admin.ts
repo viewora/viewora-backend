@@ -1486,11 +1486,11 @@ export default async function (fastify: FastifyInstance) {
         spaceIds.length
           ? fastify.supabase.from('property_media').select('file_size_bytes').in('property_id', spaceIds)
           : Promise.resolve({ data: [] }),
+        // All tours, drafts included — same definition the tour-limit trigger uses.
         fastify.supabase
           .from('properties')
           .select('id', { count: 'exact', head: true })
-          .eq('user_id', id)
-          .eq('is_published', true),
+          .eq('user_id', id),
       ])
 
       const storageBytesActual = (mediaRows ?? []).reduce((sum: number, r: any) => sum + Number(r.file_size_bytes || 0), 0)

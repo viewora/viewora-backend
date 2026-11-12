@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { DeleteObjectsCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { z } from 'zod'
-import { canCreateSpace, checkUserQuota, quotaLimitMessage } from '../utils/quotas.js'
+import { canCreateSpace, checkUserQuota, isTourLimitError, quotaLimitMessage } from '../utils/quotas.js'
 import { parseWithSchema } from '../utils/validation.js'
 import { sendTourPublishedEmail } from '../email/index.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
@@ -252,15 +252,13 @@ export default async function (fastify: FastifyInstance) {
     if (!quotaCtx.canWrite) {
       return reply.code(403).send({ statusMessage: 'Your subscription is not active. Please check your billing status.' })
     }
-    const allowed = await canCreateSpace(fastify, userId, quotaCtx)
-    if (!allowed) {
-      return reply.code(403).send({
-        statusMessage: quotaLimitMessage(quotaCtx.plan, 'tours'),
-        code: 'TOUR_LIMIT_REACHED',
-        limit: quotaCtx.plan.max_active_spaces,
-        plan: quotaCtx.plan.name,
-      })
-    }
+    const tourLimitReply = () => reply.code(403).send({
+      statusMessage: quotaLimitMessage(quotaCtx.plan, 'tours'),
+      code: 'TOUR_LIMIT_REACHED',
+      limit: quotaCtx.plan.max_active_spaces,
+      plan: quotaCtx.plan.name,
+    })
+    if (!(await canCreateSpace(fastify, userId, quotaCtx))) return tourLimitReply()
 
     // 2. Create space
     const { data: space, error } = await fastify.supabase
@@ -301,6 +299,8 @@ export default async function (fastify: FastifyInstance) {
       if (error.code === '23505') {
         return reply.code(409).send({ statusMessage: 'This URL slug is already in use. Please choose another one.' })
       }
+      // Lost a race with a parallel create: the DB trigger is the authoritative limit check.
+      if (isTourLimitError(error)) return tourLimitReply()
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: 'Failed to create space' })
     }
@@ -311,9 +311,8 @@ export default async function (fastify: FastifyInstance) {
       property_type: undefined
     }
 
-    // 3. Update usage counter (RPC defined in migration 013)
-    const { error: incrErr } = await fastify.supabase.rpc('increment_active_properties', { u_id: userId })
-    if (incrErr) fastify.log.error(incrErr, 'Failed to increment active_properties counter')
+    // 3. usage_counters.active_properties_count is recounted by a DB trigger
+    //    (migration-tour-quota-enforcement.sql) — no RPC call here.
 
     // Bust billing cache so frontend sees the updated usage count immediately
     if (fastify.redis) {
@@ -462,10 +461,7 @@ export default async function (fastify: FastifyInstance) {
       }))
     }
 
-    // 4. Update Quotas
-    const { error: decrErr } = await fastify.supabase.rpc('decrement_active_properties', { u_id: userId })
-    if (decrErr) fastify.log.error(decrErr, 'Failed to decrement active_properties counter')
-
+    // 4. Update Quotas (tour count is recounted by a DB trigger; storage still via RPC)
     if (mediaItems && mediaItems.length > 0) {
       const totalSize = mediaItems.reduce((acc, item) => acc + Number(item.file_size_bytes || 0), 0)
       if (totalSize > 0) {
