@@ -10,6 +10,7 @@ import { generateListingDescription } from '../utils/aiDescription.js'
 import { failureReason } from '../utils/gemini.js'
 import { consumeAi, AiLimitError } from '../utils/aiUsage.js'
 import { sanitizeSocialLinks, SOCIAL_KEYS } from '../utils/socialLinks.js'
+import { carCovers } from '../utils/carCover.js'
 
 // Converts a space title into a URL-safe slug.
 // "Modern 3-Bed Villa, Westlands" → "modern-3-bed-villa-westlands"
@@ -173,6 +174,10 @@ export default async function (fastify: FastifyInstance) {
         property_media: undefined,
       }
     })
+
+    // A car's card shows the car from the front (its spin's start frame), not the first interior 360.
+    const covers = await carCovers(fastify, mappedData.filter((d: any) => d.space_type === 'automotive').map((d: any) => d.id))
+    for (const d of mappedData) if (covers.has(d.id)) d.cover_image_url = covers.get(d.id)
 
     // A car with only its exterior spin has no scene or gallery photo: its card shows the
     // first frame of the spin. At most a few rows per car (the frames at the start), and a failed lookup only
