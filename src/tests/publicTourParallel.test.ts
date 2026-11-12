@@ -74,3 +74,24 @@ test('independent lookups run in parallel, not one after another', async () => {
   assert.ok(took < DELAY_MS * 3.5, `took ${took} ms, queries look sequential`)
   await app.close()
 })
+
+test('link preview: loads the tour once, then answers from the cache', async () => {
+  const { app } = await buildApp()
+  const store = new Map<string, string>()
+  ;(app as any).redis = {
+    get: async (k: string) => store.get(k) ?? null,
+    setEx: async (k: string, _ttl: number, v: string) => { store.set(k, v) },
+  }
+  const first = await app.inject({ method: 'GET', url: '/p/demo-tour/share' })
+  assert.equal(first.statusCode, 200, first.body)
+  const meta = first.json()
+  assert.equal(meta.title, 'Demo')
+  assert.equal(meta.white_label, false)
+  assert.equal(meta.image?.url, 'https://cdn/x.jpg', 'falls back to the first photo while the preview is made')
+  await new Promise(r => setTimeout(r, 20))
+  assert.ok(store.has('share:demo-tour'), 'the full load filled the preview cache')
+  store.set('share:demo-tour', JSON.stringify({ ...meta, title: 'Cached' }))
+  const second = await app.inject({ method: 'GET', url: '/p/demo-tour/share' })
+  assert.equal(second.json().title, 'Cached')
+  await app.close()
+})

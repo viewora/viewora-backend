@@ -117,3 +117,34 @@ export async function shareImageFor(fastify: FastifyInstance, tour: any): Promis
   const ok = await Promise.race([job, new Promise<false>(r => setTimeout(r, WAIT_MS, false))])
   return ok ? { url, width: SHARE_W, height: SHARE_H } : null
 }
+
+/** What a link preview needs, kept apart from the full tour so crawlers get it in milliseconds. */
+export interface ShareMeta {
+  slug: string
+  title: string
+  /** "2018 Lexus RX 350": a car's name, when it has one. */
+  vehicle: string | null
+  description: string | null
+  image: ShareImage | null
+  /** White-label tours carry no Viewora name. */
+  white_label: boolean
+  space_type: string | null
+}
+
+export function shareMeta(tour: any, slug: string): ShareMeta {
+  const s = tour?.space ?? {}
+  const model = [s.vehicle_make, s.vehicle_model].filter(Boolean).join(' ')
+  const vehicle = model ? [s.vehicle_year, model, s.vehicle_trim].filter(Boolean).join(' ') : null
+  const raw = shareImageSource(tour)
+  return {
+    slug,
+    title: String(s.title || 'Virtual tour'),
+    vehicle,
+    description: typeof s.description === 'string' && s.description.trim() ? s.description.trim().slice(0, 300) : null,
+    image: tour?.share_image ?? (raw ? { url: raw, width: 0, height: 0 } : null),
+    white_label: !!s.branding_enabled,
+    space_type: s.space_type ?? null,
+  }
+}
+
+export const shareMetaKey = (slug: string) => `share:${slug}`

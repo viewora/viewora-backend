@@ -6,7 +6,7 @@ import { mergeSceneGroups, publicAerialMaps } from './aerial.js'
 import { mergeScenePlanPins, publicFloorPlans } from './floorPlans.js'
 import { publicVehicleSpins } from './vehicleViews.js'
 import { ownerEntitlements } from '../utils/quotas.js'
-import { shareImageFor } from '../utils/shareImage.js'
+import { shareImageFor, shareMeta, shareMetaKey, type ShareMeta } from '../utils/shareImage.js'
 
 const tourParamsSchema = z.object({
   slug: z.string().min(3).max(120).regex(/^[a-z0-9-]+$/, 'Invalid slug'),
@@ -254,6 +254,30 @@ export default async function publicRoutes(fastify: FastifyInstance) {
   // ── PUBLIC TOUR VIEWER ────────────────────────────────────
   // No auth required. Calls the get_tour_data() RPC which checks
   // is_published=true AND visibility='public' before returning anything.
+  // ── LINK PREVIEW ─────────────────────────────────────────────
+  // Title, description and picture for WhatsApp / Facebook / X crawlers, which give up on slow
+  // pages. Answered from Redis (written by every GET /p/:slug); on a miss the tour is loaded once
+  // the normal way, which also fills the cache.
+  fastify.get('/p/:slug/share', {
+    config: { rateLimit: { max: 120, timeWindow: '1 minute', keyGenerator: (request: any) => request.ip } },
+  }, async (req, reply) => {
+    const params = parseWithSchema(reply, tourParamsSchema, (req as any).params)
+    if (!params) return
+    const hit = fastify.redis ? await fastify.redis.get(shareMetaKey(params.slug)).catch(() => null) : null
+    let meta: ShareMeta | null = hit ? JSON.parse(hit) : null
+    if (!meta) {
+      const res = await fastify.inject({ method: 'GET', url: `/p/${params.slug}` })
+      if (res.statusCode === 404) return reply.code(404).send({ statusMessage: 'Tour not found' })
+      if (res.statusCode !== 200) return reply.code(502).send({ statusMessage: 'Tour unavailable' })
+      const body = res.json() as any
+      const tour = body?.tour ?? body?.data?.tour
+      if (!tour?.space) return reply.code(404).send({ statusMessage: 'Tour not found' })
+      meta = shareMeta(tour, params.slug)
+    }
+    reply.header('Cache-Control', 'public, max-age=60')
+    return reply.send(meta)
+  })
+
   fastify.get('/p/:slug', {
     config: {
       rateLimit: {
@@ -409,6 +433,11 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       data.seller = null
       data.aerial_maps = []
       data.floor_plans = []
+    }
+
+    // Link-preview details for crawlers (GET /p/:slug/share), refreshed by every visit.
+    if (fastify.redis && data.space) {
+      void fastify.redis.setEx(shareMetaKey(params.slug), 7 * 86400, JSON.stringify(shareMeta(data, params.slug))).catch(() => {})
     }
 
     reply.header('X-Cache', cacheStatus)
