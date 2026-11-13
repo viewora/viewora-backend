@@ -12,6 +12,7 @@ import {
   planNavLinks, interiorZones, type LinkRow, pctToYawRad, angularDist, titleCase, scaleFor,
   type DoorwayKind, type PlanDoorway,
 } from '../utils/autoLinkPlan.js'
+import { planFloorPlanLinks, type FloorInfo } from '../utils/floorPlanLinks.js'
 
 const spaceParamsSchema = z.object({ spaceId: z.string().uuid() })
 
@@ -538,6 +539,59 @@ const configuredCorsOrigins = process.env.CORS_ORIGIN
 
 
 export default async function (fastify: FastifyInstance) {
+  // ── Link from floor plan: geometry only — no AI, no credits, instant ──────
+  fastify.post('/spaces/:spaceId/auto-link/floor-plan', {
+    preHandler: [fastify.authenticate],
+    config:     { rateLimit: { max: 20, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, spaceParamsSchema, (req as any).params)
+    if (!params) return
+
+    const { data: space } = await fastify.supabase
+      .from('properties').select('id').eq('id', params.spaceId).eq('user_id', userId).single()
+    if (!space) return reply.code(404).send({ statusMessage: 'Space not found.' })
+
+    const [{ data: scenes, error: scenesErr }, { data: floors, error: floorsErr }] = await Promise.all([
+      fastify.supabase.from('scenes')
+        .select('id, name, floor_plan_id, plan_x, plan_y, north_offset, order_index, captured_at')
+        .eq('space_id', params.spaceId).eq('status', 'ready')
+        .order('captured_at', { ascending: true, nullsFirst: false })
+        .order('order_index', { ascending: true }),
+      fastify.supabase.from('floor_plans').select('id, name, width, height').eq('space_id', params.spaceId),
+    ])
+    if (scenesErr || floorsErr) {
+      fastify.log.error({ err: scenesErr || floorsErr }, '[autolink/floor-plan] load failed')
+      return reply.code(500).send({ statusMessage: 'Could not load the tour. Try again.' })
+    }
+    if (!floors?.length) {
+      return reply.code(400).send({ statusMessage: 'This tour has no floor plan yet. Add one in the Floor plan panel and pin your scenes on it.' })
+    }
+
+    const ids = (scenes ?? []).map(s => s.id)
+    const { data: rows } = ids.length
+      ? await fastify.supabase.from('hotspots').select('scene_id, type, target_scene_id, content').in('scene_id', ids)
+      : { data: [] as LinkRow[] }
+    const links = (rows ?? []) as LinkRow[]
+    const linkedPairs = new Set(links
+      .filter(h => h.type === 'scene_link' && h.target_scene_id)
+      .map(h => `${h.scene_id}:${h.target_scene_id}`))
+
+    const result = planFloorPlanLinks({
+      scenes: (scenes ?? []).map(s => ({ ...s, name: s.name || 'Scene' })),
+      floors: floors as FloorInfo[],
+      linkedPairs,
+      zones: interiorZones(links),
+    })
+    return reply.send({
+      suggestions: result.suggestions.map(({ confidence_hint: _c, ...s }) => s),
+      unpinned:    result.unpinned,
+      noDirection: result.noDirection,
+      loneFloors:  result.loneFloors,
+      sceneCount:  scenes?.length ?? 0,
+    })
+  })
+
   fastify.post('/spaces/:spaceId/auto-link', {
     preHandler: [fastify.authenticate],
     config:     { rateLimit: { max: 3, timeWindow: '1 minute' } },
