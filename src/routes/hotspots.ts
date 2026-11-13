@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { resolveHotspotPatch } from '../utils/hotspotType.js'
 import { parseWithSchema } from '../utils/validation.js'
 import { invalidateTourCache } from '../utils/cache.js'
 
@@ -108,13 +109,13 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
   async function verifyHotspotOwnership(hotspotId: string, userId: string) {
     const { data: hotspot } = await fastify.supabase
       .from('hotspots')
-      .select('scene_id')
+      .select('scene_id, type, target_scene_id, content')
       .eq('id', hotspotId)
       .single()
     if (!hotspot?.scene_id) return null
     const scene = await verifySceneOwnership(hotspot.scene_id, userId)
     if (!scene) return null
-    return { sceneId: hotspot.scene_id as string, spaceId: (scene as any).space_id as string, slug: slugOf(scene) }
+    return { sceneId: hotspot.scene_id as string, spaceId: (scene as any).space_id as string, slug: slugOf(scene), current: hotspot as any }
   }
 
   function slugOf(scene: any): string | null {
@@ -213,8 +214,13 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
     const owned = await verifyHotspotOwnership(params.hotspotId, userId)
     if (!owned) return reply.code(404).send({ statusMessage: 'Hotspot not found' })
 
+    // The type can change (Move ⇄ Info ⇄ Media ⇄ Link): check the hotspot as it will be.
+    const resolved = resolveHotspotPatch(owned.current, body)
+    if ('error' in resolved) return reply.code(400).send({ statusMessage: resolved.error })
+    const update = resolved.patch
+
     // Mirror the CREATE check: if target_scene_id is being set, verify it's in the same space
-    if (body.type === 'scene_link' && body.target_scene_id) {
+    if ((body.type ?? owned.current.type) === 'scene_link' && body.target_scene_id) {
       const { data: targetScene } = await fastify.supabase
         .from('scenes').select('space_id').eq('id', body.target_scene_id).single()
       if (!targetScene || targetScene.space_id !== owned.spaceId) {
@@ -224,7 +230,7 @@ export default async function hotspotsRoutes(fastify: FastifyInstance) {
 
     const { data: updated, error } = await fastify.supabase
       .from('hotspots')
-      .update(body)
+      .update(update)
       .eq('id', params.hotspotId)
       .select()
       .single()
