@@ -103,6 +103,52 @@ export function matchScore(leadsTo: string, scene: PlanScene): number {
   return best
 }
 
+// ── Car interiors ("See interior" badges) ──────────────────────────────────
+// Mirrors viewora-app shared/utils/interiorLinks.ts interiorScenes(): a scene
+// link with content.link_style 'interior' opens the inside of a car. Scenes
+// reached from there by ordinary arrows (front ⇄ rear seats) are inside the
+// same car. Everything reachable by ordinary arrows from a badge's scene is
+// the showroom floor, and the floor wins.
+
+export type LinkRow = { scene_id: string; type: string; target_scene_id: string | null; content?: Record<string, any> | null }
+
+export function isInteriorRow(h: LinkRow): boolean {
+  return h.type === 'scene_link' && h.content?.link_style === 'interior'
+}
+
+/** sceneId → the car it is inside (the badge's target scene). Floor scenes are absent. */
+export function interiorZones(rows: LinkRow[]): Map<string, string> {
+  const walk = new Map<string, string[]>()
+  const badges: Array<{ from: string; to: string }> = []
+  for (const h of rows) {
+    if (h.type !== 'scene_link' || !h.target_scene_id) continue
+    if (isInteriorRow(h)) { if (h.target_scene_id !== h.scene_id) badges.push({ from: h.scene_id, to: h.target_scene_id }) }
+    else walk.set(h.scene_id, [...(walk.get(h.scene_id) ?? []), h.target_scene_id])
+  }
+  const zones = new Map<string, string>()
+  if (!badges.length) return zones
+
+  const outside = new Set<string>()
+  const queue = [...new Set(badges.map(b => b.from))]
+  while (queue.length) {
+    const id = queue.pop()!
+    if (outside.has(id)) continue
+    outside.add(id)
+    for (const next of walk.get(id) ?? []) if (!outside.has(next)) queue.push(next)
+  }
+  for (const b of badges) {
+    if (outside.has(b.to) || zones.has(b.to)) continue
+    const stack = [b.to]
+    while (stack.length) {
+      const id = stack.pop()!
+      if (outside.has(id) || zones.has(id)) continue
+      zones.set(id, b.to)
+      for (const next of walk.get(id) ?? []) stack.push(next)
+    }
+  }
+  return zones
+}
+
 type Candidate = {
   fromIdx: number; toIdx: number; doorIdx: number
   score: number; confidence: number
@@ -121,11 +167,19 @@ export function planNavLinks(
   scenes:      PlanScene[],
   doorways:    Record<string, PlanDoorway[]>,
   linkedPairs: Set<string>,
+  zones:       Map<string, string> = new Map(),   // interiorZones(): sceneId → car
 ): NavSuggestion[] {
   const label = (s: PlanScene) => titleCase(s.newName || s.roomType || s.name || 'Next Room')
   const out: NavSuggestion[] = []
   const used = new Set<string>()          // `${fromIdx}:${doorIdx}`
   const pairs = new Set(linkedPairs)      // existing + planned `${fromId}:${toId}`
+
+  // Floor arrows never cross between the showroom floor and a car's inside
+  // (that is what the "See interior" badge is for), so capture order is
+  // followed separately per zone: the walkway, then each car's seats.
+  const zoneOf = (i: number) => zones.get(scenes[i].id) ?? ''
+  const walkPairs = zoneNeighbours(scenes, zones).map(([a, b]) => [scenes.indexOf(a), scenes.indexOf(b)] as const)
+  const isAdjacent = (a: number, b: number) => walkPairs.some(([x, y]) => (x === a && y === b) || (x === b && y === a))
 
   const push = (fromIdx: number, toIdx: number, door: PlanDoorway | null, yaw: number, pitch: number, confidence: number) => {
     const a = scenes[fromIdx], b = scenes[toIdx]
@@ -149,8 +203,8 @@ export function planNavLinks(
     ;(doorways[from.id] ?? []).forEach((door, doorIdx) => {
       const mine: Candidate[] = []
       scenes.forEach((to, toIdx) => {
-        if (toIdx === fromIdx) return
-        const adjacent = Math.abs(toIdx - fromIdx) === 1
+        if (toIdx === fromIdx || zoneOf(toIdx) !== zoneOf(fromIdx)) return
+        const adjacent = isAdjacent(fromIdx, toIdx)
         let score = matchScore(door.leads_to, to)
         if (door.target === toIdx + 1) score += 3          // the AI named this scene
         if (adjacent && score > 0) score += 0.5            // tie-break towards capture order
@@ -161,7 +215,7 @@ export function planNavLinks(
       // AI named it, don't guess which — the walk-through pass covers neighbours.
       const top = Math.max(0, ...mine.map(c => c.score))
       const tied = mine.filter(c => c.score === top)
-      if (tied.length > 1 && !tied.some(c => Math.abs(c.toIdx - c.fromIdx) === 1)) {
+      if (tied.length > 1 && !tied.some(c => isAdjacent(c.fromIdx, c.toIdx))) {
         candidates.push(...mine.filter(c => c.score < top))
       } else {
         candidates.push(...mine)
@@ -192,8 +246,8 @@ export function planNavLinks(
   }
   const yawOf = (fromId: string, toId: string) => out.find(s => s.fromSceneId === fromId && s.toSceneId === toId)?.yaw
 
-  for (let i = 0; i < scenes.length - 1; i++) {
-    for (const [fromIdx, toIdx] of [[i, i + 1], [i + 1, i]] as const) {
+  for (const [a, b] of walkPairs) {
+    for (const [fromIdx, toIdx] of [[a, b], [b, a]] as const) {
       if (pairs.has(`${scenes[fromIdx].id}:${scenes[toIdx].id}`)) continue
       const pick = bestUnused(fromIdx)
       if (pick) {
@@ -210,7 +264,7 @@ export function planNavLinks(
   }
 
   out.sort((a, b) => b.confidence_hint - a.confidence_hint)
-  const extra = ensureFullConnectivity(scenes, out, linkedPairs)
+  const extra = ensureFullConnectivity(scenes, out, linkedPairs, zones)
   for (const s of extra) s.yaw = round4(freeYaw([...out, ...extra.filter(e => e !== s)], s.fromSceneId, s.yaw))
   return [...out, ...extra]
 }
@@ -236,11 +290,25 @@ function round4(n: number): number {
  * Every scene must have at least one way out and one way in, or the tour has
  * a dead end. Adds a low-confidence link to the neighbour in capture order.
  */
+/** Consecutive scenes (capture order) within the same zone: the walk-through. */
+export function zoneNeighbours(scenes: PlanScene[], zones: Map<string, string>): Array<[PlanScene, PlanScene]> {
+  const lists = new Map<string, PlanScene[]>()
+  for (const s of scenes) {
+    const z = zones.get(s.id) ?? ''
+    lists.set(z, [...(lists.get(z) ?? []), s])
+  }
+  const out: Array<[PlanScene, PlanScene]> = []
+  for (const list of lists.values()) for (let k = 0; k < list.length - 1; k++) out.push([list[k], list[k + 1]])
+  return out
+}
+
 export function ensureFullConnectivity(
   scenes: PlanScene[],
   suggestions: NavSuggestion[],
   existingLinkedPairs: Set<string>,
+  zones: Map<string, string> = new Map(),
 ): NavSuggestion[] {
+  const walk = zoneNeighbours(scenes, zones)
   const extra: NavSuggestion[] = []
   const outgoing = new Map<string, Set<string>>(scenes.map(s => [s.id, new Set()]))
   const incoming = new Map<string, Set<string>>(scenes.map(s => [s.id, new Set()]))
@@ -269,7 +337,12 @@ export function ensureFullConnectivity(
 
   for (let i = 0; i < scenes.length; i++) {
     const scene = scenes[i]
-    const neighbours = [scenes[i + 1], scenes[i - 1]].filter(Boolean) as PlanScene[]
+    // Next/previous in the same zone; a car's only interior scene has none
+    // (its way in is the badge, its way out is the viewer's "back" button).
+    const neighbours = [
+      ...walk.filter(([a]) => a === scene).map(([, b]) => b),
+      ...walk.filter(([, b]) => b === scene).map(([a]) => a),
+    ]
     if (!neighbours.length) continue
 
     if ((outgoing.get(scene.id)?.size ?? 0) === 0) {

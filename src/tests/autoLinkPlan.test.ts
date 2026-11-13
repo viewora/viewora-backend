@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { planNavLinks, matchScore, pctToYawRad, angularDist, type PlanDoorway, type PlanScene } from '../utils/autoLinkPlan.js'
+import { planNavLinks, interiorZones, matchScore, pctToYawRad, angularDist, type PlanDoorway, type PlanScene } from '../utils/autoLinkPlan.js'
 import { applyRefinement } from '../routes/autolink.js'
 import { resolveHotspotPatch } from '../utils/hotspotType.js'
 import { viewPixelToSpherical } from '../utils/panoViews.js'
@@ -136,4 +136,42 @@ test('an ambiguous doorway does not guess between several far rooms', () => {
   assert.ok(!vague.some(s => s.fromSceneId === 'hall' && s.toSceneId.startsWith('bed')))
   const named = planNavLinks(many, { hall: [door(30, 'bedroom', { target: 4 })] }, new Set())
   assert.ok(named.some(s => s.fromSceneId === 'hall' && s.toSceneId === 'bed2'))
+})
+
+// ── Car showroom: walkway + "See interior" badges ─────────────────────────
+// Shot in this order: walkway 1, inside Car A (front, rear), walkway 2, walkway 3.
+const showroom: PlanScene[] = [
+  { id: 'w1', name: 'Walkway 1' },
+  { id: 'aF', name: 'Car A Front Seats' },
+  { id: 'aR', name: 'Car A Rear Seats' },
+  { id: 'w2', name: 'Walkway 2' },
+  { id: 'w3', name: 'Walkway 3' },
+]
+const badge = { scene_id: 'w1', type: 'scene_link', target_scene_id: 'aF', content: { link_style: 'interior' } }
+
+test('interiorZones puts the seats inside the car and the walkway outside', () => {
+  const zones = interiorZones([badge, { scene_id: 'aF', type: 'scene_link', target_scene_id: 'aR', content: {} }])
+  assert.equal(zones.get('aF'), 'aF')
+  assert.equal(zones.get('aR'), 'aF')
+  assert.equal(zones.has('w1'), false)
+  assert.equal(interiorZones([]).size, 0)
+})
+
+test('auto-link walks the walkway past the car, and links seats only to each other', () => {
+  // Owner placed the badge and one arrow front → rear; auto-link does the rest.
+  const seatLink = { scene_id: 'aF', type: 'scene_link', target_scene_id: 'aR', content: {} }
+  const zones = interiorZones([badge, seatLink])
+  const out = planNavLinks(showroom, {
+    w1: [door(50, 'walkway')],
+    aR: [door(10, 'showroom floor'), door(60, 'front seats')],
+  }, new Set(['w1:aF', 'aF:aR']), zones)
+  const pairs = out.map(s => `${s.fromSceneId}>${s.toSceneId}`).sort()
+  for (const p of pairs) {
+    const [a, b] = p.split('>')
+    assert.equal(zones.get(a) ?? '', zones.get(b) ?? '', `no floor arrow between car and walkway: ${p}`)
+  }
+  assert.ok(pairs.includes('w1>w2') && pairs.includes('w2>w1'), 'walkway skips over the car scenes')
+  assert.ok(pairs.includes('w2>w3') && pairs.includes('w3>w2'))
+  assert.ok(pairs.includes('aR>aF'), 'rear seats back to front seats')
+  assert.ok(!pairs.some(p => p.startsWith('aF>w') || p.startsWith('aR>w')), 'no arrow from the seats onto the walkway')
 })

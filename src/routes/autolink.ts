@@ -9,7 +9,7 @@ import {
   viewPointToYawPitch, yawPitchToViewPoint, wrapYaw, VIEW_YAWS_DEG, type EquirectSource, type ViewSpec,
 } from '../utils/panoViews.js'
 import {
-  planNavLinks, pctToYawRad, angularDist, titleCase, scaleFor,
+  planNavLinks, interiorZones, type LinkRow, pctToYawRad, angularDist, titleCase, scaleFor,
   type DoorwayKind, type PlanDoorway,
 } from '../utils/autoLinkPlan.js'
 
@@ -626,7 +626,7 @@ export default async function (fastify: FastifyInstance) {
       // Fetch ALL existing hotspots across the tour in one query
       const { data: allHotspots } = await fastify.supabase
         .from('hotspots')
-        .select('id, scene_id, type, label, yaw, pitch, target_scene_id')
+        .select('id, scene_id, type, label, yaw, pitch, target_scene_id, content')
         .in('scene_id', sceneIds)
 
       // Group hotspots by scene
@@ -723,6 +723,7 @@ export default async function (fastify: FastifyInstance) {
       })),
       Object.fromEntries(analyses.map(a => [a.sceneId, a.doorways])),
       linkedPairs,
+      interiorZones((allHotspots ?? []) as LinkRow[]),   // car interiors: no floor arrows in/out
     )
     const suggestions = planned.map(({ confidence_hint: _c, ...s }) => s)
 
