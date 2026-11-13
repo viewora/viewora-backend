@@ -4,27 +4,27 @@ import { parseWithSchema } from '../utils/validation.js'
 import { generateGemini, parseGeminiJson, GEMINI_MODEL, type GeminiPart } from '../utils/gemini.js'
 import { industryBrief } from '../utils/industry.js'
 import { consumeAi, AiLimitError } from '../utils/aiUsage.js'
-import { renderPanoViews, viewPointToYawPitch, yawPitchToViewPoint, VIEW_YAWS_DEG } from '../utils/panoViews.js'
+import {
+  renderViewsFromSource, decodeEquirect, renderPerspective, rgbToJpeg, viewPixelToSpherical,
+  viewPointToYawPitch, yawPitchToViewPoint, wrapYaw, VIEW_YAWS_DEG, type EquirectSource, type ViewSpec,
+} from '../utils/panoViews.js'
+import {
+  planNavLinks, pctToYawRad, angularDist, titleCase, scaleFor,
+  type DoorwayKind, type PlanDoorway,
+} from '../utils/autoLinkPlan.js'
 
 const spaceParamsSchema = z.object({ spaceId: z.string().uuid() })
 
-const MAX_SCENES           = 20
+// Each scene costs two vision calls (overview + doorway close-ups), ~10-20 s.
+// The run streams progress over SSE, so a long tour does not time out.
+const MAX_SCENES           = 40
 const CONFIDENCE_THRESHOLD = 50   // low enough to keep forced fallback doorways (confidence 60)
 const DEG_TO_RAD           = Math.PI / 180
-const DEFAULT_PITCH_RAD    = -8 * DEG_TO_RAD
 const DEDUP_MIN_ANGLE_RAD  = 0.18   // ~10° — closer than this = duplicate
 
-type DoorwayKind = 'door' | 'archway' | 'stairs_up' | 'stairs_down' | 'outdoor'
 type InfoCategory = 'feature' | 'view' | 'highlight'
 
-type Doorway = {
-  position_pct: number
-  pitch_deg:    number
-  size_deg:     number   // angular height of the opening — drives arrow size
-  kind:         DoorwayKind
-  leads_to:     string
-  confidence:   number
-}
+type Doorway = PlanDoorway & { refined?: boolean }
 
 type InfoHotspot = {
   position_pct: number
@@ -60,18 +60,10 @@ const EMPTY_ANALYSIS: Omit<SceneAnalysis, 'model_used'> = {
 }
 
 // ── Hotspot styling — mirrors the editor's icon set (viewora-app shared/utils/hotspotIcons.ts)
-const NAV_ICON = 'nav-up'
 const INFO_ICON: Record<InfoCategory, string> = {
   feature:   'info-3d-light',
   view:      'camera-3d-light',
   highlight: 'star-yellow',
-}
-
-// Apparent size → marker scale, so near doorways get bigger arrows than far ones
-function scaleFor(sizeDeg: number, kind: 'nav' | 'info'): number {
-  const raw = kind === 'nav' ? sizeDeg / 40 : 0.8 + sizeDeg / 100
-  const [lo, hi] = kind === 'nav' ? [0.7, 1.4] : [0.8, 1.2]
-  return Math.round(Math.min(hi, Math.max(lo, raw)) * 20) / 20
 }
 
 // ── Room vocabulary per property type ─────────────────────────────────────
@@ -159,9 +151,13 @@ numbered view 1..${VIEW_YAWS_DEG.length}, each 90° wide, turning clockwise ${VI
 INCLUDE: open doorways, open archways, open corridors, open sliding/double doors, staircases, exits outside
 EXCLUDE: closed doors, windows, mirrors, decorative arches, glass partitions without gaps,
          dark corners where nothing is visible, the same opening counted twice
-PRECISION: box_2d must hug the opening — the arrow is placed at the box centre.
-  For a staircase, box the first few steps you would walk onto.
+PRECISION: box_2d must hug the opening. For a staircase, box the first few steps you would walk onto.
+  The box's bottom edge must sit on the floor line of the opening (the threshold) —
+  the arrow is painted on the floor there.
 KIND: "door" (doorway/sliding door) | "archway" (open arch or corridor) | "stairs_up" | "stairs_down" | "outdoor" (leads outside)
+LIST EVERY walkable opening, not just one or two — visitors use them to jump straight to any room.
+TO: the number of the scene in <tour_scenes> this opening leads to, judged from what you can see
+  through it and the scene names. Use 0 when you cannot tell — a wrong number is worse than 0.
 CONFIDENCE: 90-100 = crystal clear | 75-89 = clear, minor uncertainty | 60-74 = probable | <58 = OMIT
 
 CRITICAL — REACHABILITY RULE:
@@ -212,7 +208,7 @@ start_view: where the tour should face when the scene opens — the most flatter
 
 <output_format>
 Return ONLY valid compact JSON — zero markdown, zero explanation:
-{"room_type":"<type>","new_name":"<name or empty string>","group":"<category>","start_view":{"view":<1-${VIEW_YAWS_DEG.length}>,"x":<0-1000>},"doorways":[{"view":<1-${VIEW_YAWS_DEG.length}>,"box_2d":[<ymin>,<xmin>,<ymax>,<xmax>],"kind":"<kind>","leads_to":"<1-3 words>","confidence":<int>}],"info_hotspots":[{"view":<1-${VIEW_YAWS_DEG.length}>,"box_2d":[<ymin>,<xmin>,<ymax>,<xmax>],"category":"<category>","label":"<2-4 words>","description":"<max 25 words>"}],"remove_ids":[<"existing_id",...>],"fix_hotspots":[{"id":"<existing_id>","view":<optional>,"box_2d":<optional>,"label":"<optional>"}]}
+{"room_type":"<type>","new_name":"<name or empty string>","group":"<category>","start_view":{"view":<1-${VIEW_YAWS_DEG.length}>,"x":<0-1000>},"doorways":[{"view":<1-${VIEW_YAWS_DEG.length}>,"box_2d":[<ymin>,<xmin>,<ymax>,<xmax>],"kind":"<kind>","leads_to":"<1-3 words>","to":<scene number or 0>,"confidence":<int>}],"info_hotspots":[{"view":<1-${VIEW_YAWS_DEG.length}>,"box_2d":[<ymin>,<xmin>,<ymax>,<xmax>],"category":"<category>","label":"<2-4 words>","description":"<max 25 words>"}],"remove_ids":[<"existing_id",...>],"fix_hotspots":[{"id":"<existing_id>","view":<optional>,"box_2d":<optional>,"label":"<optional>"}]}
 Use [] for empty lists.
 </output_format>`
 
@@ -227,6 +223,7 @@ function buildSceneContext(opts: {
   sceneGroup:       string | null
   prevSceneName:    string | null
   nextSceneName:    string | null
+  allSceneNames:    string[]
   existingHotspots: Array<{ id: string; type: string; label: string; yaw: number; pitch: number }>
 }): string {
   const vocab     = ROOM_VOCAB[opts.spaceType]     || ROOM_VOCAB.other
@@ -239,6 +236,11 @@ function buildSceneContext(opts: {
   ]
   if (opts.prevSceneName) lines.push(`Previous scene: "${opts.prevSceneName}"`)
   if (opts.nextSceneName) lines.push(`Next scene: "${opts.nextSceneName}"`)
+  lines.push('<tour_scenes> (in capture order — for each doorway\'s "to"):')
+  opts.allSceneNames.forEach((n, i) => {
+    if (i !== opts.sceneIndex) lines.push(`  ${i + 1}. ${n}`)
+  })
+  lines.push('</tour_scenes>')
   lines.push(`Allowed room_type / new_name vocabulary: ${vocab}`)
   lines.push(`Category list for group: ${GROUP_VOCAB[opts.spaceType] || GROUP_VOCAB.other}${opts.sceneGroup ? ` (currently "${opts.sceneGroup}")` : ''}`)
   lines.push(`Relevant info hotspot examples for this property type: ${infoGuide}`)
@@ -262,7 +264,7 @@ function buildSceneContext(opts: {
 }
 
 // ── Core API call ──────────────────────────────────────────────────────────
-type BoxPoint = { position_pct: number; pitch_deg: number; size_deg: number }
+type BoxPoint = { position_pct: number; pitch_deg: number; size_deg: number; floor_pitch_deg: number }
 
 const DOORWAY_KINDS: DoorwayKind[]  = ['door', 'archway', 'stairs_up', 'stairs_down', 'outdoor']
 const INFO_CATEGORIES: InfoCategory[] = ['feature', 'view', 'highlight']
@@ -285,11 +287,91 @@ function boxToPoint(view: unknown, box: unknown): BoxPoint | null {
   const { yaw, pitch } = viewPointToYawPitch(view - 1, cx, (ymin + ymax) / 2)
   const top    = viewPointToYawPitch(view - 1, cx, ymin).pitch
   const bottom = viewPointToYawPitch(view - 1, cx, ymax).pitch
+  // Navigation arrows are painted on the floor: sit just above the box's bottom
+  // edge (the threshold), not at the middle of the door frame.
+  const floor  = viewPointToYawPitch(view - 1, cx, ymax - (ymax - ymin) * 0.06).pitch
   return {
-    position_pct: toPct(yaw),
-    pitch_deg:    pitch / DEG_TO_RAD,
-    size_deg:     (top - bottom) / DEG_TO_RAD,
+    position_pct:    toPct(yaw),
+    pitch_deg:       pitch / DEG_TO_RAD,
+    size_deg:        (top - bottom) / DEG_TO_RAD,
+    floor_pitch_deg: floor / DEG_TO_RAD,
   }
+}
+
+// ── Close-up refinement ───────────────────────────────────────────────────
+// The overview views are 90° wide, so a doorway across the room is a few dozen
+// pixels and its box is rough. Each doorway gets a 50° close-up centred on it;
+// the model confirms it is walkable and points at the exact floor spot.
+const REFINE_FOV_DEG   = 50
+const REFINE_SIZE      = 640
+const REFINE_MAX       = 8                  // per scene — one call carries all crops
+const REFINE_MAX_SHIFT = 12 * DEG_TO_RAD    // a refined point further than this is a misread
+
+const REFINE_INSTRUCTION = `You check navigation arrows on a 360° virtual tour.
+Each numbered photo is a close-up centred on something that was detected as a walkable opening
+(door, archway, corridor, stairs or a way outside). For EACH photo decide:
+• walkable: true if a visitor could walk through/up/down it from where the camera stands.
+  false for windows, mirrors, closed doors, cupboards, pictures, glass with no gap, plain walls.
+• point: [y, x] (0-1000 within that photo) on the FLOOR exactly where a "walk this way" arrow
+  should be painted — the centre of the threshold, or the first step for stairs. Must be on the floor.
+Return ONLY JSON: {"checks":[{"n":<photo number>,"walkable":<bool>,"point":[<y>,<x>]}]}`
+
+function refineSpec(d: Doorway): ViewSpec {
+  // Tilt down towards the floor point so the threshold is well inside the frame.
+  const pitch = Math.max(-35, Math.min(10, d.pitch_deg + 6)) * DEG_TO_RAD
+  return { yaw: wrapYaw(pctToYawRad(d.position_pct)), pitch, fovDeg: REFINE_FOV_DEG, size: REFINE_SIZE }
+}
+
+/** Applies the model's close-up checks. Pure — exported for tests. */
+export function applyRefinement(
+  doorways: Doorway[],
+  specs:    ViewSpec[],
+  checks:   unknown,
+): Doorway[] {
+  if (!Array.isArray(checks)) return doorways
+  const byN = new Map<number, any>()
+  for (const c of checks) if (c && typeof c.n === 'number') byN.set(c.n, c)
+
+  const out: Doorway[] = []
+  doorways.forEach((d, i) => {
+    const c = byN.get(i + 1)
+    if (!c || i >= specs.length) { out.push(d); return }
+    if (c.walkable === false) {
+      // Two opinions disagree: keep it only if the overview was certain, and
+      // rank it lower. (The guard below stops a scene losing every exit.)
+      if (d.confidence >= 90) out.push({ ...d, confidence: Math.min(d.confidence, 70) })
+      return
+    }
+    const p = c.point
+    if (Array.isArray(p) && p.length === 2 && p.every((n: any) => typeof n === 'number' && n >= 0 && n <= 1000)) {
+      const spec = specs[i]
+      const s = viewPixelToSpherical(spec, (p[1] / 1000) * spec.size, (p[0] / 1000) * spec.size)
+      const yaw0 = pctToYawRad(d.position_pct)
+      const shift = Math.hypot(angularDist(s.yaw, yaw0), s.pitch - d.pitch_deg * DEG_TO_RAD)
+      if (shift <= REFINE_MAX_SHIFT && s.pitch < 0) {
+        out.push({ ...d, position_pct: toPct(s.yaw), pitch_deg: s.pitch / DEG_TO_RAD, confidence: Math.min(100, d.confidence + 5), refined: true })
+        return
+      }
+    }
+    out.push(d)
+  })
+  // Never refine a scene down to zero exits.
+  return out.length ? out : doorways.slice(0, 1)
+}
+
+async function refineDoorways(src: EquirectSource, doorways: Doorway[], apiKey: string): Promise<Doorway[]> {
+  if (!doorways.length) return doorways
+  const head  = doorways.slice(0, REFINE_MAX)
+  const specs = head.map(refineSpec)
+  const parts: GeminiPart[] = [{ text: REFINE_INSTRUCTION }]
+  for (let i = 0; i < specs.length; i++) {
+    const jpeg = await rgbToJpeg(renderPerspective(src, specs[i]), specs[i].size, 88)
+    parts.push({ text: `Photo ${i + 1}:` })
+    parts.push({ inline_data: { mime_type: 'image/jpeg', data: jpeg.toString('base64') } })
+  }
+  const text = await generateGemini({ apiKey, parts, json: true })
+  const refined = applyRefinement(head, specs, parseGeminiJson(text)?.checks)
+  return [...refined, ...doorways.slice(REFINE_MAX)]
 }
 
 // Overlapping views can yield the same object twice — keep the first (best-ranked) one
@@ -316,7 +398,10 @@ async function callGemini(
   apiKey:       string,
   existingIds:  Set<string>,
 ): Promise<SceneAnalysis> {
-  const views = await renderPanoViews(thumbnailUrl)
+  const res = await fetch(thumbnailUrl)
+  if (!res.ok) throw new Error(`Panorama fetch ${res.status}`)
+  const src   = await decodeEquirect(Buffer.from(await res.arrayBuffer()))
+  const views = await renderViewsFromSource(src)
 
   const parts: GeminiPart[] = [
     { text: STATIC_INSTRUCTION },
@@ -341,10 +426,13 @@ async function callGemini(
         const pt = boxToPoint(d.view, d.box_2d)
         if (!pt || typeof d.confidence !== 'number' || d.confidence < CONFIDENCE_THRESHOLD) return []
         return [{
-          ...pt,
-          kind:       DOORWAY_KINDS.includes(d.kind) ? d.kind : 'door',
-          leads_to:   cleanText(d.leads_to, 40),
-          confidence: d.confidence,
+          position_pct: pt.position_pct,
+          pitch_deg:    pt.floor_pitch_deg,
+          size_deg:     pt.size_deg,
+          kind:         DOORWAY_KINDS.includes(d.kind) ? d.kind : 'door',
+          leads_to:     cleanText(d.leads_to, 40),
+          target:       Number.isInteger(d.to) && d.to > 0 ? d.to : undefined,
+          confidence:   d.confidence,
         }]
       })
     : []
@@ -393,12 +481,19 @@ async function callGemini(
     ? toPct(viewPointToYawPitch(sv.view - 1, sv.x, 500).yaw)
     : null
 
+  let finalDoorways: Doorway[] = dedupeByAngle(doorways.sort((a, b) => b.confidence - a.confidence))
+  try {
+    finalDoorways = await refineDoorways(src, finalDoorways, apiKey)
+  } catch {
+    // Close-up check failed (quota, timeout, bad JSON): the overview boxes still work.
+  }
+
   return {
     room_type: typeof parsed.room_type === 'string'
       ? parsed.room_type.toLowerCase().trim()
       : 'room',
     new_name:       cleanText(parsed.new_name, 100),
-    doorways:       dedupeByAngle(doorways.sort((a, b) => b.confidence - a.confidence)),
+    doorways:       finalDoorways,
     // Highlights first so they survive the cap
     info_hotspots:  dedupeByAngle(infoHotspots.sort((a, b) =>
       Number(b.category === 'highlight') - Number(a.category === 'highlight'))).slice(0, 3),
@@ -408,154 +503,6 @@ async function callGemini(
     group:          cleanText(parsed.group, 40),
     model_used:     GEMINI_MODEL,
   }
-}
-
-// ── Coordinate helpers ─────────────────────────────────────────────────────
-function titleCase(s: string): string {
-  return s.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-}
-
-// Stairs read better with direction: "Up to Bedroom", "Down to Lounge"
-function navLabel(targetLabel: string, door: Doorway | null): string {
-  if (door?.kind === 'stairs_up')   return `Up to ${targetLabel}`
-  if (door?.kind === 'stairs_down') return `Down to ${targetLabel}`
-  return targetLabel
-}
-
-function pctToYawRad(pct: number): number {
-  return (pct / 100 - 0.5) * 2 * Math.PI
-}
-
-function oppositeYawRad(yawRad: number): number {
-  const f = yawRad + Math.PI
-  return f > Math.PI ? f - 2 * Math.PI : f
-}
-
-function angularDist(a: number, b: number): number {
-  const d = Math.abs(a - b) % (2 * Math.PI)
-  return d > Math.PI ? 2 * Math.PI - d : d
-}
-
-function findMatchingDoorway(doorways: Doorway[], targetRoomType: string): Doorway | null {
-  if (!doorways.length) return null
-  const target = targetRoomType.toLowerCase()
-  const exact  = doorways.find(d =>
-    d.leads_to.toLowerCase().includes(target) || target.includes(d.leads_to.toLowerCase()),
-  )
-  return exact ?? doorways[0]
-}
-
-function deduplicate<T extends { fromSceneId: string; yaw: number; confidence_hint: number }>(
-  suggestions: T[],
-): T[] {
-  const result: T[] = []
-  for (const s of suggestions) {
-    const isDuplicate = result.some(r =>
-      r.fromSceneId === s.fromSceneId && angularDist(r.yaw, s.yaw) < DEDUP_MIN_ANGLE_RAD,
-    )
-    if (!isDuplicate) result.push(s)
-  }
-  return result
-}
-
-// ── Connectivity guarantee ─────────────────────────────────────────────────
-// Ensures every scene has at least one outgoing AND one incoming navigation link.
-// If the AI missed a doorway in a scene, that scene becomes a dead end.
-// This function detects isolated scenes and inserts fallback links so the tour
-// is always fully traversable — no scene is ever unreachable.
-type NavSuggestion = {
-  fromSceneId: string; fromSceneName: string
-  toSceneId:   string; toSceneName:   string
-  yaw: number; pitch: number
-  label: string; doorwayDescription: string
-  icon: string; scale: number
-  confidence_hint: number
-}
-
-function ensureFullConnectivity(
-  scenes: Array<{ id: string; name: string }>,
-  suggestions: NavSuggestion[],
-  existingLinkedPairs: Set<string>,
-): NavSuggestion[] {
-  const extra: NavSuggestion[] = []
-
-  // Build outgoing and incoming sets from existing links + new suggestions
-  const outgoing = new Map<string, Set<string>>()
-  const incoming = new Map<string, Set<string>>()
-  for (const s of scenes) {
-    outgoing.set(s.id, new Set())
-    incoming.set(s.id, new Set())
-  }
-
-  for (const pair of existingLinkedPairs) {
-    const [from, to] = pair.split(':')
-    outgoing.get(from)?.add(to)
-    incoming.get(to)?.add(from)
-  }
-
-  for (const s of suggestions) {
-    outgoing.get(s.fromSceneId)?.add(s.toSceneId)
-    incoming.get(s.toSceneId)?.add(s.fromSceneId)
-  }
-
-  // For each scene, ensure it has at least one outgoing AND one incoming link
-  for (let i = 0; i < scenes.length; i++) {
-    const scene    = scenes[i]
-    const hasOut   = (outgoing.get(scene.id)?.size ?? 0) > 0
-    const hasIn    = (incoming.get(scene.id)?.size ?? 0) > 0
-
-    // Find the best neighbour to connect to (prefer adjacent in sequence)
-    const candidates = [
-      i + 1 < scenes.length ? scenes[i + 1] : null,
-      i - 1 >= 0            ? scenes[i - 1] : null,
-    ].filter((c): c is typeof scenes[number] => c !== null)
-
-    if (!hasOut && candidates.length > 0) {
-      const target = candidates[0]
-      // Skip if this pair is already covered by existing links
-      if (!existingLinkedPairs.has(`${scene.id}:${target.id}`)) {
-        extra.push({
-          fromSceneId:        scene.id,
-          fromSceneName:      scene.name,
-          toSceneId:          target.id,
-          toSceneName:        target.name,
-          yaw:                0,                 // front-facing — best guess
-          pitch:              DEFAULT_PITCH_RAD,
-          confidence_hint:    40,                // marked low so it sorts last
-          label:              titleCase(target.name || 'Next Room'),
-          doorwayDescription: 'Continue tour →',
-          icon:               NAV_ICON,
-          scale:              1,
-        })
-        outgoing.get(scene.id)?.add(target.id)
-        incoming.get(target.id)?.add(scene.id)
-      }
-    }
-
-    if (!hasIn && candidates.length > 0) {
-      // Pick the neighbour that doesn't already have an outgoing link to this scene
-      const source = candidates.find(c => !outgoing.get(c.id)?.has(scene.id)) ?? candidates[0]
-      if (!existingLinkedPairs.has(`${source.id}:${scene.id}`)) {
-        extra.push({
-          fromSceneId:        source.id,
-          fromSceneName:      source.name,
-          toSceneId:          scene.id,
-          toSceneName:        scene.name,
-          yaw:                Math.PI,            // facing back — natural return direction
-          pitch:              DEFAULT_PITCH_RAD,
-          confidence_hint:    40,
-          label:              titleCase(scene.name || 'Return'),
-          doorwayDescription: '← Return',
-          icon:               NAV_ICON,
-          scale:              1,
-        })
-        outgoing.get(source.id)?.add(scene.id)
-        incoming.get(scene.id)?.add(source.id)
-      }
-    }
-  }
-
-  return extra
 }
 
 // ── Route ──────────────────────────────────────────────────────────────────
@@ -735,6 +682,7 @@ export default async function (fastify: FastifyInstance) {
           sceneGroup:       scene.group_name || null,
           prevSceneName:    i > 0               ? (scenes[i - 1].name || null) : null,
           nextSceneName:    i < scenes.length-1 ? (scenes[i + 1].name || null) : null,
+          allSceneNames:    scenes.map((s, k) => cleanText(s.name, 60).replace(/["<>]/g, '') || `Scene ${k + 1}`),
           existingHotspots: existing,
         })
 
@@ -765,59 +713,18 @@ export default async function (fastify: FastifyInstance) {
     const byId = Object.fromEntries(analyses.map(a => [a.sceneId, a]))
 
     // ── Navigation hotspot suggestions ─────────────────────────────────────
-    const rawNav: Array<{
-      fromSceneId: string; fromSceneName: string
-      toSceneId:   string; toSceneName:   string
-      yaw: number; pitch: number
-      confidence_hint: number
-      label: string; doorwayDescription: string
-      icon: string; scale: number
-    }> = []
-
-    for (let i = 0; i < scenes.length - 1; i++) {
-      const a = scenes[i], b = scenes[i + 1]
-      const analysisA = byId[a.id], analysisB = byId[b.id]
-      const labelB    = titleCase(analysisB?.room_type || b.name)
-      const labelA    = titleCase(analysisA?.room_type || a.name)
-
-      if (!linkedPairs.has(`${a.id}:${b.id}`)) {
-        const doorAB  = findMatchingDoorway(analysisA?.doorways ?? [], analysisB?.room_type ?? '')
-        const yawAB   = doorAB ? pctToYawRad(doorAB.position_pct) : 0
-        const pitchAB = doorAB ? doorAB.pitch_deg * DEG_TO_RAD : DEFAULT_PITCH_RAD
-        rawNav.push({
-          fromSceneId: a.id, fromSceneName: a.name,
-          toSceneId: b.id, toSceneName: b.name,
-          yaw: parseFloat(yawAB.toFixed(4)), pitch: parseFloat(pitchAB.toFixed(4)),
-          confidence_hint: doorAB?.confidence ?? 50,
-          label: navLabel(labelB, doorAB), doorwayDescription: doorAB?.leads_to ?? `Leads to ${labelB}`,
-          icon: NAV_ICON, scale: doorAB ? scaleFor(doorAB.size_deg, 'nav') : 1,
-        })
-      }
-
-      if (!linkedPairs.has(`${b.id}:${a.id}`)) {
-        const doorBA  = findMatchingDoorway(analysisB?.doorways ?? [], analysisA?.room_type ?? '')
-        const forwardYaw = rawNav.find(s => s.fromSceneId === a.id && s.toSceneId === b.id)?.yaw ?? 0
-        const yawBA   = doorBA ? pctToYawRad(doorBA.position_pct) : oppositeYawRad(forwardYaw)
-        const pitchBA = doorBA ? doorBA.pitch_deg * DEG_TO_RAD : DEFAULT_PITCH_RAD
-        rawNav.push({
-          fromSceneId: b.id, fromSceneName: b.name,
-          toSceneId: a.id, toSceneName: a.name,
-          yaw: parseFloat(yawBA.toFixed(4)), pitch: parseFloat(pitchBA.toFixed(4)),
-          confidence_hint: doorBA?.confidence ?? 50,
-          label: navLabel(labelA, doorBA), doorwayDescription: doorBA?.leads_to ?? `Back to ${labelA}`,
-          icon: NAV_ICON, scale: doorBA ? scaleFor(doorBA.size_deg, 'nav') : 1,
-        })
-      }
-    }
-
-    rawNav.sort((a, b) => b.confidence_hint - a.confidence_hint)
-    const deduped = deduplicate(rawNav)
-
-    // Guarantee full connectivity — every scene must have at least one outgoing
-    // and one incoming navigation link. If the AI missed doorways in a scene,
-    // insert fallback links to adjacent scenes so no room is ever a dead end.
-    const fallbacks = ensureFullConnectivity(scenes, deduped, linkedPairs)
-    const suggestions = [...deduped, ...fallbacks].map(({ confidence_hint: _c, ...s }) => s)
+    // Every walkable doorway is linked to the scene it leads to (see autoLinkPlan.ts),
+    // so scenes get one arrow per opening instead of only next/previous.
+    const planned = planNavLinks(
+      scenes.map(s => ({
+        id: s.id, name: s.name || '',
+        roomType: byId[s.id]?.room_type && byId[s.id].room_type !== 'room' ? byId[s.id].room_type : undefined,
+        newName:  byId[s.id]?.new_name || undefined,
+      })),
+      Object.fromEntries(analyses.map(a => [a.sceneId, a.doorways])),
+      linkedPairs,
+    )
+    const suggestions = planned.map(({ confidence_hint: _c, ...s }) => s)
 
     // ── Info hotspot suggestions ────────────────────────────────────────────
     const infoHotspots = analyses.flatMap(a => {

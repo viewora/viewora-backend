@@ -228,8 +228,11 @@ export async function writeFootprint(image: Buffer, patch: EquirectSource, quali
 export async function renderPanoViews(imageUrl: string): Promise<PanoView[]> {
   const res = await fetch(imageUrl)
   if (!res.ok) throw new Error(`Panorama fetch ${res.status}`)
-  const src = await decodeEquirect(Buffer.from(await res.arrayBuffer()))
+  return renderViewsFromSource(await decodeEquirect(Buffer.from(await res.arrayBuffer())))
+}
 
+/** The 6 analysis views from an already-decoded panorama (reuse it for close-ups). */
+export async function renderViewsFromSource(src: EquirectSource): Promise<PanoView[]> {
   const views: PanoView[] = []
   for (let i = 0; i < VIEW_YAWS_DEG.length; i++) {
     const spec = levelView(i)
