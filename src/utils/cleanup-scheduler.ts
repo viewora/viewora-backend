@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import { createUploadQueue } from '../queues/upload.queue.js'
+import { recoverStuckScenes, STUCK_AFTER_MS } from './sceneRecovery.js'
 import {
   recordCleanupDeletedItems,
   recordCleanupFailure,
@@ -343,55 +344,41 @@ export const stuckMediaRecoveryTask: CleanupTask = {
 }
 
 /**
- * Re-queue tile-scene jobs for scenes stuck in 'pending' for >10 minutes.
- * Covers worker crashes, missed jobs, and queue drops without requiring
- * manual intervention. Runs every 10 minutes.
+ * Re-queue tile-scene jobs for scenes stuck in pending/processing for >10
+ * minutes (worker crash, lost job, or a database outage that swallowed the
+ * job's "ready" write). Each scene is retried a few times, then marked failed.
+ * Runs every 10 minutes.
  */
 export const stuckSceneRecoveryTask: CleanupTask = {
   name: 'recover-stuck-scenes',
   schedule: '*/10 * * * *',
   execute: async (fastify: FastifyInstance) => {
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    const cutoff = new Date(Date.now() - STUCK_AFTER_MS).toISOString()
 
     const { data: stuckScenes, error } = await fastify.supabase
       .from('scenes')
-      .select('id, space_id, raw_image_url, properties!inner(user_id)')
-      .eq('status', 'pending')
-      .lt('updated_at', tenMinutesAgo)
-      .not('raw_image_url', 'is', null)
+      .select('id, space_id, raw_image_url, status, updated_at, created_at, properties!inner(user_id)')
+      .in('status', ['pending', 'processing'])
+      .lt('updated_at', cutoff)
+      .limit(200)
 
     if (error) {
       fastify.log.error({ error: error.message }, 'recover-stuck-scenes: query failed')
       return
     }
-
     if (!stuckScenes?.length) return
 
-    fastify.log.warn({ count: stuckScenes.length }, 'recover-stuck-scenes: re-queuing stuck tile jobs')
+    fastify.log.warn({ count: stuckScenes.length }, 'recover-stuck-scenes: recovering stuck scenes')
+    const userIdBySpace: Record<string, string | undefined> = {}
+    for (const s of stuckScenes as any[]) userIdBySpace[s.space_id] = (s.properties as any)?.user_id
 
-    const uploadQueue = (fastify as any).uploadQueue
-    if (!uploadQueue) {
-      fastify.log.error('recover-stuck-scenes: uploadQueue not available')
-      return
-    }
-
-    for (const scene of stuckScenes) {
-      const userId = (scene.properties as any)?.user_id
-      try {
-        await uploadQueue.add('tile-scene', {
-          sceneId: scene.id,
-          rawImageUrl: scene.raw_image_url,
-          spaceId: scene.space_id,
-          userId,
-        }, {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 5000 },
-        })
-        fastify.log.info({ sceneId: scene.id }, 'recover-stuck-scenes: re-queued tile-scene job')
-      } catch (err: any) {
-        fastify.log.error({ sceneId: scene.id, error: err?.message }, 'recover-stuck-scenes: failed to re-queue')
-      }
-    }
+    const result = await recoverStuckScenes(stuckScenes as any[], userIdBySpace, {
+      supabase: fastify.supabase,
+      queue: (fastify as any).uploadQueue,
+      redis: (fastify as any).redis,
+      log: fastify.log,
+    })
+    fastify.log.info(result, 'recover-stuck-scenes: done')
   },
 }
 

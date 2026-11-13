@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { invalidateSpaceCache, invalidateTourCache, purgeSceneTiles } from '../utils/cache.js'
 import { checkUserQuota, canCreateScene, quotaLimitMessage } from '../utils/quotas.js'
+import { recoverStuckScenes } from '../utils/sceneRecovery.js'
 
 // ── Param schemas ─────────────────────────────────────────────
 const sceneParamsSchema = z.object({ sceneId: z.string().uuid() })
@@ -457,7 +458,7 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     // Fetch all scene IDs for this space
     const { data: sceneRows } = await fastify.supabase
       .from('scenes')
-      .select('id, order_index, status, updated_at')
+      .select('id, space_id, order_index, status, updated_at, created_at, raw_image_url')
       .eq('space_id', params.spaceId)
       .order('order_index', { ascending: true })
 
@@ -465,6 +466,8 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     let orphansRemoved = 0
     let reordered = 0
     let stuckReset = 0
+    let stuckRequeued = 0
+    let stuckFailed = 0
 
     if (sceneIds.length) {
       // 1. Remove orphaned scene_link hotspots (target_scene_id IS NULL)
@@ -485,18 +488,14 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
         )
       )
 
-      // 3. Reset scenes stuck in pending/processing for >15 minutes
-      const stuckCutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString()
-      const stuck = (sceneRows ?? []).filter(
-        s => (s.status === 'pending' || s.status === 'processing') && s.updated_at < stuckCutoff
-      )
-      if (stuck.length) {
-        await fastify.supabase
-          .from('scenes')
-          .update({ status: 'failed' })
-          .in('id', stuck.map(s => s.id))
-        stuckReset = stuck.length
-      }
+      // 3. Scenes stuck in pending/processing (an outage or restart cut their
+      // job short): put them back on the tile queue; give up after a few tries.
+      const recovery = await recoverStuckScenes(sceneRows as any[] ?? [], { [params.spaceId]: userId }, {
+        supabase: fastify.supabase, queue: fastify.uploadQueue, redis: fastify.redis as any, log: fastify.log,
+      })
+      stuckRequeued = recovery.requeued
+      stuckFailed = recovery.failed
+      stuckReset = stuckRequeued + stuckFailed
     }
 
     if (orphansRemoved || reordered || stuckReset) {
@@ -504,7 +503,7 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
     }
 
     fastify.log.info({ spaceId: params.spaceId, orphansRemoved, reordered, stuckReset }, '[repair] complete')
-    return reply.send({ orphansRemoved, reordered, stuckReset })
+    return reply.send({ orphansRemoved, reordered, stuckReset, stuckRequeued, stuckFailed })
   })
 
   // ── REPROCESS SCENES ─────────────────────────────────────

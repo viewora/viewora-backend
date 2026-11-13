@@ -37,6 +37,15 @@ function parseExifCaptureDate(exifBuf: Buffer): Date | null {
   } catch { return null }
 }
 
+/**
+ * supabase-js reports a failed write in `error` instead of throwing. A status
+ * write lost to a database outage used to let the job "succeed" and leave the
+ * scene stuck in pending forever; throwing makes BullMQ retry the job instead.
+ */
+function mustWrite(res: { error?: { message?: string } | null } | null | undefined, what: string) {
+  if (res?.error) throw new Error(`${what}: ${res.error.message || 'database write failed'}`)
+}
+
 export async function processTileScene(
   s3: S3Client,
   supabase: any,
@@ -128,11 +137,11 @@ export async function processTileScene(
 
     // Mark scene ready immediately with thumbnail so editor isn't blocked
     const thumbUrl = `${cdnBase}/${thumbKey}`
-    await supabase.from('scenes').update({
+    mustWrite(await supabase.from('scenes').update({
       status: 'ready',
       thumbnail_url: thumbUrl,
       ...(capturedAt ? { captured_at: capturedAt.toISOString() } : {}),
-    }).eq('id', sceneId)
+    }).eq('id', sceneId), 'mark scene ready (thumbnail)')
 
     // Auto-set tour cover image and 360 flag if missing
     await supabase.from('properties')
@@ -348,7 +357,7 @@ export async function processTileScene(
     }
 
     // 6. Update BOTH tables to unlock publishing
-    await Promise.all([
+    const [sceneWrite, mediaWrite] = await Promise.all([
       // Update the scene itself
       supabase.from('scenes').update({
         tile_manifest_url:              tileBase,
@@ -372,6 +381,8 @@ export async function processTileScene(
         processed_at:      new Date().toISOString()
       }).eq('storage_key', new URL(rawImageUrl).pathname.replace(/^\//, ''))
     ])
+    mustWrite(sceneWrite, 'save tile manifest')
+    mustWrite(mediaWrite, 'mark media complete')
     
     // Invalidate the public cache so the viewer switches to tiled mode immediately
     if (redis) {
