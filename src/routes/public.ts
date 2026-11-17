@@ -109,7 +109,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
           height,
           position_x,
           position_y,
-          hotspots (
+          hotspots!scene_id (
             *
           )
         )
