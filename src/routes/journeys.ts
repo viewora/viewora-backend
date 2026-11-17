@@ -19,15 +19,20 @@ export const MAX_SENTENCES = 20
 const localId = z.string().trim().min(1).max(40).regex(/^[\w-]+$/)
 const angle = z.number().finite().min(-20).max(20)
 
+// Where to look: radians as PSV reports them; zoom = PSV level 0 (wide) – 100 (closest), absent = wide.
+const View = z.object({ yaw: angle, pitch: angle, zoom: z.number().min(0).max(100).optional() })
+
 export const JourneyStep = z.object({
   id: localId,
   title: z.string().trim().max(80),
   scene_id: z.string().uuid().nullable(),
-  // zoom: PSV zoom level 0 (wide) – 100 (closest); absent = wide.
-  view: z.object({ yaw: angle, pitch: angle, zoom: z.number().min(0).max(100).optional() }).nullable().optional(),
+  /** Arrival view, which is also line 1's. */
+  view: View.nullable().optional(),
   sentences: z.array(z.object({
     id: localId,
     text: z.string().max(400),
+    /** Where to look while this line is read (lines 2+); absent = keep looking. */
+    view: View.nullable().optional(),
   })).max(MAX_SENTENCES),
 })
 

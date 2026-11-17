@@ -99,6 +99,13 @@ test('a step keeps its zoom; out-of-range zoom is refused', () => {
   assert.equal(JourneyStep.safeParse({ ...step, view: { yaw: 0, pitch: 0, zoom: 140 } }).success, false)
 })
 
+test('each line can keep its own facing', () => {
+  const r = JourneyStep.safeParse({ ...step, sentences: [{ id: 'a', text: 'Hi' }, { id: 'b', text: 'Pharmacy on the left.', view: { yaw: -1.5, pitch: 0, zoom: 40 } }] })
+  assert.equal(r.success, true)
+  assert.deepEqual((r as any).data.sentences[1].view, { yaw: -1.5, pitch: 0, zoom: 40 })
+  assert.equal(JourneyStep.safeParse({ ...step, sentences: [{ id: 'a', text: 'x', view: { yaw: 99, pitch: 0 } }] }).success, false)
+})
+
 test('updating with a malformed body is refused before any lookup', async () => {
   const app = await buildApp(supabaseStub(() => { throw new Error('should not query') }))
   const res = await app.inject({ method: 'PUT', url: `/journeys/${JOURNEY_ID}`, headers: auth, payload: { steps: 'nope' } })
