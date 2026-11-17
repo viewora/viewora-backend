@@ -92,6 +92,13 @@ test('step validation: bad scene id, overlong text and odd ids are refused', () 
   assert.equal(JourneyStep.safeParse({ ...step, scene_id: null, view: null }).success, true)
 })
 
+test('a step keeps its zoom; out-of-range zoom is refused', () => {
+  const zoomed = JourneyStep.safeParse({ ...step, view: { yaw: 1.2, pitch: -0.1, zoom: 62.5 } })
+  assert.equal(zoomed.success, true)
+  assert.equal((zoomed as any).data.view.zoom, 62.5)
+  assert.equal(JourneyStep.safeParse({ ...step, view: { yaw: 0, pitch: 0, zoom: 140 } }).success, false)
+})
+
 test('updating with a malformed body is refused before any lookup', async () => {
   const app = await buildApp(supabaseStub(() => { throw new Error('should not query') }))
   const res = await app.inject({ method: 'PUT', url: `/journeys/${JOURNEY_ID}`, headers: auth, payload: { steps: 'nope' } })

@@ -23,7 +23,8 @@ export const JourneyStep = z.object({
   id: localId,
   title: z.string().trim().max(80),
   scene_id: z.string().uuid().nullable(),
-  view: z.object({ yaw: angle, pitch: angle }).nullable().optional(),
+  // zoom: PSV zoom level 0 (wide) – 100 (closest); absent = wide.
+  view: z.object({ yaw: angle, pitch: angle, zoom: z.number().min(0).max(100).optional() }).nullable().optional(),
   sentences: z.array(z.object({
     id: localId,
     text: z.string().max(400),
