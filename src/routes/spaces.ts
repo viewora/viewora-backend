@@ -69,7 +69,7 @@ const listingFactsSchema = {
 
 const createSpaceBodySchema = z.object({
   title: z.string().trim().min(1).max(120),
-  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'land', 'other']),
+  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'land', 'other', 'hospital']),
   description: z.string().max(2000).optional(),
   location_text: z.string().max(200).optional(),
   slug: slugSchema.optional(),
@@ -91,7 +91,7 @@ const updateSpaceBodySchema = z.object({
   phone: z.string().max(50).nullable().optional(),
   email: z.string().email().max(255).nullable().optional(),
   slug: slugSchema.nullable().optional(),
-  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'land', 'other']).optional(),
+  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'land', 'other', 'hospital']).optional(),
   lead_form_enabled: z.boolean().optional(),
   branding_enabled: z.boolean().optional(),
   cta_enabled: z.boolean().optional(),
@@ -109,7 +109,7 @@ const updateSpaceBodySchema = z.object({
 // description should reflect what's on screen, not stale saved values.
 const generateDescriptionBodySchema = z.object({
   title: z.string().max(120).optional(),
-  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'land', 'other']).optional(),
+  space_type: z.enum(['residential', 'commercial', 'hospitality', 'education', 'automotive', 'land', 'other', 'hospital']).optional(),
   location_text: z.string().max(200).optional(),
   ...listingFactsSchema,
 })

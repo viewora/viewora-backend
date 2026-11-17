@@ -5,6 +5,7 @@ import { LISTING_SELECT_FRAGMENT, mapListingRow } from '../utils/listingMapper.j
 import { mergeSceneGroups, publicAerialMaps } from './aerial.js'
 import { mergeScenePlanPins, publicFloorPlans } from './floorPlans.js'
 import { publicVehicleSpins } from './vehicleViews.js'
+import { publicJourneys } from './journeys.js'
 import { ownerEntitlements } from '../utils/quotas.js'
 import { shareImageFor, shareMeta, shareMetaKey, type ShareMeta } from '../utils/shareImage.js'
 
@@ -145,8 +146,9 @@ export default async function publicRoutes(fastify: FastifyInstance) {
     await mergeSceneGroups(fastify, params.id, formattedData.scenes)
     const floor_plans = await publicFloorPlans(fastify, params.id)
     if (floor_plans.length) await mergeScenePlanPins(fastify, params.id, formattedData.scenes)
+    const journeys = await publicJourneys(fastify, params.id)
     reply.header('X-Cache', 'BYPASS')
-    return reply.send({ tour: { ...formattedData, aerial_maps, floor_plans } })
+    return reply.send({ tour: { ...formattedData, aerial_maps, floor_plans, journeys } })
   })
 
   // ── SITEMAP DATA ──────────────────────────────────────────
@@ -353,7 +355,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       // after another they cost ~2.5 s per request (a database round trip each);
       // in parallel the slowest one sets the time.
       const spaceId = data.space.id
-      const [galleryRes, ownerRes, aerialMaps, floorPlans, vehicleSpins] = await Promise.all([
+      const [galleryRes, ownerRes, aerialMaps, floorPlans, vehicleSpins, journeys] = await Promise.all([
         fastify.supabase
           .from('property_media')
           .select('id, public_url, is_primary, sort_order')
@@ -380,6 +382,8 @@ export default async function publicRoutes(fastify: FastifyInstance) {
         publicFloorPlans(fastify, spaceId),
         // Exterior spins of a single car (each with its photos) — same.
         data.space.space_type === 'automotive' ? publicVehicleSpins(fastify, spaceId) : Promise.resolve([]),
+        // Published guided visits (patient journeys) — same.
+        publicJourneys(fastify, spaceId),
         // Scene categories — merged onto the scene objects (different field from the pins below).
         mergeSceneGroups(fastify, spaceId, data.scenes),
       ])
@@ -406,6 +410,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       data.seller = (ownerRow as any)?.profiles ?? null
       data.aerial_maps = aerialMaps
       data.floor_plans = floorPlans
+      data.journeys = journeys
       data.vehicle_spins = vehicleSpins
       // Older app builds read one flat list: give them the first spin.
       data.vehicle_views = (vehicleSpins as any[])[0]?.views ?? []
