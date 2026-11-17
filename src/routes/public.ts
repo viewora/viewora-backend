@@ -118,7 +118,10 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       .single()
 
     if (spaceDataError || !spaceData) {
-      return reply.code(404).send({ statusMessage: 'Tour data unavailable' })
+      // Owner-only route: say why, so a failing tour can be diagnosed.
+      if (spaceDataError) fastify.log.error({ err: spaceDataError, spaceId: params.id }, 'preview tour query failed')
+      const why = spaceDataError ? ` (${spaceDataError.code ?? 'error'}: ${spaceDataError.message})` : ''
+      return reply.code(404).send({ statusMessage: `Tour data unavailable${why}` })
     }
 
     // Map to match the get_tour_data RPC output shape
