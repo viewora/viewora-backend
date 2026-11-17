@@ -39,6 +39,26 @@ async function batchGetUsers(
   )
 }
 
+/**
+ * Users who clicked "unsubscribe" on a marketing email. Only the nudge,
+ * weekly digest and monthly report respect this; billing/account emails don't.
+ * On query failure (e.g. migration-email-unsubscribe.sql not run yet) it
+ * returns an empty set so the crons keep working.
+ */
+async function getOptedOutUserIds(fastify: FastifyInstance, userIds: string[]): Promise<Set<string>> {
+  if (!userIds.length) return new Set()
+  const { data, error } = await fastify.supabase
+    .from('profiles')
+    .select('id')
+    .in('id', userIds)
+    .not('marketing_emails_opted_out_at', 'is', null)
+  if (error) {
+    fastify.log.warn({ error: error.message }, 'getOptedOutUserIds failed — sending to everyone')
+    return new Set()
+  }
+  return new Set((data ?? []).map(r => r.id as string))
+}
+
 export default async function cronRoutes(fastify: FastifyInstance) {
 
   // POST /cron/nudge
@@ -86,14 +106,18 @@ export default async function cronRoutes(fastify: FastifyInstance) {
       return reply.send({ sent: 0 })
     }
 
-    const userMap = await batchGetUsers(fastify, unpublishedProfiles.map(p => p.id))
+    const [userMap, optedOut] = await Promise.all([
+      batchGetUsers(fastify, unpublishedProfiles.map(p => p.id)),
+      getOptedOutUserIds(fastify, unpublishedProfiles.map(p => p.id)),
+    ])
 
     let sent = 0
     for (const profile of unpublishedProfiles) {
       try {
+        if (optedOut.has(profile.id)) continue
         const user = userMap.get(profile.id)
         if (!user?.email) continue
-        await sendNoPublishNudgeEmail({ ownerEmail: user.email, name: profile.full_name })
+        await sendNoPublishNudgeEmail({ ownerEmail: user.email, userId: profile.id, name: profile.full_name })
         sent++
       } catch (err) {
         fastify.log.error(err, `cron/nudge: failed for user ${profile.id}`)
@@ -195,14 +219,19 @@ export default async function cronRoutes(fastify: FastifyInstance) {
       })
     }
 
-    const userMap = await batchGetUsers(fastify, Array.from(byOwner.keys()))
+    const ownerIds = Array.from(byOwner.keys())
+    const [userMap, optedOut] = await Promise.all([
+      batchGetUsers(fastify, ownerIds),
+      getOptedOutUserIds(fastify, ownerIds),
+    ])
 
     let sent = 0
     for (const [userId, userLeads] of byOwner) {
       try {
+        if (optedOut.has(userId)) continue
         const user = userMap.get(userId)
         if (!user?.email) continue
-        await sendWeeklyLeadDigestEmail({ ownerEmail: user.email, name: user.name, leads: userLeads, periodStart, periodEnd })
+        await sendWeeklyLeadDigestEmail({ ownerEmail: user.email, userId, name: user.name, leads: userLeads, periodStart, periodEnd })
         sent++
       } catch (err) {
         fastify.log.error(err, `cron/weekly-digest: failed for user ${userId}`)
@@ -349,11 +378,16 @@ export default async function cronRoutes(fastify: FastifyInstance) {
       tourMap.set(row.property_id, existing)
     }
 
-    const userMap = await batchGetUsers(fastify, Array.from(byUser.keys()))
+    const reportUserIds = Array.from(byUser.keys())
+    const [userMap, optedOut] = await Promise.all([
+      batchGetUsers(fastify, reportUserIds),
+      getOptedOutUserIds(fastify, reportUserIds),
+    ])
 
     let sent = 0
     for (const [userId, tourMap] of byUser) {
       try {
+        if (optedOut.has(userId)) continue
         const user = userMap.get(userId)
         if (!user?.email) continue
 
@@ -361,7 +395,7 @@ export default async function cronRoutes(fastify: FastifyInstance) {
         const totalViews = tours.reduce((s, t) => s + t.views, 0)
         const totalLeads = tours.reduce((s, t) => s + t.leads, 0)
 
-        await sendMonthlyReportEmail({ ownerEmail: user.email, name: user.name, monthLabel, totalViews, totalLeads, topTours: tours })
+        await sendMonthlyReportEmail({ ownerEmail: user.email, userId, name: user.name, monthLabel, totalViews, totalLeads, topTours: tours })
         sent++
       } catch (err) {
         fastify.log.error(err, `cron/monthly-report: failed for user ${userId}`)

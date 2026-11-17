@@ -36,6 +36,7 @@ import carTourRoutes from './routes/carTour.js'
 import publicRoutes from './routes/public.js'
 import sellersRoutes from './routes/sellers.js'
 import cronRoutes from './routes/cron.js'
+import emailPreferencesRoutes from './routes/emailPreferences.js'
 import autolinkRoutes from './routes/autolink.js'
 import aiAssistantRoutes from './routes/aiAssistant.js'
 import captureRoutes from './routes/capture.js'
@@ -400,6 +401,7 @@ fastify.register(carTourRoutes)
 fastify.register(publicRoutes)
 fastify.register(sellersRoutes, { prefix: '/sellers' })
 fastify.register(cronRoutes)
+fastify.register(emailPreferencesRoutes)
 fastify.register(autolinkRoutes)
 fastify.register(aiAssistantRoutes)
 fastify.register(captureRoutes, { prefix: '/capture' })
