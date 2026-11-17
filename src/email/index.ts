@@ -1,4 +1,5 @@
 import { Resend } from 'resend'
+import { unsubscribeFor } from './unsubscribe.js'
 
 const FROM = 'Viewora <hello@viewora.software>'
 const APP_URL = 'https://app.viewora.software'
@@ -26,7 +27,7 @@ export function isEmailEnabled(): boolean {
 }
 
 // Shared header + footer wrapper used by every email
-function emailShell(content: string): string {
+function emailShell(content: string, opts: { unsubscribeUrl?: string } = {}): string {
   return `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #1a1a1a;">
 
@@ -65,6 +66,12 @@ function emailShell(content: string): string {
                  width="24" height="24" style="display: inline-block;" />
           </a>
         </div>
+        ${opts.unsubscribeUrl ? `
+        <p style="color: #9ca3af; font-size: 11px; margin: 16px 0 0 0; text-align: center;">
+          You're receiving this because you have a Viewora account.
+          <a href="${opts.unsubscribeUrl}" style="color: #9ca3af; text-decoration: underline;">Unsubscribe</a>
+          from tips and reports — billing and account emails will still arrive.
+        </p>` : ''}
       </div>
 
     </div>
@@ -193,6 +200,7 @@ export async function sendLimitWarningEmail(params: {
 // Fired from: cron/monthly-report — 1st of each month, previous month's performance
 export async function sendMonthlyReportEmail(params: {
   ownerEmail: string
+  userId?: string | null
   name?: string | null
   monthLabel: string
   totalViews: number
@@ -200,7 +208,7 @@ export async function sendMonthlyReportEmail(params: {
   topTours: Array<{ name: string; views: number; leads: number }>
 }): Promise<void> {
   if (!resend) return
-  const { ownerEmail, name, monthLabel, totalViews, totalLeads, topTours } = params
+  const { ownerEmail, userId, name, monthLabel, totalViews, totalLeads, topTours } = params
 
   const tourRows = topTours.slice(0, 5).map(t => `
     <tr>
@@ -210,8 +218,11 @@ export async function sendMonthlyReportEmail(params: {
     </tr>
   `).join('')
 
+  const unsub = unsubscribeFor(userId)
+
   await resend.emails.send({
     from: FROM,
+    headers: unsub.headers,
     to: ownerEmail,
     subject: `Your Viewora report for ${monthLabel}`,
     html: emailShell(`
@@ -253,7 +264,7 @@ export async function sendMonthlyReportEmail(params: {
       <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
         This report covers ${monthLabel}. Detailed stats are always available in your dashboard.
       </p>
-    `),
+    `, { unsubscribeUrl: unsub.url }),
   })
 }
 
@@ -408,13 +419,17 @@ export async function sendSubscriptionExpiredEmail(params: {
 // Fired from: cron job — users who signed up 7 days ago with no published tours
 export async function sendNoPublishNudgeEmail(params: {
   ownerEmail: string
+  userId?: string | null
   name?: string | null
 }): Promise<void> {
   if (!resend) return
-  const { ownerEmail, name } = params
+  const { ownerEmail, userId, name } = params
+
+  const unsub = unsubscribeFor(userId)
 
   await resend.emails.send({
     from: FROM,
+    headers: unsub.headers,
     to: ownerEmail,
     subject: 'Your first tour is just a few clicks away',
     html: emailShell(`
@@ -440,7 +455,7 @@ export async function sendNoPublishNudgeEmail(params: {
       <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
         Need help getting started? Reply to this email — we'll walk you through it.
       </p>
-    `),
+    `, { unsubscribeUrl: unsub.url }),
   })
 }
 
@@ -492,13 +507,14 @@ export async function sendPlanExpiryReminderEmail(params: {
 // Fired from: cron job — every Monday, aggregates leads from past 7 days per user
 export async function sendWeeklyLeadDigestEmail(params: {
   ownerEmail: string
+  userId?: string | null
   name?: string | null
   leads: Array<{ leadName: string; leadEmail: string; spaceName: string }>
   periodStart: Date
   periodEnd: Date
 }): Promise<void> {
   if (!resend) return
-  const { ownerEmail, name, leads, periodStart, periodEnd } = params
+  const { ownerEmail, userId, name, leads, periodStart, periodEnd } = params
   if (leads.length === 0) return
 
   const dateRange = `${periodStart.toLocaleDateString('en-KE', { dateStyle: 'medium' })} – ${periodEnd.toLocaleDateString('en-KE', { dateStyle: 'medium' })}`
@@ -516,8 +532,11 @@ export async function sendWeeklyLeadDigestEmail(params: {
     </tr>
   `).join('')
 
+  const unsub = unsubscribeFor(userId)
+
   await resend.emails.send({
     from: FROM,
+    headers: unsub.headers,
     to: ownerEmail,
     subject: `Your weekly digest — ${leads.length} lead${plural} this week`,
     html: emailShell(`
@@ -545,7 +564,7 @@ export async function sendWeeklyLeadDigestEmail(params: {
       <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
         This digest is sent every week. Full contact details are in your dashboard.
       </p>
-    `),
+    `, { unsubscribeUrl: unsub.url }),
   })
 }
 
@@ -673,7 +692,7 @@ export async function sendCaptureRequestEmail(params: {
   // Notification to the Viewora ops team
   await resend.emails.send({
     from: FROM,
-    to: 'vieworasoftware@gmail.com',
+    to: 'info@viewora.software',
     subject: `New Capture Booking — ${safeService} (${safePrice})`,
     html: emailShell(`
       <h2 style="font-size:20px;margin-top:0;">New capture booking request</h2>
