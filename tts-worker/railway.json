@@ -3,7 +3,7 @@
   "build": {
     "builder": "DOCKERFILE",
     "dockerfilePath": "Dockerfile",
-    "watchPatterns": ["tts-worker/**"]
+    "watchPatterns": ["/tts-worker/**"]
   },
   "deploy": {
     "startCommand": "python worker.py",

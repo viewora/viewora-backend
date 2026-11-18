@@ -21,7 +21,7 @@ RUN pip install --index-url https://download.pytorch.org/whl/cpu torch==2.6.0
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY *.py ./
+COPY *.py start.sh ./
 COPY fixtures ./fixtures
 # Bake the model weights, voices and English language data into the image.
 RUN python warmup.py

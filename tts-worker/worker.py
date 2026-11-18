@@ -13,9 +13,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import threading
 import traceback
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+
+from dualstack import DualStackServer
 
 from generate import generate_narration
 from store import Bucket, Db, now_iso
@@ -27,10 +30,23 @@ log = logging.getLogger("tts")
 _synth = Synth()
 _lock = threading.Lock()
 _again = threading.Event()
+_current: str | None = None  # the job being recorded right now, if any
+
+
+REQUIRED = ("SUPABASE_URL", "SUPABASE_SERVICE_KEY", "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID",
+            "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME")
+
+
+def missing_settings() -> list[str]:
+    return [k for k in REQUIRED if not os.environ.get(k, "").strip()]
 
 
 def drain():
     """Record every queued job, one at a time. Safe to call any number of times."""
+    missing = missing_settings()
+    if missing:
+        log.error("can't record: missing variables %s (set them on this Railway service)", ", ".join(missing))
+        return
     if not _lock.acquire(blocking=False):
         _again.set()  # already running: go round once more when done
         return
@@ -57,7 +73,9 @@ def drain():
 
 
 def run_job(job: dict, db: Db, bucket: Bucket):
+    global _current
     log.info("job %s for journey %s", job["id"], job["journey_id"])
+    _current = job["id"]
     try:
         journey = db.journey(job["journey_id"])
         if not journey:
@@ -71,6 +89,21 @@ def run_job(job: dict, db: Db, bucket: Bucket):
     except Exception as e:
         traceback.print_exc()
         db.update_job(job["id"], status="failed", error=str(e)[:500], finished_at=now_iso())
+    finally:
+        _current = None
+
+
+def stop(*_):
+    """Railway is stopping us (redeploy or sleep): put an unfinished job back on the
+    list, so the next wake-up records the rest at once (finished lines are kept)."""
+    job = _current
+    if job:
+        try:
+            Db().update_job(job, status="queued", started_at=None)
+            log.info("stopping: job %s back on the list", job)
+        except Exception:
+            log.exception("stopping: could not put job %s back", job)
+    os._exit(0)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -98,9 +131,17 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     port = int(os.environ.get("PORT", "8080"))
+    # Railway stops a service with SIGTERM (redeploy, sleep). As PID 1, Python would
+    # ignore it and be killed 10 s later. A job cut short is picked up again next time.
+    signal.signal(signal.SIGTERM, stop)
+    missing = missing_settings()
+    if missing:
+        log.error("missing variables: %s. /health works, but nothing can be recorded until they're set.", ", ".join(missing))
+    if not os.environ.get("MEDIA_DOMAIN"):
+        log.warning("MEDIA_DOMAIN is not set: recordings will use the r2.dev address")
     threading.Thread(target=drain, daemon=True).start()  # work left from before the nap
-    # "::" listens on IPv6 too: Railway's private network is IPv6.
-    server = ThreadingHTTPServer(("::", port), Handler)
+    # IPv6 and IPv4 on every address: Railway's private network is IPv6.
+    server = DualStackServer(("::", port), Handler)
     log.info("tts worker listening on %d", port)
     server.serve_forever()
 
