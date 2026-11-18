@@ -10,6 +10,10 @@ import re
 
 MODEL = "kokoro-82m-v1.0"
 DEFAULT_VOICE = "af_heart"
+# The voices a journey can use: exactly the ones baked into the image (warmup.py).
+# Same list in the API (src/utils/narration.ts) and the editor (shared/utils/journey.ts);
+# tests/test_voices.py checks they agree.
+VOICES = ("af_heart", "af_bella", "bf_emma", "am_michael")
 # Speaking speed, as text so both languages hash the same characters.
 SPEED = "1.0"
 

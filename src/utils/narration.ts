@@ -8,6 +8,9 @@ import type { FastifyInstance } from 'fastify'
 
 export const NARRATION_MODEL = 'kokoro-82m-v1.0'
 export const DEFAULT_VOICE = 'af_heart'
+/** Voices a journey can use: exactly the ones baked into the worker image.
+ *  Same list in tts-worker/narration.py and the app; tts-worker/tests/test_voices.py checks. */
+export const VOICES = ['af_heart', 'af_bella', 'bf_emma', 'am_michael'] as const
 /** Speaking speed, as text so both languages hash the same characters. */
 export const NARRATION_SPEED = '1.0'
 
@@ -104,6 +107,9 @@ export function wakeNarrationWorker(fastify: FastifyInstance): boolean {
         fastify.log.warn({ err: err?.message }, 'TTS worker wake failed')
       }
     }
+    // Gave up: almost always a wrong TTS_WORKER_URL or the worker isn't deployed.
+    // The job stays queued and is recorded whenever the worker next starts.
+    fastify.log.error({ url: `${base}/wake` }, 'TTS worker unreachable: check TTS_WORKER_URL (http://<private domain>:<PORT>) and that the worker is deployed')
   })()
   return true
 }

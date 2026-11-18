@@ -3,9 +3,10 @@ and the English language model into the image, so a cold start after a nap
 loads from disk instead of the internet."""
 import os
 
+from narration import VOICES as OFFERED
 from synth import Synth
 
-VOICES = os.environ.get("WARM_VOICES", "af_heart,af_bella,bf_emma").split(",")
+VOICES = os.environ.get("WARM_VOICES", ",".join(OFFERED)).split(",")
 
 if __name__ == "__main__":
     s = Synth()

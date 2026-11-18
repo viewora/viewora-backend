@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { checkUserQuota } from '../utils/quotas.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
-import { DEFAULT_VOICE, audioFor, journeyLines, wakeNarrationWorker, withAudio } from '../utils/narration.js'
+import { DEFAULT_VOICE, VOICES, audioFor, journeyLines, wakeNarrationWorker, withAudio } from '../utils/narration.js'
 
 // Journeys: self-playing guided visits through a tour, step by step, timed by
 // narration (see migration-journeys.sql). Made for hospitals first: "what
@@ -49,6 +49,8 @@ export const UpdateJourneyBody = z.object({
   steps: z.array(JourneyStep).max(MAX_STEPS).optional(),
   is_published: z.boolean().optional(),
   order_index: z.number().int().min(0).max(1000).optional(),
+  /** Who reads the lines. Changing it means lines need a voice again (old recordings are kept). */
+  narration_voice: z.enum(VOICES).optional(),
 })
 
 // '*': narration_voice only exists once migration-narration.sql has run.
@@ -154,6 +156,10 @@ export default async function journeyRoutes(fastify: FastifyInstance) {
       .single()
     if (error) {
       fastify.log.error(error)
+      // Choosing a voice before migration-narration.sql has run: say so instead of a bare 500.
+      if (body.narration_voice && /narration_voice/.test(String(error.message || ''))) {
+        return reply.code(503).send({ statusMessage: NARRATION_NOT_ENABLED })
+      }
       return reply.code(500).send({ statusMessage: 'Failed to save the journey' })
     }
     await invalidateSpaceCache(fastify, owned.space_id)

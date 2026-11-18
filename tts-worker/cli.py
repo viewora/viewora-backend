@@ -17,6 +17,7 @@ import sys
 import time
 
 from generate import generate_narration
+from narration import VOICES
 from synth import Synth
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -26,7 +27,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="generate-narration", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tour", help="space (tour) id: every journey in it")
     ap.add_argument("--journey", help="only this journey")
-    ap.add_argument("--voice", help="Kokoro voice id, e.g. af_heart, af_bella, bf_emma")
+    ap.add_argument("--voice", choices=VOICES, help="Kokoro voice id (default: the journey's own voice)")
     ap.add_argument("--force", action="store_true", help="re-record lines that already have a voice")
     ap.add_argument("--fixture", help="local trial: a JSON file with {title, steps}")
     ap.add_argument("--out", help="local trial: folder for the MP3s")

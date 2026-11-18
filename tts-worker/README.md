@@ -74,23 +74,39 @@ for anything except `--fixture`.
 
 ## Voices
 
-Set per journey (`journeys.narration_voice`, default `af_heart`, the only voice
-Kokoro grades overall A). The image ships with `af_heart`, `af_bella` (US) and
-`bf_emma` (UK); add more with the `WARM_VOICES` build arg/env in `warmup.py`.
+Chosen per journey in the editor's Voice box (`journeys.narration_voice`,
+default `af_heart`, the only voice Kokoro grades overall A). Offered: `af_heart`,
+`af_bella` (US), `bf_emma` (UK), `am_michael` (US, man): exactly the ones
+baked into the image. The list lives in `narration.py`, `src/utils/narration.ts`
+and the app's `shared/utils/journey.ts`; `tests/test_voices.py` fails if they
+disagree. Editor samples: `viewora-app/public/voices/<id>.mp3`. Changing a
+journey's voice keeps old recordings, so switching back costs nothing.
 To compare: `python cli.py --fixture fixtures/hospital-sample.json --out /out --voice bf_emma`.
 
 ## Deploying on Railway
 
+Railway stops reading `railway.json` on 2026-12-01 and new services can't opt
+in, so set the service up in the dashboard (`railway.json` here only mirrors
+those settings). Full click-by-click steps with a check after each, plus a
+troubleshooting table: `Notes/2026-11-18 Recorded voices - setup steps, fixes and ideas.md`
+at the top of the project folder. In short:
+
 1. Run `src/utils/migration-narration.sql` in Supabase (after `migration-journeys.sql`).
-2. New service in the same project, from this repo, **Root Directory = `tts-worker`**.
-   Railway picks up `tts-worker/railway.json` (Dockerfile build, `sleepApplication: true`).
-3. Variables: the seven above (reference the API service's variables).
-4. Settings → Networking: note the private domain, e.g. `tts-worker.railway.internal`.
-   No public domain is needed.
-5. On the **API** service add `TTS_WORKER_URL=http://tts-worker.railway.internal:8080`
-   (the worker listens on `$PORT`, default 8080; set `PORT=8080` on it to be sure).
-6. Set the worker's memory limit to at least **2 GB** (model + PyTorch peak).
-7. Press Generate voice on a journey; the worker's logs show each line and its speed.
+2. New → Empty Service, named **`tts-worker`** (its private address is
+   `tts-worker.railway.internal`). Root Directory `/tts-worker`, Connect Repo
+   (this repo, `main`), Watch Paths `/tts-worker/**`, Healthcheck Path `/health`,
+   **Serverless on**, no public domain. Memory: plan default; never below 2 GB.
+3. Variables: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, the four `R2_*`,
+   `MEDIA_DOMAIN` as references to the API's (`${{<api service>.NAME}}`), and `PORT=8080`.
+4. On the **API**: `TTS_WORKER_URL=http://tts-worker.railway.internal:8080`.
+5. Generate voice on a journey; the worker logs `POST /wake`, then each line and its speed.
+
+The worker logs `missing variables: …` at start if any are unset, and the API
+logs `TTS worker unreachable` if `TTS_WORKER_URL` is wrong. It listens on IPv6
+and IPv4 (Railway's private network is IPv6), stops in well under a second on
+SIGTERM, and puts an unfinished job back on the list when stopped. `start.sh`
+exists so it also starts correctly if the repository root's `railway.json`
+(`sh start.sh`) is ever applied to it.
 
 **Fallback if wake-ups ever prove unreliable:** give the same service a cron
 schedule `*/5 * * * *` and start command `python -c "import worker; worker.drain()"`;

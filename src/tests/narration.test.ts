@@ -110,3 +110,38 @@ test('generate: force re-records every line; a running job is reused', async () 
   assert.equal(again.jobs.length, 0)
   assert.equal(again.res.json().job.id, 'job-0')
 })
+
+async function put(body: any, err?: any) {
+  const writes: any[] = []
+  const sb = stub({ journey: { id: JOURNEY_ID, space_id: SPACE_ID } }, writes)
+  if (err) {
+    const from = sb.from
+    sb.from = (t: string) => { const b: any = from(t); if (t === 'journeys') { const u = b.update; b.update = (r: any) => { u(r); b.single = async () => ({ data: null, error: err }); return b } } return b }
+  }
+  const a = await app(sb)
+  const res = await a.inject({ method: 'PUT', url: `/journeys/${JOURNEY_ID}`, payload: body, headers: { authorization: 'Bearer t' } })
+  return { res, updates: writes.filter(w => w.table === 'journeys' && w.op === 'update') }
+}
+
+test('voice picker: a listed voice is saved; anything else is refused', async () => {
+  const ok = await put({ narration_voice: 'bf_emma' })
+  assert.equal(ok.res.statusCode, 200)
+  assert.equal(ok.updates[0].row.narration_voice, 'bf_emma')
+  const bad = await put({ narration_voice: 'zf_xiaobei' }) // a real Kokoro voice, but not in the image
+  assert.equal(bad.res.statusCode, 400)
+  assert.equal(bad.updates.length, 0)
+})
+
+test('voice picker before the migration: a clear 503, not a bare 500', async () => {
+  const { res } = await put({ narration_voice: 'af_bella' }, { message: "Could not find the 'narration_voice' column of 'journeys'" })
+  assert.equal(res.statusCode, 503)
+  assert.match(res.json().statusMessage, /migration/)
+})
+
+test('another voice is another recording: every line needs a voice again', async () => {
+  const { res, jobs } = await post({ journey: { steps, narration_voice: 'am_michael' }, audio: [] })
+  assert.equal(res.statusCode, 202)
+  assert.equal(jobs[0].row.voice, 'am_michael')
+  assert.equal(jobs[0].row.total, 3)
+  assert.notEqual(narrationHash('Welcome.', 'am_michael'), narrationHash('Welcome.', 'af_heart'))
+})

@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import time
 
-from narration import DEFAULT_VOICE, journey_lines, lines_to_record
+from narration import DEFAULT_VOICE, VOICES, journey_lines, lines_to_record
 from synth import Synth, duration_ms, encode_mp3
 
 log = logging.getLogger("tts")
@@ -19,6 +19,9 @@ def generate_narration(journey: dict, db, bucket, synth: Synth, voice: str | Non
     - progress(done, total): called after each line, e.g. to update the job row
     """
     voice = voice or journey.get("narration_voice") or DEFAULT_VOICE
+    if voice not in VOICES:
+        # The image is offline: a voice that wasn't baked in can't be downloaded now.
+        raise ValueError(f"voice '{voice}' is not available (choose one of {', '.join(VOICES)})")
     lines = journey_lines(journey.get("steps"), voice)
     have = db.existing_hashes([h for h, _ in lines]) if (db and not force) else set()
     todo = lines_to_record(lines, have, force)
