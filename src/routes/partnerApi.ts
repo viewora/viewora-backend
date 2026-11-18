@@ -157,6 +157,31 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
     return { status: res.statusCode, body: unwrapEnvelope(body) }
   })
 
+  // Many HTTP clients send "Content-Type: application/json" with no body on
+  // POST/DELETE (e.g. publish). Accept that as an empty body instead of the
+  // framework's default 400. Scoped to /v1 only.
+  fastify.removeContentTypeParser('application/json')
+  fastify.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, raw, done) => {
+    const text = String(raw ?? '').trim()
+    if (!text) return done(null, undefined)
+    try { done(null, JSON.parse(text)) } catch {
+      const err: any = new Error('The request body is not valid JSON.')
+      err.statusCode = 400
+      err.code = 'INVALID_JSON'
+      done(err, undefined)
+    }
+  })
+
+  // Framework-level errors (bad JSON, rate limit, body too large) in the
+  // same { error: { code, message } } shape as everything else in /v1.
+  fastify.setErrorHandler((err: any, request, reply) => {
+    const status = err.statusCode && err.statusCode >= 400 ? err.statusCode : 500
+    if (status >= 500) request.log.error({ err }, 'partner api error')
+    const code = status === 429 ? 'RATE_LIMITED' : (typeof err.code === 'string' && !err.code.startsWith('FST_') ? err.code : (STATUS_CODES[status] ?? 'INTERNAL_ERROR'))
+    const message = status >= 500 ? 'Something went wrong on our side. Please retry.' : (status === 429 ? 'Too many requests. Slow down and retry shortly.' : String(err.message || 'Bad request'))
+    return reply.code(status).send({ error: { code, message } })
+  })
+
   const redis = () => (fastify as any).redis as { get: Function; setEx: Function; del: Function; incr: Function; expire: Function } | null | undefined
 
   // ── partner key auth ──────────────────────────────────────────────────────

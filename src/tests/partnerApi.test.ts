@@ -392,3 +392,16 @@ test('default callAs runs inner routes as the agent, with a per-agent rate-limit
   void w
   await app.close()
 })
+
+test('a JSON content type with no body is accepted (publish, delete), and bad JSON gets the partner error shape', async () => {
+  const { app, key, tour } = await setup()
+  const h = { ...auth(key), 'content-type': 'application/json' }
+  const pub = await app.inject({ method: 'POST', url: `/v1/tours/${tour.id}/publish`, headers: h })
+  assert.equal(pub.statusCode, 200, pub.body)
+  const bad = await app.inject({ method: 'POST', url: '/v1/tours', headers: h, payload: '{not json' })
+  assert.equal(bad.statusCode, 400)
+  assert.equal(bad.json().error.code, 'INVALID_JSON')
+  const del = await app.inject({ method: 'DELETE', url: `/v1/tours/${tour.id}`, headers: h })
+  assert.equal(del.statusCode, 204, del.body)
+  await app.close()
+})
