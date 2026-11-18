@@ -8,6 +8,7 @@ import { publicVehicleSpins } from './vehicleViews.js'
 import { publicJourneys } from './journeys.js'
 import { ownerEntitlements } from '../utils/quotas.js'
 import { shareImageFor, shareMeta, shareMetaKey, type ShareMeta } from '../utils/shareImage.js'
+import { attachNadirCover, readNadirCover } from '../utils/nadirCover.js'
 
 const tourParamsSchema = z.object({
   slug: z.string().min(3).max(120).regex(/^[a-z0-9-]+$/, 'Invalid slug'),
@@ -147,6 +148,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
 
     const aerial_maps = await publicAerialMaps(fastify, params.id)
     await mergeSceneGroups(fastify, params.id, formattedData.scenes)
+    attachNadirCover(formattedSpace, await readNadirCover(fastify, params.id))
     const floor_plans = await publicFloorPlans(fastify, params.id)
     if (floor_plans.length) await mergeScenePlanPins(fastify, params.id, formattedData.scenes)
     const journeys = await publicJourneys(fastify, params.id)
@@ -358,7 +360,7 @@ export default async function publicRoutes(fastify: FastifyInstance) {
       // after another they cost ~2.5 s per request (a database round trip each);
       // in parallel the slowest one sets the time.
       const spaceId = data.space.id
-      const [galleryRes, ownerRes, aerialMaps, floorPlans, vehicleSpins, journeys] = await Promise.all([
+      const [galleryRes, ownerRes, aerialMaps, floorPlans, vehicleSpins, journeys, , nadirCover] = await Promise.all([
         fastify.supabase
           .from('property_media')
           .select('id, public_url, is_primary, sort_order')
@@ -389,7 +391,10 @@ export default async function publicRoutes(fastify: FastifyInstance) {
         publicJourneys(fastify, spaceId),
         // Scene categories — merged onto the scene objects (different field from the pins below).
         mergeSceneGroups(fastify, spaceId, data.scenes),
+        // Tripod cover — same (and skipped before migration-nadir-cover.sql has run).
+        readNadirCover(fastify, spaceId),
       ])
+      attachNadirCover(data.space, nadirCover)
 
       data.gallery = (galleryRes.data || []).map((r: any) => ({ id: r.id, url: r.public_url, is_primary: r.is_primary }))
       // Names of a car's detail photos ("Wheels"): own query, so a database without the

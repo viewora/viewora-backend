@@ -8,6 +8,7 @@ import { sendTourPublishedEmail } from '../email/index.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
 import { generateListingDescription } from '../utils/aiDescription.js'
 import { failureReason } from '../utils/gemini.js'
+import { attachNadirCover, nadirCoverSchema, readNadirCover } from '../utils/nadirCover.js'
 import { consumeAi, AiLimitError } from '../utils/aiUsage.js'
 import { sanitizeSocialLinks, SOCIAL_KEYS } from '../utils/socialLinks.js'
 import { carCovers } from '../utils/carCover.js'
@@ -119,6 +120,9 @@ const updateSettingsBodySchema = z.object({
   yaw_default: z.number().min(-180).max(180).optional(),
   pitch_default: z.number().min(-90).max(90).optional(),
   auto_rotate_enabled: z.boolean().optional(),
+  // Tripod cover; null turns it off. Saved on its own by the editor, so a database
+  // without the column (migration-nadir-cover.sql) only fails this one save.
+  nadir_cover: nadirCoverSchema.nullable().optional(),
 })
 
 const publishBodySchema = z.object({
@@ -233,6 +237,8 @@ export default async function (fastify: FastifyInstance) {
       space_type: data.property_type,
       property_type: undefined
     }
+    // Own query: a database without the column still opens the editor.
+    attachNadirCover(mappedSpace, await readNadirCover(fastify, id))
 
     return reply.send(mappedSpace)
   })
