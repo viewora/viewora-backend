@@ -43,6 +43,8 @@ import aiAssistantRoutes from './routes/aiAssistant.js'
 import captureRoutes from './routes/capture.js'
 import quoteRoutes from './routes/quote.js'
 import quoteAdminRoutes from './routes/quoteAdmin.js'
+import partnerApiRoutes from './routes/partnerApi.js'
+import partnerAdminRoutes from './routes/partnerAdmin.js'
 import tilesRoutes from './routes/tiles.js'
 import whatsappRoutes from './routes/whatsapp.js'
 import telegramRoutes from './routes/telegram.js'
@@ -411,6 +413,16 @@ fastify.register(captureRoutes, { prefix: '/capture' })
 if (process.env.QUOTE_ENGINE_ENABLED === '1') {
   fastify.register(quoteRoutes, { prefix: '/quote' })
   fastify.register(quoteAdminRoutes, { prefix: '/admin/quote' })
+}
+// Partner API: off until PARTNER_API_ENABLED=1. It runs each call as the
+// agent through the existing routes, which needs INTERNAL_API_KEY.
+if (process.env.PARTNER_API_ENABLED === '1') {
+  if (!process.env.INTERNAL_API_KEY) {
+    process.stdout.write('⚠️  PARTNER_API_ENABLED=1 but INTERNAL_API_KEY is not set: partner API NOT registered\n')
+  } else {
+    fastify.register(partnerApiRoutes, { prefix: '/v1' })
+    fastify.register(partnerAdminRoutes, { prefix: '/admin/partners' })
+  }
 }
 fastify.register(tilesRoutes)
 fastify.register(whatsappRoutes, { prefix: '/whatsapp' })

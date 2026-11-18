@@ -6,7 +6,7 @@ import { sendWelcomeEmail } from '../email/index.js'
 import { DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3'
 
 // ── Auth middleware ────────────────────────────────────────────────────────────
-async function requireAdmin(fastify: FastifyInstance, request: any, reply: any) {
+export async function requireAdmin(fastify: FastifyInstance, request: any, reply: any) {
   const adminSecret = process.env.ADMIN_SECRET
   if (!adminSecret) return reply.code(401).send({ statusMessage: 'Admin secret not configured' })
   const authHeader = request.headers.authorization
@@ -21,7 +21,7 @@ async function requireAdmin(fastify: FastifyInstance, request: any, reply: any) 
 }
 
 // ── Audit log helper ──────────────────────────────────────────────────────────
-async function auditLog(
+export async function auditLog(
   fastify: FastifyInstance,
   request: any,
   action: string,
