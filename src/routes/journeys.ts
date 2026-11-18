@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { checkUserQuota } from '../utils/quotas.js'
 import { invalidateSpaceCache } from '../utils/cache.js'
+import { DEFAULT_VOICE, audioFor, journeyLines, wakeNarrationWorker, withAudio } from '../utils/narration.js'
 
 // Journeys: self-playing guided visits through a tour, step by step, timed by
 // narration (see migration-journeys.sql). Made for hospitals first: "what
@@ -33,6 +34,8 @@ export const JourneyStep = z.object({
     text: z.string().max(400),
     /** Where to look while this line is read (lines 2+); absent = keep looking. */
     view: View.nullable().optional(),
+    /** An info hotspot whose card opens while this line is read. */
+    hotspot_id: z.string().uuid().nullable().optional(),
   })).max(MAX_SENTENCES),
 })
 
@@ -48,7 +51,8 @@ export const UpdateJourneyBody = z.object({
   order_index: z.number().int().min(0).max(1000).optional(),
 })
 
-const COLUMNS = 'id, space_id, title, steps, is_published, order_index, created_at, updated_at'
+// '*': narration_voice only exists once migration-narration.sql has run.
+const COLUMNS = '*'
 const QUOTA_MESSAGE = 'Your plan does not allow changes right now. Please renew to continue.'
 
 /** The table is missing until migration-journeys.sql has run. */
@@ -89,7 +93,8 @@ export default async function journeyRoutes(fastify: FastifyInstance) {
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: 'Failed to load journeys' })
     }
-    return reply.send({ journeys: data ?? [], enabled: true })
+    // Each line that has a recording carries it, so the editor can play it and spot edited lines.
+    return reply.send({ journeys: await withAudio(fastify, (data ?? []) as any[]), enabled: true })
   })
 
   // ── CREATE ────────────────────────────────────────────────
@@ -167,6 +172,74 @@ export default async function journeyRoutes(fastify: FastifyInstance) {
     await invalidateSpaceCache(fastify, owned.space_id)
     return reply.code(204).send()
   })
+
+  // ── NARRATION: record a voice for every line that needs one ───────────
+  // Queues one job for the whole journey (one worker wake-up, the model loaded
+  // once) and wakes the TTS worker. Lines already recorded are skipped unless
+  // force is set. See tts-worker/README.md.
+  fastify.post('/journeys/:journeyId/narration', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, journeyParams, (req as any).params)
+    if (!params) return
+    const body = parseWithSchema(reply, NarrationBody, req.body ?? {})
+    if (!body) return
+    const quota = await checkUserQuota(fastify, userId)
+    if (!quota.canWrite) return reply.code(403).send({ statusMessage: QUOTA_MESSAGE })
+    const owned = await ownedJourney(params.journeyId, userId)
+    if (!owned) return reply.code(404).send({ statusMessage: 'Journey not found' })
+
+    const { data: j } = await fastify.supabase.from('journeys').select('*').eq('id', params.journeyId).single()
+    const voice = (j as any)?.narration_voice || DEFAULT_VOICE
+    const lines = journeyLines((j as any)?.steps, voice)
+    const have = await audioFor(fastify, lines.map(l => l.hash))
+    const missing = body.force ? lines.length : lines.filter(l => !have.has(l.hash)).length
+    if (!missing) return reply.send({ job: null, lines: lines.length, voiced: lines.length })
+
+    // One job at a time per journey: a second press while it runs just reports it.
+    const { data: active, error: activeError } = await fastify.supabase
+      .from('narration_jobs').select('*').eq('journey_id', params.journeyId).in('status', ['queued', 'running'])
+      .order('created_at', { ascending: false }).limit(1).maybeSingle()
+    if (activeError && narrationMissing(activeError)) return reply.code(503).send({ statusMessage: NARRATION_NOT_ENABLED })
+    let job = active
+    if (!job) {
+      const { data, error } = await fastify.supabase
+        .from('narration_jobs')
+        .insert({ journey_id: params.journeyId, voice, force: !!body.force, total: missing })
+        .select('*').single()
+      if (error) {
+        if (narrationMissing(error)) return reply.code(503).send({ statusMessage: NARRATION_NOT_ENABLED })
+        fastify.log.error(error)
+        return reply.code(500).send({ statusMessage: 'Could not start recording' })
+      }
+      job = data
+    }
+    const woken = wakeNarrationWorker(fastify)
+    return reply.code(202).send({ job, lines: lines.length, voiced: lines.length - missing, worker: woken })
+  })
+
+  // Progress of the latest recording job, and how many lines have a voice.
+  fastify.get('/journeys/:journeyId/narration', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, journeyParams, (req as any).params)
+    if (!params) return
+    const owned = await ownedJourney(params.journeyId, userId)
+    if (!owned) return reply.code(404).send({ statusMessage: 'Journey not found' })
+    const { data: job, error } = await fastify.supabase
+      .from('narration_jobs').select('*').eq('journey_id', params.journeyId)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle()
+    if (error && narrationMissing(error)) return reply.send({ enabled: false, job: null, worker: !!process.env.TTS_WORKER_URL })
+    const { data: j } = await fastify.supabase.from('journeys').select('*').eq('id', params.journeyId).single()
+    const lines = journeyLines((j as any)?.steps, (j as any)?.narration_voice || DEFAULT_VOICE)
+    const have = await audioFor(fastify, lines.map(l => l.hash))
+    return reply.send({ enabled: true, job: job ?? null, lines: lines.length, voiced: lines.filter(l => have.has(l.hash)).length, worker: !!process.env.TTS_WORKER_URL })
+  })
+}
+
+export const NarrationBody = z.object({ force: z.boolean().optional() })
+const NARRATION_NOT_ENABLED = 'Recorded voices are not enabled yet (database migration pending).'
+function narrationMissing(error: any) {
+  const m = String(error?.message || '')
+  return error?.code === '42P01' || error?.code === 'PGRST205' || (/narration/i.test(m) && /(does not exist|schema cache)/i.test(m))
 }
 
 /**
@@ -176,11 +249,13 @@ export default async function journeyRoutes(fastify: FastifyInstance) {
 export async function publicJourneys(fastify: FastifyInstance, spaceId: string) {
   const { data, error } = await fastify.supabase
     .from('journeys')
-    .select('id, title, steps, order_index')
+    .select('*')
     .eq('space_id', spaceId)
     .eq('is_published', true)
     .order('order_index', { ascending: true })
     .order('created_at', { ascending: true })
   if (error || !data) return []
-  return data.map((j: any) => ({ id: j.id, title: j.title, steps: Array.isArray(j.steps) ? j.steps : [] }))
+  // Lines with a recording carry its URL and length; the rest play as captions.
+  const voiced = await withAudio(fastify, data as any[]).catch(() => data as any[])
+  return voiced.map((j: any) => ({ id: j.id, title: j.title, steps: Array.isArray(j.steps) ? j.steps : [] }))
 }
