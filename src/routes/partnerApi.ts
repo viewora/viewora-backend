@@ -247,6 +247,10 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
     const existing = await store.getAgent(partner.id, mode, body.external_id)
     if (existing) return reply.code(200).send({ agent: agentOut(existing), created: false })
 
+    // Live seats are what the partner paid for. Test agents don't use seats.
+    if (mode === 'live' && partner.max_agents != null && (await store.countAgents(partner.id, 'live')) >= partner.max_agents) {
+      return fail(reply, 403, 'AGENT_LIMIT_REACHED', `Your account includes ${partner.max_agents} agents. Contact Viewora to add more.`, { limit: partner.max_agents })
+    }
     if (mode === 'live' && !body.email) {
       return fail(reply, 400, 'VALIDATION_ERROR', 'email is required for live agents. It becomes their Viewora login.', {
         fields: [{ field: 'email', message: 'Required' }],
@@ -271,6 +275,9 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
       const winner = await store.getAgent(partner.id, mode, body.external_id)
       return reply.code(200).send({ agent: winner ? agentOut(winner) : null, created: false })
     }
+    // The partner pays: put the agent on the partner's plan. A failure here
+    // is logged and retried by the next staff sync; the agent still exists.
+    await store.syncAgentPlan(partner, created.userId).catch(err => request.log.error({ err: err?.message }, 'agent plan sync failed'))
     return reply.code(201).send({ agent: agentOut(row), created: true })
   })
 

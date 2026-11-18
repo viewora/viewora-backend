@@ -26,8 +26,8 @@ const MEDIA = 'https://media.test'
 
 function world() {
   const partners: Record<string, Partner> = {
-    p1: { id: 'p1', slug: 'carsite', name: 'Car Site', status: 'active', allowed_embed_origins: [], daily_upload_cap: 3 },
-    p2: { id: 'p2', slug: 'homesite', name: 'Home Site', status: 'active', allowed_embed_origins: [], daily_upload_cap: 100 },
+    p1: { id: 'p1', slug: 'carsite', name: 'Car Site', status: 'active', allowed_embed_origins: [], daily_upload_cap: 3, agent_plan_id: 'pro', paid_until: '2099-01-01T00:00:00Z', max_agents: 2 },
+    p2: { id: 'p2', slug: 'homesite', name: 'Home Site', status: 'active', allowed_embed_origins: [], daily_upload_cap: 100, agent_plan_id: null, paid_until: null, max_agents: null },
   }
   const keys = new Map<string, KeyRecord>()
   const issue = (pid: string, mode: 'test' | 'live' = 'live', revoked = false) => {
@@ -36,6 +36,7 @@ function world() {
     return k.key
   }
   const agents: AgentRow[] = []
+  const planSyncs: { plan: string | null; userId: string }[] = []
   const tours: TourRefRow[] = []
   const spaces = new Map<string, SpaceSummary>()
   const scenes = new Set<string>()
@@ -51,6 +52,8 @@ function world() {
     getAgent: async (pid, mode, ext) => agents.find(a => a.partner_id === pid && a.mode === mode && a.external_id === ext) ?? null,
     getAgentsByIds: async ids => agents.filter(a => ids.includes(a.id)),
     listAgents: async (pid, mode) => agents.filter(a => a.partner_id === pid && a.mode === mode),
+    countAgents: async (pid, mode) => agents.filter(a => a.partner_id === pid && a.mode === mode).length,
+    syncAgentPlan: async (p, userId) => { planSyncs.push({ plan: p.agent_plan_id, userId }) },
     insertAgent: async row => {
       if (agents.some(a => a.partner_id === row.partner_id && a.mode === row.mode && a.external_id === row.external_id)) return 'duplicate'
       const r = { ...row, id: id(), created_at: 'now' }
@@ -123,7 +126,7 @@ function world() {
     return a
   }
   return {
-    app, issue, calls, agents, tours, spaces, userIds,
+    app, issue, calls, agents, tours, spaces, userIds, planSyncs,
     setPublishStatus: (s: number) => { publishStatus = s },
   }
 }
@@ -164,6 +167,25 @@ test('creating an agent makes a Viewora account once; repeating it is safe', asy
   assert.equal(again.statusCode, 200)
   assert.equal(again.json().created, false)
   assert.equal(w.userIds.length, 1)
+  await app.close()
+})
+
+test("a new agent is put on the partner's paid plan", async () => {
+  const { w, app } = await setup()
+  assert.deepEqual(w.planSyncs, [{ plan: 'pro', userId: w.agents[0].user_id }])
+  await app.close()
+})
+
+test('live agents stop at the seats the partner paid for; test agents do not use seats', async () => {
+  const { w, app, key } = await setup() // p1 has 2 seats, 1 used
+  const add = (k: string, ext: string) => app.inject({ method: 'POST', url: '/v1/agents', headers: auth(k),
+    payload: { external_id: ext, name: ext, email: `${ext}@mail.com` } })
+  assert.equal((await add(key, 'second')).statusCode, 201)
+  const third = await add(key, 'third')
+  assert.equal(third.statusCode, 403)
+  assert.equal(third.json().error.code, 'AGENT_LIMIT_REACHED')
+  assert.equal(w.userIds.length, 2) // no account made for the refused one
+  assert.equal((await add(w.issue('p1', 'test'), 'third')).statusCode, 201)
   await app.close()
 })
 
@@ -351,7 +373,7 @@ test('default callAs runs inner routes as the agent, with a per-agent rate-limit
     return reply.code(201).send({ id: '99999999-9999-4999-8999-999999999999' })
   })
   const store = {
-    findKeyByHash: async () => ({ keyId: 'k', mode: 'live', revoked: false, partner: { id: 'p1', slug: 's', name: 'n', status: 'active', allowed_embed_origins: [], daily_upload_cap: 5 } }),
+    findKeyByHash: async () => ({ keyId: 'k', mode: 'live', revoked: false, partner: { id: 'p1', slug: 's', name: 'n', status: 'active', allowed_embed_origins: [], daily_upload_cap: 5, agent_plan_id: null, paid_until: null, max_agents: null } }),
     touchKey: async () => {},
     getAgent: async () => ({ id: 'ag', partner_id: 'p1', mode: 'live', external_id: 'a', user_id: 'user-abc', name: null, created_at: '' }),
     getAgentsByIds: async () => [],

@@ -37,6 +37,9 @@ curl -X POST $BASE/agents -H "Authorization: Bearer $KEY" -H "Content-Type: appl
 - If the email already has a Viewora account you get `409 EMAIL_IN_USE`. We never
   link an existing account without its owner's consent.
 - With a test key, `email` is optional and is not used.
+- Your agreement with Viewora covers a number of live agents. Past that you get
+  `403 AGENT_LIMIT_REACHED`. Test agents don't count.
+- Every agent you create is on the plan your agreement pays for.
 
 ## 2. Create a tour
 
@@ -52,7 +55,7 @@ curl -X POST $BASE/tours -H "Authorization: Bearer $KEY" -H "Content-Type: appli
 - `details` (optional): `price_kes`, `listing_status`, `transaction_type`, `price_period`,
   `bedrooms`, `bathrooms`, `area_sqm`, `vehicle_year`, `vehicle_mileage_km`,
   `vehicle_transmission`, `vehicle_fuel_type`, `land_acres`, `land_type`, `amenities`.
-- Tours count against the agent's Viewora plan.
+- Tours count against the plan your agreement pays for (tours per agent, scenes per tour).
 
 ## 3. Upload photos
 
@@ -125,14 +128,14 @@ A tour looks like this:
 Validation errors add `fields: [{ field, message }]`. Common codes:
 `UNAUTHORIZED`, `PARTNER_SUSPENDED`, `VALIDATION_ERROR`, `AGENT_NOT_FOUND`,
 `TOUR_NOT_FOUND`, `TOUR_EXISTS`, `EMAIL_IN_USE`, `INVALID_UPLOAD_KEY`,
-`TOUR_LIMIT_REACHED`, `SCENE_LIMIT_REACHED`, `FILE_TOO_LARGE`, `DAILY_UPLOAD_CAP`,
+`AGENT_LIMIT_REACHED`, `TOUR_LIMIT_REACHED`, `SCENE_LIMIT_REACHED`, `FILE_TOO_LARGE`, `DAILY_UPLOAD_CAP`,
 `RATE_LIMITED`.
 
 ## Limits
 
 - Requests per key per minute: 300 for reads, 120 for tour changes, 600 for uploads, 60 for agent creation.
 - Uploads per day per partner: set by Viewora (default 2,000). The count resets at midnight EAT.
-- Plan limits (tours, scenes, file size, storage) are the agent's Viewora plan.
+- Plan limits (tours, scenes, file size, storage) come from the plan your agreement pays for, per agent.
 
 ## Not yet available
 
