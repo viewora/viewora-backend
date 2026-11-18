@@ -109,6 +109,13 @@ export default async function partnerAdmin(fastify: FastifyInstance) {
     if (!data) return reply.code(404).send({ statusMessage: 'Partner not found' })
     await bustKeyCache(params.id)
     await auditLog(fastify, request, 'partner.update', 'api_partner', params.id, body)
+    // Embed sites changed: drop cached embed policies for this partner's tours.
+    if (body.allowed_embed_origins !== undefined && (fastify as any).redis) {
+      const { data: tours } = await fastify.supabase.from('api_partner_tours')
+        .select('properties(slug)').eq('partner_id', params.id)
+      await Promise.all((tours ?? []).map((t: any) => t.properties?.slug
+        ? (fastify as any).redis.del(`embedpolicy:${t.properties.slug}`).catch(() => {}) : null))
+    }
     // Plan or payment changed: move every agent onto it now.
     const billingChanged = body.agent_plan_id !== undefined || body.paid_until !== undefined
     const agents = billingChanged ? await syncPartnerAgents(fastify, params.id) : undefined
