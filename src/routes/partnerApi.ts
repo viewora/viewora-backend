@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { hashPartnerKey, parsePartnerKey, type KeyMode } from '../utils/partnerKeys.js'
+import { unwrapEnvelope } from '../utils/ownShapeRoutes.js'
 import { supabaseStore, type AgentRow, type KeyRecord, type Partner, type PartnerStore, type SpaceSummary, type TourRefRow } from '../partners/store.js'
 
 // Partner API (/v1): property and car apps create tours for their agents.
@@ -152,7 +153,8 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
     })
     let body: any = {}
     try { body = res.json() } catch { body = {} }
-    return { status: res.statusCode, body }
+    // Inner routes answer in the global { success, data } envelope.
+    return { status: res.statusCode, body: unwrapEnvelope(body) }
   })
 
   const redis = () => (fastify as any).redis as { get: Function; setEx: Function; del: Function; incr: Function; expire: Function } | null | undefined

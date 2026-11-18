@@ -46,6 +46,7 @@ import quoteAdminRoutes from './routes/quoteAdmin.js'
 import partnerApiRoutes from './routes/partnerApi.js'
 import partnerAdminRoutes from './routes/partnerAdmin.js'
 import partnerPublicRoutes from './routes/partnerPublic.js'
+import { keepsOwnShape } from './utils/ownShapeRoutes.js'
 import tilesRoutes from './routes/tiles.js'
 import whatsappRoutes from './routes/whatsapp.js'
 import telegramRoutes from './routes/telegram.js'
@@ -266,9 +267,8 @@ fastify.addHook('onResponse', async (request, reply) => {
 fastify.addHook('onSend', async (request, reply, payload) => {
   const statusCode = reply.statusCode
   if (statusCode === 204 || statusCode === 304) return payload
-  // Quote engine routes keep their own shape ({ code, statusMessage,
-  // problems } on errors): the quote pages read it as is
-  if (/^\/(admin\/)?quote(\/|\?|$)/.test(request.url)) return payload
+  // Quote engine, partner API and embed policy keep their own shape (see utils/ownShapeRoutes.ts)
+  if (keepsOwnShape(request.url)) return payload
 
   const contentTypeHeader = reply.getHeader('content-type')
   const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader.toLowerCase() : ''

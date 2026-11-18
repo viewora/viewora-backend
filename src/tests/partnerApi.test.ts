@@ -368,9 +368,11 @@ test('default callAs runs inner routes as the agent, with a per-agent rate-limit
   const w = world()
   const app = Fastify()
   let seen: any = null
+  let linked: string | null = null
   app.post('/spaces', async (req, reply) => {
     seen = { key: req.headers['x-internal-api-key'], user: req.headers['x-internal-user-id'], ip: req.ip }
-    return reply.code(201).send({ id: '99999999-9999-4999-8999-999999999999' })
+    // As production answers: inside the global { success, data } envelope.
+    return reply.code(201).send({ success: true, data: { id: '99999999-9999-4999-8999-999999999999' }, meta: {} })
   })
   const store = {
     findKeyByHash: async () => ({ keyId: 'k', mode: 'live', revoked: false, partner: { id: 'p1', slug: 's', name: 'n', status: 'active', allowed_embed_origins: [], daily_upload_cap: 5, agent_plan_id: null, paid_until: null, max_agents: null } }),
@@ -378,7 +380,7 @@ test('default callAs runs inner routes as the agent, with a per-agent rate-limit
     getAgent: async () => ({ id: 'ag', partner_id: 'p1', mode: 'live', external_id: 'a', user_id: 'user-abc', name: null, created_at: '' }),
     getAgentsByIds: async () => [],
     getTourRef: async () => null,
-    insertTourRef: async (r: any) => ({ ...r, id: 'ref', created_at: '' }),
+    insertTourRef: async (r: any) => { linked = r.space_id; return { ...r, id: 'ref', created_at: '' } },
     getSpaces: async () => [],
   } as unknown as PartnerStore
   await app.register(partnerApi, { prefix: '/v1', store })
@@ -386,6 +388,7 @@ test('default callAs runs inner routes as the agent, with a per-agent rate-limit
     payload: { agent_external_id: 'a', external_id: 'X', title: 'T', type: 'residential' } })
   assert.equal(res.statusCode, 201, res.body)
   assert.deepEqual(seen, { key: 'internal-test-key', user: 'user-abc', ip: 'partner-agent:user-abc' })
+  assert.equal(linked, '99999999-9999-4999-8999-999999999999') // the enveloped id was unwrapped
   void w
   await app.close()
 })
