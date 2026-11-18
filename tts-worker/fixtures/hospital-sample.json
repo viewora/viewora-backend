@@ -1,0 +1,38 @@
+{
+  "id": "sample-hospital",
+  "title": "Outpatient visit",
+  "narration_voice": "af_heart",
+  "_note": "Sample 3-step hospital visit. Scene and hotspot ids are Simba Saloon photos standing in for a hospital (entrance, reception, pharmacy); the narration is what a hospital would say.",
+  "steps": [
+    {
+      "id": "entrance",
+      "title": "Entrance",
+      "scene_id": "ff41ecd3-7166-4dcd-92ac-af73ac3d9692",
+      "view": { "yaw": 0.06, "pitch": -0.1, "zoom": 20 },
+      "sentences": [
+        { "id": "e1", "text": "Welcome to Riverside Hospital. This is the main entrance, open day and night." },
+        { "id": "e2", "text": "Drop-off is right here by the doors. Visitor parking is on your left, and it's free for the first two hours." }
+      ]
+    },
+    {
+      "id": "reception",
+      "title": "Reception",
+      "scene_id": "6329bbaf-c1b9-4543-b4f1-d9d7c1907b82",
+      "sentences": [
+        { "id": "r1", "text": "Walk straight down this corridor to reception." },
+        { "id": "r2", "text": "Please have your ID and insurance card ready. If this is your first visit, we'll register you here; it takes about five minutes." },
+        { "id": "r3", "text": "Then take a seat, and a nurse will call your name for triage." }
+      ]
+    },
+    {
+      "id": "pharmacy",
+      "title": "Pharmacy",
+      "scene_id": "149db741-6572-4fcc-9af2-54fc1f9ec640",
+      "sentences": [
+        { "id": "p1", "text": "After you've seen the doctor, come here to collect your medicine." },
+        { "id": "p2", "text": "The pharmacy window is just ahead. Hand in your prescription, and you'll pay at the same counter.", "hotspot_id": "3ae7c59c-02d8-4c45-8f6a-6f450df6dda7" },
+        { "id": "p3", "text": "That's the end of your visit. The exit is back the way you came. We wish you a quick recovery." }
+      ]
+    }
+  ]
+}

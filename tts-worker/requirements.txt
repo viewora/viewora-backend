@@ -1,0 +1,4 @@
+# torch is installed separately in the Dockerfile from PyTorch's CPU-only index
+# (the default wheel bundles ~2 GB of CUDA that a CPU server never uses).
+kokoro==0.9.4
+boto3==1.35.99

@@ -219,3 +219,10 @@ Deployed to **Railway** via Nixpacks. Config defined in `railway.json`:
 - Start: `node dist/index.js`
 - Health check: `GET /health` (timeout 30s)
 - Restart policy: On failure, max 3 retries
+
+## Recorded narration (patient journeys)
+
+Journey lines are read by recorded voices made with Kokoro-82M on the CPU, by a
+separate Railway service that sleeps when idle: see [`tts-worker/README.md`](tts-worker/README.md)
+for generating narration, writing lines, deploying the worker and cost.
+Needs `src/utils/migration-narration.sql` and `TTS_WORKER_URL` on the API.
