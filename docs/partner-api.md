@@ -100,6 +100,10 @@ The tour now has `embed_url` and `share_url`:
 
 `embed.js` is optional. It lets the tour go full screen on iPhone.
 
+Tell Viewora which sites will show your tours (for example
+`https://cars.example.co.ke`). Your tours then only load inside those sites.
+Add `http://localhost:3000` while you build.
+
 `POST /tours/:id/unpublish` takes it down. `DELETE /tours/:id` deletes it.
 
 ## Reading tours
