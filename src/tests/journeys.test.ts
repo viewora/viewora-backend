@@ -106,6 +106,14 @@ test('each line can keep its own facing', () => {
   assert.equal(JourneyStep.safeParse({ ...step, sentences: [{ id: 'a', text: 'x', view: { yaw: 99, pitch: 0 } }] }).success, false)
 })
 
+test('a line can mark a spot (kept when saved, label optional and short)', () => {
+  const r = JourneyStep.safeParse({ ...step, sentences: [{ id: 'a', text: 'Parking is on your right.', pin: { label: ' Parking ' } }, { id: 'b', text: 'x', pin: {} }] })
+  assert.equal(r.success, true)
+  assert.deepEqual((r as any).data.sentences[0].pin, { label: 'Parking' })
+  assert.deepEqual((r as any).data.sentences[1].pin, {})
+  assert.equal(JourneyStep.safeParse({ ...step, sentences: [{ id: 'a', text: 'x', pin: { label: 'x'.repeat(41) } }] }).success, false)
+})
+
 test('updating with a malformed body is refused before any lookup', async () => {
   const app = await buildApp(supabaseStub(() => { throw new Error('should not query') }))
   const res = await app.inject({ method: 'PUT', url: `/journeys/${JOURNEY_ID}`, headers: auth, payload: { steps: 'nope' } })

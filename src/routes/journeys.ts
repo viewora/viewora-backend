@@ -36,6 +36,8 @@ export const JourneyStep = z.object({
     view: View.nullable().optional(),
     /** An info hotspot whose card opens while this line is read. */
     hotspot_id: z.string().uuid().nullable().optional(),
+    /** A pulsing marker in the middle of this line's view while it's read ("Parking"). */
+    pin: z.object({ label: z.string().trim().max(40).optional() }).nullable().optional(),
   })).max(MAX_SENTENCES),
 })
 
