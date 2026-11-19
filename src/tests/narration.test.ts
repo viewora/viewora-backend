@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import Fastify from 'fastify'
 
 import journeyRoutes from '../routes/journeys.js'
-import { journeyLines, narrationHash, normalizeLine, withAudio } from '../utils/narration.js'
+import { journeyLines, narrationHash, narrationUrl, normalizeLine, withAudio } from '../utils/narration.js'
 
 const JOURNEY_ID = '44444444-4444-4444-8444-444444444444'
 const SPACE_ID = '11111111-1111-4111-8111-111111111111'
@@ -144,4 +144,12 @@ test('another voice is another recording: every line needs a voice again', async
   assert.equal(jobs[0].row.voice, 'am_michael')
   assert.equal(jobs[0].row.total, 3)
   assert.notEqual(narrationHash('Welcome.', 'am_michael'), narrationHash('Welcome.', 'af_heart'))
+})
+
+test('narrationUrl: a guessed r2.dev link is served from the media domain', () => {
+  const h = 'a'.repeat(64)
+  assert.equal(narrationUrl(`https://pub-abc123.r2.dev/narration/${h}.mp3`, 'https://media.viewora.software/'), `https://media.viewora.software/narration/${h}.mp3`)
+  assert.equal(narrationUrl(`https://media.viewora.software/narration/${h}.mp3`, 'https://media.viewora.software'), `https://media.viewora.software/narration/${h}.mp3`)
+  assert.equal(narrationUrl(`https://pub-abc123.r2.dev/narration/${h}.mp3`, ''), `https://pub-abc123.r2.dev/narration/${h}.mp3`)
+  assert.equal(narrationUrl('https://pub-abc123.r2.dev/tours/x.jpg', 'https://media.viewora.software'), 'https://pub-abc123.r2.dev/tours/x.jpg')
 })

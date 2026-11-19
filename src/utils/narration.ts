@@ -46,6 +46,19 @@ export function journeyLines(steps: unknown, voice: string = DEFAULT_VOICE): Nar
 
 export interface AudioRow { hash: string; url: string; duration_ms: number }
 
+/**
+ * A recording's link on the media domain. The voice service falls back to a
+ * guessed r2.dev address when it has no MEDIA_DOMAIN, and that address doesn't
+ * serve anything; the file itself is in the bucket either way, so swap the
+ * domain when handing the link out.
+ */
+export function narrationUrl(url: string, mediaDomain = process.env.MEDIA_DOMAIN): string {
+  const domain = mediaDomain?.trim().replace(/\/$/, '')
+  if (!domain) return url
+  const m = /^https?:\/\/[^/]+\.r2\.dev\/(narration\/.+)$/.exec(url)
+  return m ? `${domain}/${m[1]}` : url
+}
+
 /** The recordings that exist for these hashes. Empty when the table isn't there yet. */
 export async function audioFor(fastify: FastifyInstance, hashes: string[]): Promise<Map<string, AudioRow>> {
   const found = new Map<string, AudioRow>()
@@ -54,7 +67,7 @@ export async function audioFor(fastify: FastifyInstance, hashes: string[]): Prom
     const { data, error } = await fastify.supabase
       .from('narration_audio').select('hash, url, duration_ms').in('hash', unique.slice(i, i + 150))
     if (error || !data) return found
-    for (const r of data as AudioRow[]) found.set(r.hash, r)
+    for (const r of data as AudioRow[]) found.set(r.hash, { ...r, url: narrationUrl(r.url) })
   }
   return found
 }
