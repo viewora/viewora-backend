@@ -43,6 +43,7 @@ import aiAssistantRoutes from './routes/aiAssistant.js'
 import captureRoutes from './routes/capture.js'
 import quoteRoutes from './routes/quote.js'
 import quoteAdminRoutes from './routes/quoteAdmin.js'
+import quoteStaffAppRoutes from './routes/quoteStaffApp.js'
 import partnerApiRoutes from './routes/partnerApi.js'
 import partnerAdminRoutes from './routes/partnerAdmin.js'
 import partnerPublicRoutes from './routes/partnerPublic.js'
@@ -414,6 +415,8 @@ fastify.register(captureRoutes, { prefix: '/capture' })
 if (process.env.QUOTE_ENGINE_ENABLED === '1') {
   fastify.register(quoteRoutes, { prefix: '/quote' })
   fastify.register(quoteAdminRoutes, { prefix: '/admin/quote' })
+  // Partners and commission for admins signed in to the main app (their own session, no admin secret)
+  fastify.register(quoteStaffAppRoutes, { prefix: '/staff/quote' })
 }
 // Partner API: off until PARTNER_API_ENABLED=1. It runs each call as the
 // agent through the existing routes, which needs INTERNAL_API_KEY.
