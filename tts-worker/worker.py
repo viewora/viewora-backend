@@ -30,7 +30,8 @@ log = logging.getLogger("tts")
 _synth = Synth()
 _lock = threading.Lock()
 _again = threading.Event()
-_current: str | None = None  # the job being recorded right now, if any
+_current: dict | None = None  # the job being recorded right now, if any
+_booted = now_iso()  # jobs 'running' since before this are a stopped worker's
 
 
 REQUIRED = ("SUPABASE_URL", "SUPABASE_SERVICE_KEY", "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID",
@@ -41,8 +42,10 @@ def missing_settings() -> list[str]:
     return [k for k in REQUIRED if not os.environ.get(k, "").strip()]
 
 
-def drain():
-    """Record every queued job, one at a time. Safe to call any number of times."""
+def drain(startup: bool = False):
+    """Record every queued job, one at a time. Safe to call any number of times.
+    At start-up, a job left 'running' by the previous worker (stopped by a
+    redeploy or a nap mid-job) is taken back at once, not after 30 minutes."""
     missing = missing_settings()
     if missing:
         log.error("can't record: missing variables %s (set them on this Railway service)", ", ".join(missing))
@@ -55,7 +58,7 @@ def drain():
             _again.clear()
             db = Db()
             try:
-                db.requeue_stale_jobs()
+                db.requeue_stale_jobs(started_before=_booted if startup else None)
             except Exception:
                 log.exception("could not requeue stale jobs")
             bucket = None
@@ -75,7 +78,7 @@ def drain():
 def run_job(job: dict, db: Db, bucket: Bucket):
     global _current
     log.info("job %s for journey %s", job["id"], job["journey_id"])
-    _current = job["id"]
+    _current = job
     try:
         journey = db.journey(job["journey_id"])
         if not journey:
@@ -99,10 +102,10 @@ def stop(*_):
     job = _current
     if job:
         try:
-            Db().update_job(job, status="queued", started_at=None)
-            log.info("stopping: job %s back on the list", job)
+            Db().requeue_job(job["id"], job.get("started_at"))
+            log.info("stopping: job %s back on the list", job["id"])
         except Exception:
-            log.exception("stopping: could not put job %s back", job)
+            log.exception("stopping: could not put job %s back", job["id"])
     os._exit(0)
 
 
@@ -139,7 +142,7 @@ def main():
         log.error("missing variables: %s. /health works, but nothing can be recorded until they're set.", ", ".join(missing))
     if not os.environ.get("MEDIA_DOMAIN"):
         log.warning("MEDIA_DOMAIN is not set: recordings will use the r2.dev address")
-    threading.Thread(target=drain, daemon=True).start()  # work left from before the nap
+    threading.Thread(target=drain, kwargs={"startup": True}, daemon=True).start()  # work left from before the nap
     # IPv6 and IPv4 on every address: Railway's private network is IPv6.
     server = DualStackServer(("::", port), Handler)
     log.info("tts worker listening on %d", port)

@@ -54,11 +54,22 @@ class Db:
     def update_job(self, job_id: str, **fields):
         self._req("PATCH", "narration_jobs", {"id": f"eq.{job_id}"}, fields)
 
-    def requeue_stale_jobs(self, older_than_minutes: int = 30):
-        """A job left 'running' by a worker that was stopped mid-way goes back on the list."""
-        cutoff = datetime.now(timezone.utc).timestamp() - older_than_minutes * 60
-        iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
-        self._req("PATCH", "narration_jobs", {"status": "eq.running", "started_at": f"lt.{iso}"}, {"status": "queued"})
+    def requeue_stale_jobs(self, older_than_minutes: int = 30, started_before: str | None = None):
+        """A job left 'running' by a worker that was stopped mid-way goes back on the list.
+        started_before (an ISO time) overrides the age: at start-up we pass our own
+        start time, since a job begun before we existed belongs to a worker that's gone."""
+        if started_before is None:
+            cutoff = datetime.now(timezone.utc).timestamp() - older_than_minutes * 60
+            started_before = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+        self._req("PATCH", "narration_jobs", {"status": "eq.running", "started_at": f"lt.{started_before}"}, {"status": "queued"})
+
+    def requeue_job(self, job_id: str, started_at: str | None):
+        """Put our own job back, but only if no newer worker has taken it over since
+        (taking it over sets a new started_at)."""
+        params = {"id": f"eq.{job_id}", "status": "eq.running"}
+        if started_at:
+            params["started_at"] = f"eq.{started_at}"
+        self._req("PATCH", "narration_jobs", params, {"status": "queued", "started_at": None})
 
     # ── journeys and recordings ──
     def journey(self, journey_id: str) -> dict | None:
