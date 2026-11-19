@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
+import { VISIT_EVENTS, placeNames, summarizeVisits, type JourneyInfo, type VisitEventRow } from '../utils/visitInsights.js'
 
 const sourceSchema = z.enum(['direct', 'qr', 'embed'])
 
@@ -26,6 +27,40 @@ const engagementBodySchema = z.object({
   propertyId: z.string().uuid(),
   action: z.enum(['phone_reveal', 'whatsapp_click', 'save']),
 })
+
+// What visitors do inside a tour with guided visits (migration-visit-events.sql).
+// Sent in batches by the viewer; with navigator.sendBeacon the body arrives
+// as text/plain (a JSON content type would need a CORS preflight, which
+// beacons can't do), so a string body is parsed here.
+const shortId = z.string().trim().min(8).max(64).regex(/^[\w-]+$/)
+export const VisitEventsBody = z.object({
+  spaceId: z.string().uuid(),
+  visitorId: shortId,
+  sessionId: shortId,
+  events: z.array(z.object({
+    event: z.enum(VISIT_EVENTS),
+    journeyId: z.string().uuid().nullish(),
+    sceneId: z.string().uuid().nullish(),
+    step: z.number().int().min(0).max(1000).nullish(),
+    value: z.number().int().min(0).max(86_400_000).nullish(),
+    /** Only these two keys are kept. */
+    meta: z.object({
+      device: z.enum(['phone', 'tablet', 'desktop']).optional(),
+      from: z.string().uuid().optional(),
+    }).nullish(),
+  })).min(1).max(50),
+})
+
+const visitsQuerySchema = z.object({
+  days: z.coerce.number().int().refine(d => [7, 30, 90, 365].includes(d)).default(30),
+  spaceId: z.string().uuid().optional(),
+})
+
+/** visit_events is missing until migration-visit-events.sql has run. */
+function eventsTableMissing(error: any) {
+  const m = String(error?.message || '')
+  return error?.code === '42P01' || error?.code === 'PGRST205' || (/visit_events/i.test(m) && /(does not exist|schema cache)/i.test(m))
+}
 
 export default async function (fastify: FastifyInstance) {
   type ViewSource = 'direct' | 'qr' | 'embed'
@@ -224,5 +259,85 @@ export default async function (fastify: FastifyInstance) {
     ])
 
     return reply.send({ whatsapp_click: whatsappClicks ?? 0, save: saves ?? 0 })
+  })
+
+  // PUBLIC ROUTE: a batch of visit events from the viewer. Never fails the
+  // visitor: bad batches are dropped with 204 too (nothing to show them).
+  fastify.post('/events', {
+    config: {
+      rateLimit: {
+        // A hospital's waiting-room wifi is one IP for many visitors.
+        max: 120,
+        timeWindow: '1 minute',
+        keyGenerator: (request: any) => request.ip,
+      },
+    },
+  }, async (request, reply) => {
+    let raw: unknown = request.body
+    if (typeof raw === 'string') {
+      try { raw = JSON.parse(raw) } catch { return reply.code(400).send({ statusMessage: 'Invalid JSON' }) }
+    }
+    const body = parseWithSchema(reply, VisitEventsBody, raw)
+    if (!body) return
+
+    const { data: space } = await fastify.supabase
+      .from('properties').select('id').eq('id', body.spaceId).maybeSingle()
+    if (!space) return reply.code(204).send()
+
+    const rows = body.events.map(e => ({
+      space_id: body.spaceId,
+      visitor_id: body.visitorId,
+      session_id: body.sessionId,
+      event: e.event,
+      journey_id: e.journeyId ?? null,
+      scene_id: e.sceneId ?? null,
+      step: e.step ?? null,
+      value: e.value ?? null,
+      meta: e.meta && (e.meta.device || e.meta.from) ? e.meta : null,
+    }))
+    const { error } = await fastify.supabase.from('visit_events').insert(rows)
+    if (error && !eventsTableMissing(error)) fastify.log.error(error, 'Failed to store visit events')
+    return reply.code(204).send()
+  })
+
+  // AUTH ROUTE: guided-visit insights across the caller's tours, or one tour.
+  fastify.get('/visits', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const user = request.user as any
+    const query = parseWithSchema(reply, visitsQuerySchema, request.query)
+    if (!query) return
+
+    let spacesQ = fastify.supabase.from('properties').select('id, title').eq('user_id', user.sub)
+    if (query.spaceId) spacesQ = spacesQ.eq('id', query.spaceId)
+    const { data: spaces, error: spacesErr } = await spacesQ
+    if (spacesErr) return reply.code(500).send({ statusMessage: 'Failed to fetch insights' })
+    const ids = (spaces || []).map((s: any) => s.id as string)
+    if (query.spaceId && !ids.length) return reply.code(404).send({ statusMessage: 'Space not found' })
+
+    const since = new Date(Date.now() - query.days * 86400000).toISOString()
+    const empty = summarizeVisits([], [], new Map(), query.days)
+    if (!ids.length) return reply.send({ enabled: true, ...empty })
+
+    const [eventsRes, journeysRes, scenesRes] = await Promise.all([
+      fastify.supabase
+        .from('visit_events')
+        .select('space_id, visitor_id, session_id, event, journey_id, scene_id, step, value, meta, created_at')
+        .in('space_id', ids)
+        .gte('created_at', since)
+        .order('created_at', { ascending: false })
+        .limit(50000),
+      fastify.supabase.from('journeys').select('id, title, steps, order_index').in('space_id', ids)
+        .order('order_index', { ascending: true }).order('created_at', { ascending: true }),
+      fastify.supabase.from('scenes').select('id, name').in('space_id', ids),
+    ])
+    if (eventsRes.error) {
+      if (eventsTableMissing(eventsRes.error)) return reply.send({ enabled: false, ...empty })
+      fastify.log.error(eventsRes.error, 'Failed to fetch visit events')
+      return reply.code(500).send({ statusMessage: 'Failed to fetch insights' })
+    }
+    const journeys: JourneyInfo[] = (journeysRes.data || []).map((j: any) => ({
+      id: j.id, title: j.title, steps: Array.isArray(j.steps) ? j.steps.map((s: any) => ({ title: String(s?.title ?? '') })) : [],
+    }))
+    const sceneNames = placeNames((scenesRes.data || []) as any[], (journeysRes.data || []) as any[])
+    return reply.send({ enabled: true, ...summarizeVisits((eventsRes.data || []) as VisitEventRow[], journeys, sceneNames, query.days) })
   })
 }
