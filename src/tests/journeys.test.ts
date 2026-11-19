@@ -112,6 +112,9 @@ test('a line can mark a spot (kept when saved, label optional and short)', () =>
   assert.deepEqual((r as any).data.sentences[0].pin, { label: 'Parking' })
   assert.deepEqual((r as any).data.sentences[1].pin, {})
   assert.equal(JourneyStep.safeParse({ ...step, sentences: [{ id: 'a', text: 'x', pin: { label: 'x'.repeat(41) } }] }).success, false)
+  const placed = JourneyStep.safeParse({ ...step, sentences: [{ id: 'a', text: 'x', pin: { label: 'Parking', yaw: 1.2, pitch: -0.3 } }] })
+  assert.deepEqual((placed as any).data.sentences[0].pin, { label: 'Parking', yaw: 1.2, pitch: -0.3 }, 'a placed spot keeps its position')
+  assert.equal(JourneyStep.safeParse({ ...step, sentences: [{ id: 'a', text: 'x', pin: { yaw: 99, pitch: 0 } }] }).success, false)
 })
 
 test('updating with a malformed body is refused before any lookup', async () => {
