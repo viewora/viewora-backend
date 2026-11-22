@@ -31,6 +31,7 @@ import hotspotsRoutes from './routes/hotspots.js'
 import aerialRoutes from './routes/aerial.js'
 import floorPlanRoutes from './routes/floorPlans.js'
 import journeyRoutes from './routes/journeys.js'
+import spotlightRoutes from './routes/spotlights.js'
 import vehicleViewRoutes from './routes/vehicleViews.js'
 import spinLookRoutes from './routes/spinLook.js'
 import carTourRoutes from './routes/carTour.js'
@@ -401,6 +402,7 @@ fastify.register(hotspotsRoutes)
 fastify.register(aerialRoutes)
 fastify.register(floorPlanRoutes)
 fastify.register(journeyRoutes)
+fastify.register(spotlightRoutes)
 fastify.register(vehicleViewRoutes)
 fastify.register(spinLookRoutes)
 fastify.register(carTourRoutes)

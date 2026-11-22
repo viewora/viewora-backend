@@ -9,6 +9,7 @@ import { publicJourneys } from './journeys.js'
 import { ownerEntitlements } from '../utils/quotas.js'
 import { shareImageFor, shareMeta, shareMetaKey, type ShareMeta } from '../utils/shareImage.js'
 import { attachNadirCover, readNadirCover } from '../utils/nadirCover.js'
+import { mergeSpotlightUrls } from '../utils/spotlights.js'
 
 const tourParamsSchema = z.object({
   slug: z.string().min(3).max(120).regex(/^[a-z0-9-]+$/, 'Invalid slug'),
@@ -393,6 +394,10 @@ export default async function publicRoutes(fastify: FastifyInstance) {
         mergeSceneGroups(fastify, spaceId, data.scenes),
         // Tripod cover — same (and skipped before migration-nadir-cover.sql has run).
         readNadirCover(fastify, spaceId),
+        // Object Spotlights: each scene that has some gets the URL of its file
+        // (fetched by the tour only when that scene opens). Skipped before
+        // migration-spotlights.sql has run.
+        mergeSpotlightUrls(fastify, spaceId, data.scenes),
       ])
       attachNadirCover(data.space, nadirCover)
 
