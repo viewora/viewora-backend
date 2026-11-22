@@ -90,6 +90,10 @@ test('step validation: bad scene id, overlong text and odd ids are refused', () 
   assert.equal(JourneyStep.safeParse({ ...step, sentences: [{ id: 'a', text: 'x'.repeat(401) }] }).success, false)
   assert.equal(JourneyStep.safeParse({ ...step, id: 'a b<script>' }).success, false)
   assert.equal(JourneyStep.safeParse({ ...step, scene_id: null, view: null }).success, true)
+  // A line can play one of the photo's spotlights (by its key)
+  const spot = JourneyStep.safeParse({ ...step, sentences: [{ id: 'a', text: 'The seats', spotlight: 'black-chairs' }] })
+  assert.equal(spot.success && (spot.data.sentences[0] as any).spotlight, 'black-chairs')
+  assert.equal(JourneyStep.safeParse({ ...step, sentences: [{ id: 'a', text: '', spotlight: 'Bad Key!' }] }).success, false)
 })
 
 test('a step keeps its zoom; out-of-range zoom is refused', () => {

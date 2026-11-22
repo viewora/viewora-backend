@@ -39,6 +39,8 @@ export const JourneyStep = z.object({
     /** A pulsing marker while this line is read ("Parking"): where it was placed
      *  (radians), or the middle of the line's view when yaw / pitch are absent. */
     pin: z.object({ label: z.string().trim().max(40).optional(), yaw: angle.optional(), pitch: angle.optional() }).nullable().optional(),
+    /** An Object Spotlight in this step's photo (its key), played after the line: it opens, reads, closes, and the visit carries on. */
+    spotlight: z.string().regex(/^[a-z0-9][a-z0-9-]{0,59}$/).nullable().optional(),
   })).max(MAX_SENTENCES),
 })
 

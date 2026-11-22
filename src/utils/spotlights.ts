@@ -27,6 +27,8 @@ export const SpotlightData = z.object({
   title: z.string().trim().min(1).max(120),
   lines: z.array(z.string().trim().max(300)).max(6).default([]),
   hint: z.boolean().optional(),
+  /** Where the hint ring sits, when the owner moved it off the object's centre (e.g. a hotspot was on top). */
+  ring: z.object({ yaw: angle, pitch: z.number().finite().min(-1.6).max(1.6) }).optional(),
   model: z.object({ src: z.string().url().max(2048), bytes: z.number().int().positive().optional(), scale: z.number().positive().optional() }).nullable().optional(),
 }).strict()
 export type SpotlightData = z.infer<typeof SpotlightData>
@@ -42,6 +44,9 @@ export const SpotlightSource = z.object({
   say: z.string().max(2000).optional(),
 }).passthrough()
   .refine(v => JSON.stringify(v).length <= 8000, { message: 'source too large' })
+
+/** Moving the hint ring in the editor: null puts it back on the object's centre. */
+export const RingBody = z.object({ ring: z.object({ yaw: angle, pitch: z.number().finite().min(-1.6).max(1.6) }).nullable() }).strict()
 
 export const objectKey = z.string().regex(/^[a-z0-9][a-z0-9-]{0,59}$/, 'lowercase letters, digits and dashes')
 

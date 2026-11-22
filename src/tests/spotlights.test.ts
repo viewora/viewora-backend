@@ -220,6 +220,42 @@ test('publishing stores the voice and the scene file, both cached for a year', a
   assert.equal(res.json().file_url, fileRow.row.url)
 })
 
+test('moving the ring saves it into the data and rewrites the scene file', async () => {
+  const writes: any[] = []
+  const puts: any[] = []
+  // The one object (looked up by its key); the scene file is rebuilt from the list (ownerDb's).
+  const app = await buildApp(supabaseStub(ownerDb((table, op, filters) =>
+    table === 'scene_spotlights' && op === 'select' && filters.some(f => f[0] === 'object_key')
+      ? { data: { data: { ...data, ring: { yaw: 0.5, pitch: 0 } } }, error: null } : undefined), writes), puts)
+  const url = `/scenes/${SCENE_ID}/spotlights/black-chairs`
+  const res = await app.inject({ method: 'PATCH', url, headers: { authorization: 'Bearer t' }, payload: { ring: { yaw: 0.3, pitch: -0.2 } } })
+  assert.equal(res.statusCode, 200, res.body)
+  const upd = writes.find(w => w.table === 'scene_spotlights' && w.op === 'update')
+  assert.deepEqual(upd.row.data.ring, { yaw: 0.3, pitch: -0.2 })
+  assert.equal(upd.row.data.title, data.title)            // the rest of the object is untouched
+  assert.ok(puts.find(p => p.ContentType === 'application/json'))
+  // null puts it back on the object's centre
+  writes.length = 0
+  const back = await app.inject({ method: 'PATCH', url, headers: { authorization: 'Bearer t' }, payload: { ring: null } })
+  assert.equal(back.statusCode, 200)
+  assert.equal('ring' in writes.find(w => w.op === 'update').row.data, false)
+  // bad input, someone else's spotlight
+  assert.equal((await app.inject({ method: 'PATCH', url, headers: { authorization: 'Bearer t' }, payload: { ring: { yaw: 0.3 } } })).statusCode, 400)
+  const none = await buildApp(supabaseStub(ownerDb((table, op, filters) => table === 'scene_spotlights' && op === 'select' && filters.some(f => f[0] === 'object_key') ? { data: null, error: null } : undefined)))
+  assert.equal((await none.inject({ method: 'PATCH', url, headers: { authorization: 'Bearer t' }, payload: { ring: null } })).statusCode, 404)
+})
+
+test('Studio publishing again keeps a ring moved in the editor', async () => {
+  const writes: any[] = []
+  const app = await buildApp(supabaseStub(ownerDb((table, op) =>
+    table === 'scene_spotlights' && op === 'select'
+      ? { data: [{ object_key: 'black-chairs', data: { ...data, ring: { yaw: 0.4, pitch: -0.1 } }, voice_url: null, order_index: 0 }], error: null }
+      : undefined), writes))
+  const res = await app.inject({ method: 'PUT', url: `/scenes/${SCENE_ID}/spotlights/black-chairs`, headers: { authorization: 'Bearer t' }, payload: { data } })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(writes.find(w => w.op === 'upsert' && w.table === 'scene_spotlights').row.data.ring, { yaw: 0.4, pitch: -0.1 })
+})
+
 test('a bad voice or bad data is refused before anything is stored', async () => {
   const puts: any[] = []
   const app = await buildApp(supabaseStub(ownerDb()), puts)

@@ -5,7 +5,7 @@ import { checkUserQuota } from '../utils/quotas.js'
 import { VOICES } from '../utils/narration.js'
 import {
   MAX_SPOTLIGHTS_PER_SCENE, STUDIO_KEY_DAYS, SpotlightData, SpotlightSource, decodeVoice,
-  generateStudioKey, hashStudioKey, objectKey, parseStudioKey, publishScene, storeVoice, tableMissing,
+  generateStudioKey, hashStudioKey, objectKey, RingBody, parseStudioKey, publishScene, storeVoice, tableMissing,
 } from '../utils/spotlights.js'
 
 // Object Spotlights (see utils/spotlights.ts) and the Studio keys that let
@@ -166,7 +166,7 @@ export default async function spotlightRoutes(fastify: FastifyInstance) {
     if (!scene) return reply.code(404).send({ statusMessage: 'Scene not found' })
 
     const { data: existing, error: exErr } = await fastify.supabase
-      .from('scene_spotlights').select('object_key, voice_url, order_index').eq('scene_id', scene.id)
+      .from('scene_spotlights').select('object_key, data, voice_url, order_index').eq('scene_id', scene.id)
     if (exErr) {
       if (tableMissing(exErr)) return reply.code(503).send({ statusMessage: NOT_ENABLED })
       fastify.log.error(exErr)
@@ -198,7 +198,8 @@ export default async function spotlightRoutes(fastify: FastifyInstance) {
         space_id: scene.space_id,
         scene_id: scene.id,
         object_key: params.key,
-        data: body.data,
+        // A ring moved in the editor stays put when Studio publishes the object again.
+        data: body.data.ring || !current?.data?.ring ? body.data : { ...body.data, ring: current.data.ring },
         voice_url: voiceUrl,
         source: body.source ?? null,
         order_index: orderIndex,
@@ -217,6 +218,41 @@ export default async function spotlightRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err)
       return reply.code(500).send({ statusMessage: 'Saved, but the tour could not be updated. Try again.' })
+    }
+  })
+
+  // ── Move an object's hint ring (editor: dragged off a hotspot) ───────────
+  fastify.patch('/scenes/:sceneId/spotlights/:key', { preHandler: [studioOrUser] }, async (req, reply) => {
+    const userId = (req.user as any).sub
+    const params = parseWithSchema(reply, sceneKeyParams, (req as any).params)
+    if (!params) return
+    const body = parseWithSchema(reply, RingBody, req.body ?? {})
+    if (!body) return
+    if (!(await canWrite(userId))) return reply.code(403).send({ statusMessage: QUOTA_MESSAGE })
+    const scene = await ownedScene(params.sceneId, userId)
+    if (!scene) return reply.code(404).send({ statusMessage: 'Scene not found' })
+    const { data: row, error } = await fastify.supabase
+      .from('scene_spotlights').select('data').eq('scene_id', scene.id).eq('object_key', params.key).maybeSingle()
+    if (error) {
+      if (tableMissing(error)) return reply.code(503).send({ statusMessage: NOT_ENABLED })
+      fastify.log.error(error)
+      return reply.code(500).send({ statusMessage: 'Failed to move the ring' })
+    }
+    if (!row) return reply.code(404).send({ statusMessage: 'Spotlight not found' })
+    const { ring: _old, ...rest } = ((row as any).data ?? {}) as Record<string, unknown>
+    const data = body.ring ? { ...rest, ring: body.ring } : rest
+    const { error: upErr } = await fastify.supabase
+      .from('scene_spotlights').update({ data, updated_at: new Date().toISOString() })
+      .eq('scene_id', scene.id).eq('object_key', params.key)
+    if (upErr) {
+      fastify.log.error(upErr)
+      return reply.code(500).send({ statusMessage: 'Failed to move the ring' })
+    }
+    try {
+      return reply.send({ ring: body.ring, file_url: await publishScene(fastify, scene.space_id, scene.id) })
+    } catch (err) {
+      fastify.log.error(err)
+      return reply.code(500).send({ statusMessage: 'Moved, but the tour could not be updated. Try again.' })
     }
   })
 
