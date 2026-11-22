@@ -394,6 +394,15 @@ export default async function (fastify: FastifyInstance) {
     if (body.land_type !== undefined) updates.land_type = body.land_type
     if (body.amenities !== undefined) updates.amenities = body.amenities
 
+    // A new link (slug): remember the old one, whose cached tour must be cleared too —
+    // invalidateSpaceCache() below only knows the new slug.
+    let previousSlug: string | null = null
+    if (updates.slug !== undefined) {
+      const { data: current } = await fastify.supabase
+        .from('properties').select('slug').eq('id', id).eq('user_id', userId).maybeSingle()
+      previousSlug = current?.slug ?? null
+    }
+
     const { data: space, error } = await fastify.supabase
       .from('properties')
       .update(updates)
@@ -404,8 +413,10 @@ export default async function (fastify: FastifyInstance) {
 
     if (error) {
       if (error.code === 'PGRST116') return reply.code(404).send({ statusMessage: 'Space not found' })
+      if (error.code === '23505') return reply.code(409).send({ statusMessage: 'That link is already used by another tour. Please choose another one.' })
       return reply.code(500).send({ statusMessage: 'Failed to update space' })
     }
+    if (previousSlug && previousSlug !== space.slug) await invalidateTourCache(fastify, id, previousSlug)
 
     const mappedSpace = {
       ...space,
@@ -583,6 +594,28 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(500).send({ statusMessage: 'Failed to update viewer settings' })
     }
     return reply.send({ settings })
+  })
+
+  // IS A LINK FREE? — the Details tab checks the tour link (slug) as it's typed.
+  // Same rules as the slug field of PATCH /:id. The tour's own current slug counts as free.
+  fastify.get('/:id/slug-available', {
+    preHandler: fastify.authenticate,
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
+    const userId = (request.user as any).sub
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const parsed = slugSchema.safeParse((request.query as any)?.slug)
+    if (!parsed.success) {
+      return reply.send({ available: false, reason: 'Use at least 3 characters: lowercase letters, numbers and hyphens.' })
+    }
+    const { data: owned } = await fastify.supabase
+      .from('properties').select('id').eq('id', params.id).eq('user_id', userId).maybeSingle()
+    if (!owned) return reply.code(404).send({ statusMessage: 'Tour not found' })
+    const { data: holder } = await fastify.supabase
+      .from('properties').select('id').eq('slug', parsed.data).maybeSingle()
+    if (holder && holder.id !== params.id) return reply.send({ available: false, reason: 'Another tour already uses this link.' })
+    return reply.send({ available: true })
   })
 
   // MOVE SCENES TO A NEW TOUR — e.g. two units shot in one session that belong
