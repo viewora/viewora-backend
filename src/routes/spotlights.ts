@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { parseWithSchema } from '../utils/validation.js'
 import { checkUserQuota } from '../utils/quotas.js'
+import { VOICES } from '../utils/narration.js'
 import {
   MAX_SPOTLIGHTS_PER_SCENE, STUDIO_KEY_DAYS, SpotlightData, SpotlightSource, decodeVoice,
   generateStudioKey, hashStudioKey, objectKey, parseStudioKey, publishScene, storeVoice, tableMissing,
@@ -102,13 +103,19 @@ export default async function spotlightRoutes(fastify: FastifyInstance) {
     })
   })
 
+  /** null when the tour has no guided visit, or before the journeys / narration migrations. */
+  function tourVoice(res: { data: any; error: any }): string | null {
+    const v = !res.error && Array.isArray(res.data) ? res.data[0]?.narration_voice : null
+    return (VOICES as readonly string[]).includes(v) ? v : null
+  }
+
   // ── A tour's scenes and spotlights (editor panel, Studio) ────────────────
   fastify.get('/spaces/:spaceId/spotlights', { preHandler: [studioOrUser] }, async (req, reply) => {
     const userId = (req.user as any).sub
     const params = parseWithSchema(reply, spaceParams, (req as any).params)
     if (!params) return
     if (!(await ownsSpace(params.spaceId, userId))) return reply.code(404).send({ statusMessage: 'Space not found' })
-    const [scenes, rows, files] = await Promise.all([
+    const [scenes, rows, files, journey] = await Promise.all([
       fastify.supabase.from('scenes')
         .select('id, name, raw_image_url, thumbnail_url, order_index')
         .eq('space_id', params.spaceId)
@@ -119,6 +126,13 @@ export default async function spotlightRoutes(fastify: FastifyInstance) {
         .order('order_index', { ascending: true })
         .order('created_at', { ascending: true }),
       fastify.supabase.from('scene_spotlight_files').select('scene_id, url').eq('space_id', params.spaceId),
+      // The tour's narration voice, so Studio records spotlights in the same one:
+      // a published guided visit first, else the one edited last.
+      fastify.supabase.from('journeys').select('narration_voice')
+        .eq('space_id', params.spaceId)
+        .order('is_published', { ascending: false })
+        .order('updated_at', { ascending: false })
+        .limit(1),
     ])
     if (scenes.error) {
       fastify.log.error(scenes.error)
@@ -136,6 +150,7 @@ export default async function spotlightRoutes(fastify: FastifyInstance) {
       })),
       spotlights: rows.data ?? [],
       files: files.error ? [] : (files.data ?? []),
+      voice: tourVoice(journey),
     })
   })
 

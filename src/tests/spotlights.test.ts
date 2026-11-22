@@ -153,6 +153,24 @@ test('a valid Studio key acts as its owner on spotlight routes', async () => {
   assert.equal(res.json().scenes[0].image, 'https://m/raw.png')
 })
 
+test("the list carries the tour's narration voice, for Studio", async () => {
+  const voiceOf = async (journeys: any) => {
+    const app = await buildApp(supabaseStub(ownerDb((table) => {
+      if (table === 'journeys') return journeys
+      if (table === 'scene_spotlights' || table === 'scene_spotlight_files') return { data: [], error: null }
+      if (table === 'scenes') return { data: [], error: null }
+      return undefined
+    })))
+    const res = await app.inject({ method: 'GET', url: `/spaces/${SPACE_ID}/spotlights`, headers: { authorization: 'Bearer t' } })
+    assert.equal(res.statusCode, 200)
+    return res.json().voice
+  }
+  assert.equal(await voiceOf({ data: [{ narration_voice: 'af_bella' }], error: null }), 'af_bella')
+  assert.equal(await voiceOf({ data: [], error: null }), null)                       // no guided visit
+  assert.equal(await voiceOf({ data: [{ narration_voice: 'xx_nope' }], error: null }), null)
+  assert.equal(await voiceOf({ data: null, error: { code: '42703', message: 'column journeys.narration_voice does not exist' } }), null)
+})
+
 test('revoked or expired Studio keys are refused', async () => {
   for (const row of [
     { id: 'k1', user_id: USER, expires_at: new Date(Date.now() + 86_400_000).toISOString(), revoked_at: new Date().toISOString() },
