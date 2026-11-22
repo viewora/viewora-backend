@@ -5,7 +5,9 @@ import { z } from 'zod'
 import { canCreateSpace, checkUserQuota, isTourLimitError, quotaLimitMessage } from '../utils/quotas.js'
 import { parseWithSchema } from '../utils/validation.js'
 import { sendTourPublishedEmail } from '../email/index.js'
-import { invalidateSpaceCache } from '../utils/cache.js'
+import { invalidateSpaceCache, invalidateTourCache, purgeSceneTiles } from '../utils/cache.js'
+import { randomUUID } from 'node:crypto'
+import { sceneStoragePrefixes } from '../utils/sceneStorage.js'
 import { generateListingDescription } from '../utils/aiDescription.js'
 import { failureReason } from '../utils/gemini.js'
 import { attachNadirCover, nadirCoverSchema, readNadirCover } from '../utils/nadirCover.js'
@@ -114,6 +116,26 @@ const generateDescriptionBodySchema = z.object({
   location_text: z.string().max(200).optional(),
   ...listingFactsSchema,
 })
+
+// Move scenes (and the gallery photos the owner picks) into a new tour — see
+// utils/migration-move-scenes.sql for exactly what moves and what is copied.
+const moveScenesBodySchema = z.object({
+  scene_ids: z.array(uuidSchema).min(1).max(1000),
+  photo_ids: z.array(uuidSchema).max(1000).default([]),
+  title: z.string().trim().min(1).max(120),
+  // Publish the new tour at its own link straight away (the editor defaults this
+  // to whether the source tour is live).
+  publish: z.boolean().default(true),
+})
+
+/** First free slug among base, base-2, base-3…, so the new tour gets a readable link. */
+async function freeSlug(fastify: FastifyInstance, base: string): Promise<string> {
+  const { data } = await fastify.supabase.from('properties').select('slug').like('slug', `${base}%`)
+  const taken = new Set((data ?? []).map((r: any) => r.slug))
+  if (!taken.has(base)) return base
+  for (let i = 2; i < 200; i++) if (!taken.has(`${base}-${i}`)) return `${base}-${i}`
+  return `${base}-${randomUUID().slice(0, 6)}`
+}
 
 const updateSettingsBodySchema = z.object({
   hfov_default: z.number().min(30).max(120).optional(),
@@ -417,7 +439,7 @@ export default async function (fastify: FastifyInstance) {
         .eq('properties.user_id', userId),
       fastify.supabase
         .from('scenes')
-        .select('id, space_id')
+        .select('id, space_id, thumbnail_url, tile_manifest_url, tile_medium_manifest_url')
         .eq('space_id', id),
     ])
 
@@ -453,8 +475,8 @@ export default async function (fastify: FastifyInstance) {
     // 3b. Cleanup R2 — scene tile directories (thumbnail + all tile files), all scenes in parallel
     if (bucketName && sceneItems && sceneItems.length > 0) {
       const { ListObjectsV2Command } = await import('@aws-sdk/client-s3')
-      await Promise.all(sceneItems.map(async (scene) => {
-        const prefix = `spaces/${id}/scenes/${scene.id}/`
+      // A scene moved in from another tour keeps its files in that tour's folder.
+      await Promise.all(sceneItems.flatMap((scene) => sceneStoragePrefixes(id, scene as any).map(async (prefix) => {
         try {
           const listed = await fastify.s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: prefix }))
           const objects = (listed.Contents ?? []).filter(o => o.Key).map(o => ({ Key: o.Key as string }))
@@ -464,7 +486,7 @@ export default async function (fastify: FastifyInstance) {
         } catch (err) {
           fastify.log.error(err, `Failed to delete scene tiles for scene ${scene.id}`)
         }
-      }))
+      })))
     }
 
     // 4. Update Quotas (tour count is recounted by a DB trigger; storage still via RPC)
@@ -561,6 +583,94 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(500).send({ statusMessage: 'Failed to update viewer settings' })
     }
     return reply.send({ settings })
+  })
+
+  // MOVE SCENES TO A NEW TOUR — e.g. two units shot in one session that belong
+  // to different owners. One transaction in the database (move_scenes_to_new_tour):
+  // the new tour copies the source's details and viewer settings, the chosen
+  // scenes and photos move over with their hotspots, and arrows that would cross
+  // between the two tours are removed. Files stay where they are in R2.
+  fastify.post('/:id/move-scenes', {
+    preHandler: fastify.authenticate,
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
+    const userId = (request.user as any).sub
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const body = parseWithSchema(reply, moveScenesBodySchema, request.body)
+    if (!body) return
+
+    const quotaCtx = await checkUserQuota(fastify, userId)
+    if (quotaCtx.isGrace) {
+      return reply.code(403).send({ statusMessage: 'Creating tours is disabled during the grace period. Please renew your subscription.' })
+    }
+    if (!quotaCtx.canWrite) {
+      return reply.code(403).send({ statusMessage: 'Your subscription is not active. Please check your billing status.' })
+    }
+    const tourLimitReply = () => reply.code(403).send({
+      statusMessage: quotaLimitMessage(quotaCtx.plan, 'tours'),
+      code: 'TOUR_LIMIT_REACHED',
+      limit: quotaCtx.plan.max_active_spaces,
+      plan: quotaCtx.plan.name,
+    })
+    if (!(await canCreateSpace(fastify, userId, quotaCtx))) return tourLimitReply()
+
+    const { data: source } = await fastify.supabase
+      .from('properties')
+      .select('id, slug')
+      .eq('id', params.id)
+      .eq('user_id', userId)
+      .maybeSingle()
+    if (!source) return reply.code(404).send({ statusMessage: 'Tour not found' })
+
+    const base = generateSlug(body.title, randomUUID())
+    let slug = body.publish ? await freeSlug(fastify, base) : null
+    const run = () => fastify.supabase.rpc('move_scenes_to_new_tour', {
+      p_user: userId,
+      p_source: source.id,
+      p_scene_ids: body.scene_ids,
+      p_photo_ids: body.photo_ids,
+      p_title: body.title,
+      p_slug: slug,
+    })
+    let { data, error } = await run()
+    // Someone took the slug between the lookup and the insert: one retry with a suffix.
+    if (error?.code === '23505' && slug) {
+      slug = `${base}-${randomUUID().slice(0, 6)}`
+      ;({ data, error } = await run())
+    }
+    if (error) {
+      if (isTourLimitError(error)) return tourLimitReply()
+      if (error.code === 'PGRST202' || error.code === '42883') {
+        fastify.log.error(error, 'move_scenes_to_new_tour missing — run migration-move-scenes.sql')
+        return reply.code(503).send({ statusMessage: 'Moving scenes is not switched on yet. Please try again later.' })
+      }
+      const msg = error.message ?? ''
+      if (msg.includes('MOVE_SCENE_NOT_IN_TOUR') || msg.includes('MOVE_PHOTO_NOT_IN_TOUR')) {
+        return reply.code(409).send({ statusMessage: 'Some of these scenes or photos changed meanwhile. Reload and try again.' })
+      }
+      if (msg.includes('MOVE_NO_SCENES')) return reply.code(400).send({ statusMessage: 'Pick at least one scene to move.' })
+      if (msg.includes('MOVE_SOURCE_NOT_FOUND')) return reply.code(404).send({ statusMessage: 'Tour not found' })
+      fastify.log.error(error, 'move_scenes_to_new_tour failed')
+      return reply.code(500).send({ statusMessage: 'Could not move the scenes. Nothing was changed.' })
+    }
+
+    const result = data as { id: string; slug: string | null; scenes: number; photos: number; panoramas: number; links_removed: number }
+    request.log.info({ userId, source: source.id, ...result }, 'Moved scenes to a new tour')
+
+    // Both public tours changed; the tile proxy's scene→space lookups are stale for moved scenes.
+    await Promise.all([
+      invalidateTourCache(fastify, source.id, source.slug),
+      invalidateTourCache(fastify, result.id, result.slug),
+      ...body.scene_ids.map(id => purgeSceneTiles(fastify, id)),
+      fastify.redis ? fastify.redis.del(`billing:status:${userId}`).catch(() => {}) : Promise.resolve(),
+    ])
+
+    return reply.code(201).send({
+      space: { id: result.id, slug: result.slug, title: body.title, is_published: !!result.slug },
+      moved: { scenes: result.scenes, photos: result.photos },
+      links_removed: result.links_removed,
+    })
   })
 
   // PUBLISH space

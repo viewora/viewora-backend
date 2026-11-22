@@ -5,6 +5,7 @@ import { parseWithSchema } from '../utils/validation.js'
 import { invalidateSpaceCache, invalidateTourCache, purgeSceneTiles } from '../utils/cache.js'
 import { checkUserQuota, canCreateScene, quotaLimitMessage } from '../utils/quotas.js'
 import { recoverStuckScenes } from '../utils/sceneRecovery.js'
+import { sceneStoragePrefixes } from '../utils/sceneStorage.js'
 
 // ── Param schemas ─────────────────────────────────────────────
 const sceneParamsSchema = z.object({ sceneId: z.string().uuid() })
@@ -341,7 +342,7 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
 
     const { data: scene } = await fastify.supabase
       .from('scenes')
-      .select('id, space_id, raw_image_url, original_raw_image_url, properties!inner(user_id)')
+      .select('id, space_id, raw_image_url, original_raw_image_url, thumbnail_url, tile_manifest_url, tile_medium_manifest_url, properties!inner(user_id)')
       .eq('id', params.sceneId)
       .eq('properties.user_id', userId)
       .single()
@@ -410,20 +411,22 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       // Clean up R2: tiles directory + original panorama
       const bucketName = process.env.R2_BUCKET_NAME
       if (!bucketName) return
-      const tilesPrefix = `spaces/${spaceId}/scenes/${sceneId}/`
-      try {
-        // Paged: AI-edited scenes keep one tile set per version, easily >1000 objects
-        let token: string | undefined
-        do {
-          const listed = await fastify.s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: tilesPrefix, ContinuationToken: token }))
-          const objects = (listed.Contents ?? []).filter(o => o.Key).map(o => ({ Key: o.Key as string }))
-          if (objects.length > 0) {
-            await fastify.s3.send(new DeleteObjectsCommand({ Bucket: bucketName, Delete: { Objects: objects } }))
-          }
-          token = listed.IsTruncated ? listed.NextContinuationToken : undefined
-        } while (token)
-      } catch (err) {
-        fastify.log.error(err, `Failed to delete R2 tiles for scene ${sceneId}`)
+      // A scene moved from another tour keeps its files in that tour's folder.
+      for (const tilesPrefix of sceneStoragePrefixes(spaceId, scene as any)) {
+        try {
+          // Paged: AI-edited scenes keep one tile set per version, easily >1000 objects
+          let token: string | undefined
+          do {
+            const listed = await fastify.s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: tilesPrefix, ContinuationToken: token }))
+            const objects = (listed.Contents ?? []).filter(o => o.Key).map(o => ({ Key: o.Key as string }))
+            if (objects.length > 0) {
+              await fastify.s3.send(new DeleteObjectsCommand({ Bucket: bucketName, Delete: { Objects: objects } }))
+            }
+            token = listed.IsTruncated ? listed.NextContinuationToken : undefined
+          } while (token)
+        } catch (err) {
+          fastify.log.error(err, `Failed to delete R2 tiles for scene ${sceneId}`)
+        }
       }
       if (mediaRecord?.storage_key) {
         try {
