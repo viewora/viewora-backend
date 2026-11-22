@@ -1,5 +1,16 @@
--- Persistent, ordered public showcases. This is additive: the pre-existing
--- collections table remains compatible with its earlier (unused) definition.
+-- Persistent, ordered public showcases. This migration is self-contained:
+-- older installations may not have received the earlier, unused collections
+-- foundation, so create it safely before extending it.
+
+CREATE TABLE IF NOT EXISTS collections (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  slug TEXT UNIQUE,
+  cover_image TEXT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 ALTER TABLE collections
   ADD COLUMN IF NOT EXISTS description TEXT NULL,
