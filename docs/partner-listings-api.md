@@ -135,11 +135,11 @@ curl -X PATCH https://api.viewora.software/v1/listings/ext:HSE-0042 \
 - **Fields you can't change:**
   - Viewora's own fields (`publication_status`, `version`, `urls` and so on) answer `409 FIELD_OWNED_BY_OTHER`.
   - `external_id` and `vertical` answer `409 FIELD_IMMUTABLE`.
-- **Changing the agent** isn't supported yet. Archive the listing and create it again under the new agent.
+- **Changing the agent:** send `agent_external_id` with another of your agents. The tour moves to that agent's Viewora account, with its views and enquiries. An unknown agent answers `404 AGENT_NOT_FOUND`.
 
 ## 4. Delete and restore
 
-- **`DELETE /v1/listings/{id}`** archives the listing. It leaves the page at once and can be restored for 30 days with `POST /v1/listings/{id}/restore`. After 30 days the restore answers `410`.
+- **`DELETE /v1/listings/{id}`** archives the listing. It leaves the page at once and can be restored for 30 days with `POST /v1/listings/{id}/restore`. After 30 days the listing and its tour are deleted for good, the restore answers `404`, and the `external_id` can be used again.
 - **The mass-delete guard.** Removing more than 10% of your active listings within an hour answers `409 BULK_DELETE_HELD`, because a broken export looks exactly like a mass delete. If you really mean it, send the request again with `{ "confirm_bulk_delete": true }`.
 
 ## 5. Read and keep in sync
@@ -172,7 +172,24 @@ curl -X POST https://api.viewora.software/v1/listings/bulk -H "Idempotency-Key: 
 
 `POST /v1/media` with `{ "listing_id": "ext:HSE-0042", "kind": "photo", "source_url": "https://…" }` adds a photo to the listing's media list and fetches it in the background.
 
-## 8. Webhooks
+## 8. Claim a tour an agent made in Viewora
+
+Some of your agents already have tours they made in the Viewora app (they
+appear in the export feed with `origin: "viewora"`). To manage one as your
+listing, ask the agent:
+
+```bash
+curl -X POST https://api.viewora.software/v1/claims … \
+  -d '{ "tour_id": "6f1c…", "agent_external_id": "agent-118", "external_id": "HSE-0042", "note": "Listed with us since March" }'
+# → 201 { "claim": { "id": "clm_…", "status": "pending", "expires_at": "…" } }
+```
+
+- **The agent decides.** The agent sees the request in the Viewora app and approves or declines it. You get `claim.approved` or `claim.declined`, and unanswered claims expire after 14 days (`claim.expired`).
+- **After approval,** `POST /v1/listings` with the same `external_id` puts your listing on that tour instead of making a new one. From then on you own its facts (price, availability, photos).
+- **Which tours:** only your own agent's tours can be claimed. Anything else answers `404 TOUR_NOT_FOUND`.
+- **Other calls:** `GET /v1/claims` (filter by `status`), `GET /v1/claims/{id}`, and `DELETE /v1/claims/{id}` to withdraw a claim that is still waiting.
+
+## 9. Webhooks
 
 ```bash
 curl -X POST https://api.viewora.software/v1/webhooks … \
@@ -209,6 +226,10 @@ const ok = Math.abs(Date.now() / 1000 - t) < 300 &&
 
 **Endpoint rules.** Endpoints must use `https://` on a public address, and you can have up to 5 per mode.
 
+**Rotating the secret.** `POST /v1/webhooks/{id}/rotate-secret` returns a new secret (shown once). For 24 hours each delivery carries two signatures, one per secret: `t=…,v1=<new>,v1=<old>`. Accept the request if any `v1` matches, switch to the new secret, and the old one stops after 24 hours.
+
+**When an endpoint is switched off,** Viewora emails your technical contact.
+
 **Managing endpoints:**
 - `GET /v1/webhooks` lists them.
 - `GET /v1/webhooks/{id}/deliveries` shows the last 50 deliveries.
@@ -217,10 +238,12 @@ const ok = Math.abs(Date.now() / 1000 - t) < 300 &&
 
 Events never contain lead contact details.
 
-## 9. Leads, analytics and export
+## 10. Leads, analytics and export
 
 - **`GET /v1/leads`** (`leads:read`) lists people who asked about your listings through Viewora pages.
-  - Use them only for the purpose stated in your agreement.
+  - Only buyers who ticked the box agreeing to share their details with you are listed. Each lead carries `consent.wording` (the exact words they agreed to) and `consent.given_at`.
+  - A buyer can withdraw; their lead then disappears from this feed. Delete any copy you hold within the time your agreement sets.
+  - Use leads only for the purpose stated in your agreement.
   - Every read is logged.
   - Filters: `listing_id` and `since`. Pages use a cursor.
 - **`GET /v1/analytics?from=2026-11-01&to=2026-11-30`** (`analytics:read`) returns views per listing per day, for at most 92 days per request.
@@ -240,7 +263,7 @@ Listing codes:
 |---|---|
 | Input | `VALIDATION_ERROR`, `INVALID_FILTER`, `INVALID_CURSOR`, `INVALID_IF_MATCH`, `INVALID_IDEMPOTENCY_KEY` |
 | Not found | `LISTING_NOT_FOUND`, `AGENT_NOT_FOUND`, `IMPORT_NOT_FOUND`, `WEBHOOK_NOT_FOUND` |
-| Conflicts | `LISTING_EXISTS`, `VERSION_CONFLICT`, `FIELD_OWNED_BY_OTHER`, `FIELD_IMMUTABLE`, `LISTING_ARCHIVED`, `LISTING_NOT_ARCHIVED`, `AGENT_CHANGE_NOT_SUPPORTED`, `BULK_DELETE_HELD`, `IDEMPOTENCY_IN_PROGRESS`, `WEBHOOK_LIMIT` |
+| Conflicts | `LISTING_EXISTS`, `VERSION_CONFLICT`, `FIELD_OWNED_BY_OTHER`, `FIELD_IMMUTABLE`, `LISTING_ARCHIVED`, `LISTING_NOT_ARCHIVED`, `AGENT_CHANGE_FAILED`, `BULK_DELETE_HELD`, `CLAIM_EXISTS`, `CLAIM_NOT_PENDING`, `TOUR_ALREADY_LINKED`, `IDEMPOTENCY_IN_PROGRESS`, `WEBHOOK_LIMIT` |
 | Other | `IDEMPOTENCY_KEY_REUSED` (422), `LISTING_LOCKED` (423), `RESTORE_WINDOW_PASSED` (410), `LISTING_LIMIT_REACHED` (403), `TOO_MANY_ITEMS` (413), `IMPORT_CONCURRENCY` (429), `URL_NOT_HTTPS`, `URL_PRIVATE_NETWORK`, `RANGE_TOO_LARGE`, `SCOPE_MISSING`, `KEY_EXPIRED` |
 
 ## Limits

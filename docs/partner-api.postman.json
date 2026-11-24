@@ -440,6 +440,136 @@
       }
     },
     {
+      "name": "New signing secret; the old one keeps signing for 24 hours",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/:id/rotate-secret",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "webhooks",
+            ":id",
+            "rotate-secret"
+          ]
+        },
+        "description": "Scope: `webhooks:manage`"
+      }
+    },
+    {
+      "name": "Ask an agent to let you manage a tour they made in the Viewora app",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/claims",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "claims"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "description": "The agent approves or declines in the app (claim.approved / claim.declined events; claims expire after 14 days). After approval, POST /v1/listings with the same external_id puts your listing on that tour.\n\nScope: `listings:write`"
+      }
+    },
+    {
+      "name": "Your claims",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/claims",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "claims"
+          ]
+        },
+        "description": "Scope: `listings:read`"
+      }
+    },
+    {
+      "name": "One claim",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/claims/:id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "claims",
+            ":id"
+          ]
+        },
+        "description": "Scope: `listings:read`"
+      }
+    },
+    {
+      "name": "Withdraw a claim that is still waiting",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/claims/:id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "claims",
+            ":id"
+          ]
+        },
+        "description": "Scope: `listings:write`"
+      }
+    },
+    {
       "name": "Last 50 deliveries",
       "request": {
         "method": "GET",
@@ -482,7 +612,7 @@
             "leads"
           ]
         },
-        "description": "Granted only after the data-processing addendum is signed. Every read is logged.\n\nScope: `leads:read`"
+        "description": "Granted only after the data-processing addendum is signed. Only buyers who agreed to share their details with you are listed, each with the exact consent wording. Every read is logged.\n\nScope: `leads:read`"
       }
     },
     {

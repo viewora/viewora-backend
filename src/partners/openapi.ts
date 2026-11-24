@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { listingInputSchema, listingPatchSchema, AVAILABILITY, PUBLICATION_STATUSES, MEDIA_KINDS } from './listingModel.js'
 import { EVENT_TYPES } from './webhooks.js'
 import { SCOPES } from './scopes.js'
+import { claimBody } from './claims.js'
 
 // The OpenAPI description of /v1, generated from the same zod schemas the
 // API validates with, so the two cannot drift. Served at GET /v1/openapi.json
@@ -126,8 +127,19 @@ export function buildOpenApi() {
       '/webhooks/{id}': { delete: op({ summary: 'Delete an endpoint', scope: 'webhooks:manage', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { 204: { description: 'Deleted' } } }) },
       '/webhooks/{id}/test': { post: op({ summary: 'Send a webhook.test event', scope: 'webhooks:manage', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { 202: { description: 'Queued' } } }) },
       '/webhooks/{id}/enable': { post: op({ summary: 'Switch a disabled endpoint back on', scope: 'webhooks:manage', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'Enabled' } } }) },
+      '/webhooks/{id}/rotate-secret': { post: op({ summary: 'New signing secret; the old one keeps signing for 24 hours', scope: 'webhooks:manage', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'The new secret, shown once' } } }) },
+      '/claims': {
+        post: op({ summary: 'Ask an agent to let you manage a tour they made in the Viewora app', scope: 'listings:write', parameters: [idemHeader],
+          description: 'The agent approves or declines in the app (claim.approved / claim.declined events; claims expire after 14 days). After approval, POST /v1/listings with the same external_id puts your listing on that tour.',
+          body: schemaOf(claimBody), responses: { 201: { description: 'Waiting for the agent' }, 404: errorResponse('AGENT_NOT_FOUND, TOUR_NOT_FOUND'), 409: errorResponse('CLAIM_EXISTS, TOUR_ALREADY_LINKED, LISTING_EXISTS') } }),
+        get: op({ summary: 'Your claims', scope: 'listings:read', parameters: [{ name: 'status', in: 'query', schema: { enum: ['pending', 'approved', 'declined', 'cancelled', 'expired'] } }], responses: { 200: { description: 'Claims' } } }),
+      },
+      '/claims/{id}': {
+        get: op({ summary: 'One claim', scope: 'listings:read', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'The claim' }, 404: errorResponse('CLAIM_NOT_FOUND') } }),
+        delete: op({ summary: 'Withdraw a claim that is still waiting', scope: 'listings:write', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'Cancelled' }, 409: errorResponse('CLAIM_NOT_PENDING') } }),
+      },
       '/webhooks/{id}/deliveries': { get: op({ summary: 'Last 50 deliveries', scope: 'webhooks:manage', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'Deliveries' } } }) },
-      '/leads': { get: op({ summary: 'Leads for your listings', scope: 'leads:read', description: 'Granted only after the data-processing addendum is signed. Every read is logged.',
+      '/leads': { get: op({ summary: 'Leads for your listings', scope: 'leads:read', description: 'Granted only after the data-processing addendum is signed. Only buyers who agreed to share their details with you are listed, each with the exact consent wording. Every read is logged.',
         parameters: [{ name: 'cursor', in: 'query', schema: { type: 'string' } }, { name: 'limit', in: 'query', schema: { type: 'integer' } }, { name: 'listing_id', in: 'query', schema: { type: 'string' } }, { name: 'since', in: 'query', schema: { type: 'string', format: 'date-time' } }],
         responses: { 200: { description: 'A page of leads' } } }) },
       '/analytics': { get: op({ summary: 'Views per listing per day (at most 92 days)', scope: 'analytics:read',
