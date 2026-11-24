@@ -1,0 +1,2953 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Viewora Partner API",
+    "version": "1.0.0",
+    "description": "Send your property and vehicle listings to Viewora. Your system owns the listing facts; Viewora owns tours, pages and moderation.\n\nMoney is always an integer: whole KES, or USD cents. Timestamps are ISO 8601 UTC. Unknown fields are refused.\n\nEvery response has an X-Request-Id header; quote it when you contact support."
+  },
+  "servers": [
+    {
+      "url": "https://api.viewora.software/v1"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "partnerKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "vo_test_… (sandbox) or vo_live_…"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "field": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "ListingInput": {
+        "type": "object",
+        "properties": {
+          "external_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^[A-Za-z0-9._:\\-]+$"
+          },
+          "agent_external_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^[A-Za-z0-9._:\\-]+$"
+          },
+          "branch": {
+            "type": "object",
+            "properties": {
+              "external_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120,
+                "pattern": "^[A-Za-z0-9._:\\-]+$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "town": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            },
+            "required": [
+              "external_id"
+            ],
+            "additionalProperties": false
+          },
+          "vertical": {
+            "type": "string",
+            "enum": [
+              "property",
+              "vehicle"
+            ]
+          },
+          "transaction": {
+            "type": "string",
+            "enum": [
+              "sale",
+              "rent",
+              "lease"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "price": {
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 999999999999
+              },
+              "currency": {
+                "type": "string",
+                "enum": [
+                  "KES",
+                  "USD"
+                ]
+              },
+              "period": {
+                "default": "once",
+                "type": "string",
+                "enum": [
+                  "once",
+                  "day",
+                  "week",
+                  "month",
+                  "year"
+                ]
+              },
+              "negotiable": {
+                "type": "boolean"
+              },
+              "vat_inclusive": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "amount",
+              "currency"
+            ],
+            "additionalProperties": false
+          },
+          "price_on_request": {
+            "type": "boolean"
+          },
+          "deposit": {
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 999999999999
+              },
+              "currency": {
+                "type": "string",
+                "enum": [
+                  "KES",
+                  "USD"
+                ]
+              },
+              "period": {
+                "type": "string",
+                "enum": [
+                  "once",
+                  "day",
+                  "week",
+                  "month",
+                  "year"
+                ]
+              }
+            },
+            "required": [
+              "amount",
+              "currency"
+            ],
+            "additionalProperties": false
+          },
+          "service_charge": {
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 999999999999
+              },
+              "currency": {
+                "type": "string",
+                "enum": [
+                  "KES",
+                  "USD"
+                ]
+              },
+              "period": {
+                "type": "string",
+                "enum": [
+                  "once",
+                  "day",
+                  "week",
+                  "month",
+                  "year"
+                ]
+              }
+            },
+            "required": [
+              "amount",
+              "currency"
+            ],
+            "additionalProperties": false
+          },
+          "availability": {
+            "default": "available",
+            "type": "string",
+            "enum": [
+              "available",
+              "reserved",
+              "sold",
+              "rented",
+              "withdrawn"
+            ]
+          },
+          "available_from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+          },
+          "location": {
+            "type": "object",
+            "properties": {
+              "county": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "area": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "estate": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "address_line": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "lat": {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90
+              },
+              "lng": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180
+              },
+              "display_precision": {
+                "default": "approx_500m",
+                "type": "string",
+                "enum": [
+                  "exact",
+                  "approx_500m",
+                  "area_only"
+                ]
+              }
+            },
+            "required": [
+              "county",
+              "area"
+            ],
+            "additionalProperties": false
+          },
+          "property": {
+            "type": "object",
+            "properties": {
+              "property_type": {
+                "type": "string",
+                "enum": [
+                  "apartment",
+                  "house",
+                  "townhouse",
+                  "maisonette",
+                  "bungalow",
+                  "villa",
+                  "bedsitter",
+                  "studio",
+                  "land",
+                  "office",
+                  "shop",
+                  "warehouse",
+                  "commercial_other"
+                ]
+              },
+              "bedrooms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50
+              },
+              "bathrooms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50
+              },
+              "en_suite": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50
+              },
+              "floor_area_sqm": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              "plot_size_acres": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1000000
+              },
+              "floor": {
+                "type": "integer",
+                "minimum": -5,
+                "maximum": 200
+              },
+              "total_floors": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200
+              },
+              "parking_spaces": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "furnished": {
+                "type": "string",
+                "enum": [
+                  "no",
+                  "semi",
+                  "full"
+                ]
+              },
+              "amenities": {
+                "maxItems": 30,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60
+                }
+              },
+              "title_type": {
+                "type": "string",
+                "enum": [
+                  "freehold",
+                  "leasehold",
+                  "sectional",
+                  "other"
+                ]
+              }
+            },
+            "required": [
+              "property_type"
+            ],
+            "additionalProperties": false
+          },
+          "vehicle": {
+            "type": "object",
+            "properties": {
+              "make": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "variant": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "year": {
+                "type": "integer",
+                "minimum": 1900,
+                "maximum": 2100
+              },
+              "mileage_km": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000000
+              },
+              "transmission": {
+                "type": "string",
+                "enum": [
+                  "manual",
+                  "automatic"
+                ]
+              },
+              "fuel_type": {
+                "type": "string",
+                "enum": [
+                  "petrol",
+                  "diesel",
+                  "electric",
+                  "hybrid"
+                ]
+              },
+              "engine_cc": {
+                "type": "integer",
+                "minimum": 50,
+                "maximum": 20000
+              },
+              "body_type": {
+                "type": "string",
+                "enum": [
+                  "saloon",
+                  "hatchback",
+                  "suv",
+                  "pickup",
+                  "van",
+                  "wagon",
+                  "coupe",
+                  "convertible",
+                  "bus",
+                  "truck",
+                  "motorbike",
+                  "other"
+                ]
+              },
+              "drive": {
+                "type": "string",
+                "enum": [
+                  "2wd",
+                  "4wd",
+                  "awd"
+                ]
+              },
+              "colour": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "condition": {
+                "type": "string",
+                "enum": [
+                  "new",
+                  "foreign_used",
+                  "locally_used"
+                ]
+              },
+              "vin": {
+                "type": "string",
+                "maxLength": 17
+              },
+              "chassis_no": {
+                "type": "string",
+                "maxLength": 30
+              },
+              "registration_no": {
+                "type": "string",
+                "maxLength": 12
+              },
+              "duty_paid": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "make",
+              "model",
+              "year"
+            ],
+            "additionalProperties": false
+          },
+          "media": {
+            "maxItems": 60,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "photo",
+                    "panorama",
+                    "tour",
+                    "car_exterior",
+                    "floor_plan",
+                    "video",
+                    "document"
+                  ]
+                },
+                "source_url": {
+                  "type": "string",
+                  "maxLength": 2048,
+                  "format": "uri"
+                },
+                "media_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "order": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                },
+                "caption": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 140
+                },
+                "angle": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 359
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "partner_updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "publish": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "external_id",
+          "vertical",
+          "transaction",
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "ListingPatch": {
+        "type": "object",
+        "properties": {
+          "agent_external_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^[A-Za-z0-9._:\\-]+$"
+          },
+          "branch": {
+            "type": "object",
+            "properties": {
+              "external_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120,
+                "pattern": "^[A-Za-z0-9._:\\-]+$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "town": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            },
+            "required": [
+              "external_id"
+            ],
+            "additionalProperties": false
+          },
+          "transaction": {
+            "type": "string",
+            "enum": [
+              "sale",
+              "rent",
+              "lease"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 999999999999
+                  },
+                  "currency": {
+                    "type": "string",
+                    "enum": [
+                      "KES",
+                      "USD"
+                    ]
+                  },
+                  "period": {
+                    "default": "once",
+                    "type": "string",
+                    "enum": [
+                      "once",
+                      "day",
+                      "week",
+                      "month",
+                      "year"
+                    ]
+                  },
+                  "negotiable": {
+                    "type": "boolean"
+                  },
+                  "vat_inclusive": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "amount",
+                  "currency"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price_on_request": {
+            "type": "boolean"
+          },
+          "deposit": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 999999999999
+                  },
+                  "currency": {
+                    "type": "string",
+                    "enum": [
+                      "KES",
+                      "USD"
+                    ]
+                  },
+                  "period": {
+                    "type": "string",
+                    "enum": [
+                      "once",
+                      "day",
+                      "week",
+                      "month",
+                      "year"
+                    ]
+                  }
+                },
+                "required": [
+                  "amount",
+                  "currency"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "service_charge": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 999999999999
+                  },
+                  "currency": {
+                    "type": "string",
+                    "enum": [
+                      "KES",
+                      "USD"
+                    ]
+                  },
+                  "period": {
+                    "type": "string",
+                    "enum": [
+                      "once",
+                      "day",
+                      "week",
+                      "month",
+                      "year"
+                    ]
+                  }
+                },
+                "required": [
+                  "amount",
+                  "currency"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "available",
+              "reserved",
+              "sold",
+              "rented",
+              "withdrawn"
+            ]
+          },
+          "available_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "location": {
+            "type": "object",
+            "properties": {
+              "county": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "area": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "estate": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "address_line": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "lat": {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90
+              },
+              "lng": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180
+              },
+              "display_precision": {
+                "default": "approx_500m",
+                "type": "string",
+                "enum": [
+                  "exact",
+                  "approx_500m",
+                  "area_only"
+                ]
+              }
+            },
+            "required": [
+              "county",
+              "area"
+            ],
+            "additionalProperties": false
+          },
+          "property": {
+            "type": "object",
+            "properties": {
+              "property_type": {
+                "type": "string",
+                "enum": [
+                  "apartment",
+                  "house",
+                  "townhouse",
+                  "maisonette",
+                  "bungalow",
+                  "villa",
+                  "bedsitter",
+                  "studio",
+                  "land",
+                  "office",
+                  "shop",
+                  "warehouse",
+                  "commercial_other"
+                ]
+              },
+              "bedrooms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50
+              },
+              "bathrooms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50
+              },
+              "en_suite": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50
+              },
+              "floor_area_sqm": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              "plot_size_acres": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1000000
+              },
+              "floor": {
+                "type": "integer",
+                "minimum": -5,
+                "maximum": 200
+              },
+              "total_floors": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200
+              },
+              "parking_spaces": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "furnished": {
+                "type": "string",
+                "enum": [
+                  "no",
+                  "semi",
+                  "full"
+                ]
+              },
+              "amenities": {
+                "maxItems": 30,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60
+                }
+              },
+              "title_type": {
+                "type": "string",
+                "enum": [
+                  "freehold",
+                  "leasehold",
+                  "sectional",
+                  "other"
+                ]
+              }
+            },
+            "required": [
+              "property_type"
+            ],
+            "additionalProperties": false
+          },
+          "vehicle": {
+            "type": "object",
+            "properties": {
+              "make": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "variant": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "year": {
+                "type": "integer",
+                "minimum": 1900,
+                "maximum": 2100
+              },
+              "mileage_km": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000000
+              },
+              "transmission": {
+                "type": "string",
+                "enum": [
+                  "manual",
+                  "automatic"
+                ]
+              },
+              "fuel_type": {
+                "type": "string",
+                "enum": [
+                  "petrol",
+                  "diesel",
+                  "electric",
+                  "hybrid"
+                ]
+              },
+              "engine_cc": {
+                "type": "integer",
+                "minimum": 50,
+                "maximum": 20000
+              },
+              "body_type": {
+                "type": "string",
+                "enum": [
+                  "saloon",
+                  "hatchback",
+                  "suv",
+                  "pickup",
+                  "van",
+                  "wagon",
+                  "coupe",
+                  "convertible",
+                  "bus",
+                  "truck",
+                  "motorbike",
+                  "other"
+                ]
+              },
+              "drive": {
+                "type": "string",
+                "enum": [
+                  "2wd",
+                  "4wd",
+                  "awd"
+                ]
+              },
+              "colour": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "condition": {
+                "type": "string",
+                "enum": [
+                  "new",
+                  "foreign_used",
+                  "locally_used"
+                ]
+              },
+              "vin": {
+                "type": "string",
+                "maxLength": 17
+              },
+              "chassis_no": {
+                "type": "string",
+                "maxLength": 30
+              },
+              "registration_no": {
+                "type": "string",
+                "maxLength": 12
+              },
+              "duty_paid": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "make",
+              "model",
+              "year"
+            ],
+            "additionalProperties": false
+          },
+          "media": {
+            "maxItems": 60,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "photo",
+                    "panorama",
+                    "tour",
+                    "car_exterior",
+                    "floor_plan",
+                    "video",
+                    "document"
+                  ]
+                },
+                "source_url": {
+                  "type": "string",
+                  "maxLength": 2048,
+                  "format": "uri"
+                },
+                "media_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "order": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                },
+                "caption": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 140
+                },
+                "angle": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 359
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "partner_updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "publish": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Listing": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ListingInput"
+          }
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "lst_6f1c…"
+          },
+          "tour_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "publication_status": {
+            "enum": [
+              "draft",
+              "submitted",
+              "validated",
+              "pending_moderation",
+              "published",
+              "rejected",
+              "expired",
+              "archived"
+            ]
+          },
+          "moderation": {
+            "type": "object",
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "pending_change": {
+                "type": "boolean"
+              }
+            }
+          },
+          "media": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "photo",
+                    "panorama",
+                    "tour",
+                    "car_exterior",
+                    "floor_plan",
+                    "video",
+                    "document"
+                  ]
+                },
+                "source_url": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "pending",
+                    "fetching",
+                    "ready",
+                    "failed",
+                    "skipped"
+                  ]
+                }
+              }
+            }
+          },
+          "urls": {
+            "type": "object",
+            "properties": {
+              "share": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "embed": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "published_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restore_until": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "WebhookEvent": {
+        "type": "object",
+        "description": "POSTed to your endpoint. Check Viewora-Signature: t=<unix>,v1=<hex HMAC-SHA256 of \"t.body\"> with your secret, and refuse anything older than 5 minutes. Delivery is at least once and not ordered: use id to drop repeats and data.listing.version to drop stale events.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "listing.created",
+              "listing.updated",
+              "listing.published",
+              "listing.unpublished",
+              "listing.moderation_held",
+              "listing.rejected",
+              "listing.archived",
+              "listing.restored",
+              "listing.expired",
+              "media.failed",
+              "import.completed",
+              "webhook.test"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "test",
+              "live"
+            ]
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  },
+  "x-scopes": [
+    "listings:read",
+    "listings:write",
+    "media:write",
+    "agents:write",
+    "webhooks:manage",
+    "leads:read",
+    "analytics:read"
+  ],
+  "paths": {
+    "/listings": {
+      "post": {
+        "summary": "Create a listing",
+        "description": "Synchronous. Media sent by source_url are fetched in the background; the listing goes live when they are ready.\n\nScope: `listings:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A UUID. Retrying with the same key and body returns the first answer (24 hours).",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListingInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "listing": {
+                      "$ref": "#/components/schemas/Listing"
+                    },
+                    "applied": {
+                      "type": "boolean"
+                    },
+                    "changed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "AGENT_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "LISTING_EXISTS",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "IDEMPOTENCY_KEY_REUSED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List your listings",
+        "description": "Scope: `listings:read`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "external_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_external_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "availability",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "available",
+                "reserved",
+                "sold",
+                "rented",
+                "withdrawn"
+              ]
+            }
+          },
+          {
+            "name": "publication_status",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "draft",
+                "submitted",
+                "validated",
+                "pending_moderation",
+                "published",
+                "rejected",
+                "expired",
+                "archived"
+              ]
+            }
+          },
+          {
+            "name": "updated_since",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "updated_at",
+                "-updated_at",
+                "created_at",
+                "-created_at"
+              ],
+              "default": "-updated_at"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Listing"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_FILTER or INVALID_CURSOR",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/listings/{id}": {
+      "get": {
+        "summary": "Read one listing",
+        "description": "Scope: `listings:read`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "lst_<uuid>, or ext:<your external_id>",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "listing": {
+                      "$ref": "#/components/schemas/Listing"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "LISTING_NOT_FOUND (also for other partners' ids)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Update partner-owned fields",
+        "description": "Send only what changed. Sending media replaces the media list. If-Match: <version> is recommended. An update whose partner_updated_at is older than the stored one is ignored (applied: false, reason: stale). On a live listing, a price drop over 30%, a currency change or a 3rd change in 24 hours is held for review (202).\n\nScope: `listings:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "lst_<uuid>, or ext:<your external_id>",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A UUID. Retrying with the same key and body returns the first answer (24 hours).",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListingPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated (or unchanged / stale)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "listing": {
+                      "$ref": "#/components/schemas/Listing"
+                    },
+                    "applied": {
+                      "type": "boolean"
+                    },
+                    "changed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Held for review",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "listing": {
+                      "$ref": "#/components/schemas/Listing"
+                    },
+                    "applied": {
+                      "type": "boolean"
+                    },
+                    "changed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "VERSION_CONFLICT, FIELD_OWNED_BY_OTHER, FIELD_IMMUTABLE, LISTING_ARCHIVED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "LISTING_LOCKED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Withdraw and archive (restorable for 30 days)",
+        "description": "Scope: `listings:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "lst_<uuid>, or ext:<your external_id>",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A UUID. Retrying with the same key and body returns the first answer (24 hours).",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  },
+                  "confirm_bulk_delete": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Archived",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "listing": {
+                      "$ref": "#/components/schemas/Listing"
+                    },
+                    "applied": {
+                      "type": "boolean"
+                    },
+                    "changed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "BULK_DELETE_HELD",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/listings/{id}/restore": {
+      "post": {
+        "summary": "Undo an archive",
+        "description": "Scope: `listings:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "lst_<uuid>, or ext:<your external_id>",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A UUID. Retrying with the same key and body returns the first answer (24 hours).",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Restored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "listing": {
+                      "$ref": "#/components/schemas/Listing"
+                    },
+                    "applied": {
+                      "type": "boolean"
+                    },
+                    "changed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "RESTORE_WINDOW_PASSED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/listings/bulk": {
+      "post": {
+        "summary": "Upsert up to 500 listings (asynchronous)",
+        "description": "An item whose external_id exists is a partial update; otherwise it is created. dry_run checks every item without writing.\n\nScope: `listings:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A UUID. Retrying with the same key and body returns the first answer (24 hours).",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "items"
+                ],
+                "properties": {
+                  "items": {
+                    "type": "array",
+                    "maxItems": 500,
+                    "items": {
+                      "type": "object"
+                    }
+                  },
+                  "mode": {
+                    "const": "upsert"
+                  },
+                  "dry_run": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "import_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "items_received": {
+                      "type": "integer"
+                    },
+                    "status_url": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "TOO_MANY_ITEMS",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/imports/{id}": {
+      "get": {
+        "summary": "Import progress and per-row errors",
+        "description": "Scope: `listings:read`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Progress"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "IMPORT_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/listings/reconcile": {
+      "post": {
+        "summary": "Compare your active listings with Viewora's",
+        "description": "Changes nothing. Lists listings Viewora holds that you did not send, ids Viewora does not know, and versions you are behind on.\n\nScope: `listings:read`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "external_id": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Differences"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/media": {
+      "post": {
+        "summary": "Add one file by URL to a listing",
+        "description": "The file is fetched in the background (https only, public addresses, 25 MB photos, 60 MB panoramas). Files on your computer: use POST /tours/{tour_id}/uploads.\n\nScope: `media:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A UUID. Retrying with the same key and body returns the first answer (24 hours).",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "listing_id",
+                  "kind",
+                  "source_url"
+                ],
+                "properties": {
+                  "listing_id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "photo",
+                      "panorama",
+                      "tour",
+                      "car_exterior",
+                      "floor_plan",
+                      "video",
+                      "document"
+                    ]
+                  },
+                  "source_url": {
+                    "type": "string"
+                  },
+                  "caption": {
+                    "type": "string"
+                  },
+                  "angle": {
+                    "type": "integer"
+                  },
+                  "order": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "LISTING_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks": {
+      "post": {
+        "summary": "Register an endpoint",
+        "description": "Scope: `webhooks:manage`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "url",
+                  "events"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  },
+                  "events": {
+                    "type": "array",
+                    "items": {
+                      "enum": [
+                        "listing.created",
+                        "listing.updated",
+                        "listing.published",
+                        "listing.unpublished",
+                        "listing.moderation_held",
+                        "listing.rejected",
+                        "listing.archived",
+                        "listing.restored",
+                        "listing.expired",
+                        "media.failed",
+                        "import.completed",
+                        "*"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created; the secret is shown once"
+          },
+          "400": {
+            "description": "URL_NOT_HTTPS or URL_PRIVATE_NETWORK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "WEBHOOK_LIMIT",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List endpoints",
+        "description": "Scope: `webhooks:manage`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Endpoints"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/{id}": {
+      "delete": {
+        "summary": "Delete an endpoint",
+        "description": "Scope: `webhooks:manage`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/{id}/test": {
+      "post": {
+        "summary": "Send a webhook.test event",
+        "description": "Scope: `webhooks:manage`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Queued"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/{id}/enable": {
+      "post": {
+        "summary": "Switch a disabled endpoint back on",
+        "description": "Scope: `webhooks:manage`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Enabled"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/{id}/deliveries": {
+      "get": {
+        "summary": "Last 50 deliveries",
+        "description": "Scope: `webhooks:manage`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deliveries"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/leads": {
+      "get": {
+        "summary": "Leads for your listings",
+        "description": "Granted only after the data-processing addendum is signed. Every read is logged.\n\nScope: `leads:read`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "listing_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of leads"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/analytics": {
+      "get": {
+        "summary": "Views per listing per day (at most 92 days)",
+        "description": "Scope: `analytics:read`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "listing_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Series"
+          },
+          "400": {
+            "description": "RANGE_TOO_LARGE",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/export/listings": {
+      "get": {
+        "summary": "Read-only feed of your agents' published tours, including ones made in the Viewora app",
+        "description": "Scope: `listings:read`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {
+    "listingEvent": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookEvent"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges the event"
+          }
+        }
+      }
+    }
+  }
+}

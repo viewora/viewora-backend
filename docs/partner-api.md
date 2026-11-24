@@ -141,7 +141,17 @@ Validation errors add `fields: [{ field, message }]`. Common codes:
 - Uploads per day per partner: set by Viewora (default 2,000). The count resets at midnight EAT.
 - Plan limits (tours, scenes, file size, storage) come from the plan your agreement pays for, per agent.
 
+## Listings, webhooks and bulk imports
+
+Synchronising whole listings (price, availability, location, photos by URL),
+webhooks, bulk imports and leads are described in
+[partner-listings-api.md](partner-listings-api.md). They need the listing
+platform switched on for your account.
+
+Scopes: `/v1/agents` needs `agents:write`, `/v1/tours` reads need `listings:read`,
+tour changes need `listings:write`, and uploads need `media:write`. Keys issued
+before scopes existed keep all of these.
+
 ## Not yet available
 
-Webhooks (tour ready or failed), uploading from a URL, and white-label branding
-are planned for the next phases.
+White-label branding, OAuth client credentials and two-way sync.

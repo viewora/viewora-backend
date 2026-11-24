@@ -1,0 +1,534 @@
+{
+  "info": {
+    "name": "Viewora Partner API v1",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{apiKey}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://api.viewora.software/v1"
+    },
+    {
+      "key": "apiKey",
+      "value": "vo_test_your_sandbox_key"
+    }
+  ],
+  "item": [
+    {
+      "name": "Create a listing",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/listings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "listings"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "description": "Synchronous. Media sent by source_url are fetched in the background; the listing goes live when they are ready.\n\nScope: `listings:write`"
+      }
+    },
+    {
+      "name": "List your listings",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/listings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "listings"
+          ]
+        },
+        "description": "Scope: `listings:read`"
+      }
+    },
+    {
+      "name": "Read one listing",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/listings/:id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "listings",
+            ":id"
+          ]
+        },
+        "description": "Scope: `listings:read`"
+      }
+    },
+    {
+      "name": "Update partner-owned fields",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/listings/:id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "listings",
+            ":id"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "description": "Send only what changed. Sending media replaces the media list. If-Match: <version> is recommended. An update whose partner_updated_at is older than the stored one is ignored (applied: false, reason: stale). On a live listing, a price drop over 30%, a currency change or a 3rd change in 24 hours is held for review (202).\n\nScope: `listings:write`"
+      }
+    },
+    {
+      "name": "Withdraw and archive (restorable for 30 days)",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/listings/:id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "listings",
+            ":id"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "description": "Scope: `listings:write`"
+      }
+    },
+    {
+      "name": "Undo an archive",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/listings/:id/restore",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "listings",
+            ":id",
+            "restore"
+          ]
+        },
+        "description": "Scope: `listings:write`"
+      }
+    },
+    {
+      "name": "Upsert up to 500 listings (asynchronous)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/listings/bulk",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "listings",
+            "bulk"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "description": "An item whose external_id exists is a partial update; otherwise it is created. dry_run checks every item without writing.\n\nScope: `listings:write`"
+      }
+    },
+    {
+      "name": "Import progress and per-row errors",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/imports/:id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "imports",
+            ":id"
+          ]
+        },
+        "description": "Scope: `listings:read`"
+      }
+    },
+    {
+      "name": "Compare your active listings with Viewora's",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/listings/reconcile",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "listings",
+            "reconcile"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "description": "Changes nothing. Lists listings Viewora holds that you did not send, ids Viewora does not know, and versions you are behind on.\n\nScope: `listings:read`"
+      }
+    },
+    {
+      "name": "Add one file by URL to a listing",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/media",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "media"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "description": "The file is fetched in the background (https only, public addresses, 25 MB photos, 60 MB panoramas). Files on your computer: use POST /tours/{tour_id}/uploads.\n\nScope: `media:write`"
+      }
+    },
+    {
+      "name": "Register an endpoint",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/webhooks",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "webhooks"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "description": "Scope: `webhooks:manage`"
+      }
+    },
+    {
+      "name": "List endpoints",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/webhooks",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "webhooks"
+          ]
+        },
+        "description": "Scope: `webhooks:manage`"
+      }
+    },
+    {
+      "name": "Delete an endpoint",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/:id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "webhooks",
+            ":id"
+          ]
+        },
+        "description": "Scope: `webhooks:manage`"
+      }
+    },
+    {
+      "name": "Send a webhook.test event",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/:id/test",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "webhooks",
+            ":id",
+            "test"
+          ]
+        },
+        "description": "Scope: `webhooks:manage`"
+      }
+    },
+    {
+      "name": "Switch a disabled endpoint back on",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/:id/enable",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "webhooks",
+            ":id",
+            "enable"
+          ]
+        },
+        "description": "Scope: `webhooks:manage`"
+      }
+    },
+    {
+      "name": "Last 50 deliveries",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/webhooks/:id/deliveries",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "webhooks",
+            ":id",
+            "deliveries"
+          ]
+        },
+        "description": "Scope: `webhooks:manage`"
+      }
+    },
+    {
+      "name": "Leads for your listings",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/leads",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "leads"
+          ]
+        },
+        "description": "Granted only after the data-processing addendum is signed. Every read is logged.\n\nScope: `leads:read`"
+      }
+    },
+    {
+      "name": "Views per listing per day (at most 92 days)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/analytics",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "analytics"
+          ]
+        },
+        "description": "Scope: `analytics:read`"
+      }
+    },
+    {
+      "name": "Read-only feed of your agents' published tours, including ones made in the Viewora app",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/export/listings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "export",
+            "listings"
+          ]
+        },
+        "description": "Scope: `listings:read`"
+      }
+    }
+  ]
+}
