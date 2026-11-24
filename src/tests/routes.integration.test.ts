@@ -148,6 +148,15 @@ test('upload complete is idempotent for same object key', async () => {
         }
       }
 
+      // No subscription: the quota check falls back to the Free plan.
+      if (table === 'plans') {
+        return {
+          select() { return this },
+          eq() { return this },
+          single: async () => ({ data: { id: 'plan-free', slug: 'free', max_active_properties: 100, max_storage_mb: 100_000, max_scenes_per_space: 100, max_file_size_mb: 100 }, error: null }),
+        }
+      }
+
       if (table === 'usage_counters') {
         return {
           select() {
@@ -214,6 +223,15 @@ test('lead submit sanitizes html in text fields', async () => {
             return this
           },
           single: async () => ({ data: { id: 'lead-1', ...inserted }, error: null }),
+        }
+      }
+
+      // A published tour with the lead form on (no owner, so no plan lookup).
+      if (table === 'properties') {
+        return {
+          select() { return this },
+          eq() { return this },
+          single: async () => ({ data: { id: '11111111-1111-4111-8111-111111111111', is_published: true, lead_form_enabled: true, user_id: null, title: 'T', slug: null }, error: null }),
         }
       }
 
