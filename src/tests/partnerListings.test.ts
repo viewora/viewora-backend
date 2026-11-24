@@ -13,6 +13,7 @@ import { SafeFetchError, isPrivateAddress, checkUrlShape, type SafeFetch } from 
 import { decryptSecret, encryptSecret, nextAttemptDelayMs, signPayload, verifySignature, MAX_ATTEMPTS } from '../partners/webhooks.js'
 import { effectiveScopes, hasScope } from '../partners/scopes.js'
 import { buildOpenApi, buildPostman } from '../partners/openapi.js'
+import partnerListingAdmin from '../routes/partnerListingAdmin.js'
 
 // ── a small world: two partners, agents, fake tours, fake internet ──────────
 
@@ -100,11 +101,12 @@ function world() {
     vehicleViewExists: async () => false,
   }
 
-  const listings = memoryListingStore({
+  const memWorld: Parameters<typeof memoryListingStore>[0] = {
     refs: () => refs,
     partnerNames: { pa: 'Acme Homes', pb: 'Other Co' },
     mediaCounts: id => ({ photo: spaces.get(id)?.files.photo ?? 0, panorama: spaces.get(id)?.files.panorama ?? 0, tour: 0, car_exterior: spaces.get(id)?.files.car_exterior ?? 0 }),
-  }, clock)
+  }
+  const listings = memoryListingStore(memWorld, clock)
 
   // The internet: image URLs answer with a JPEG unless told otherwise.
   const web = new Map<string, { status: number; type?: string; body?: Buffer; throws?: SafeFetchError }>()
@@ -137,7 +139,7 @@ function world() {
   const runJobs = async (times = 3) => { for (let i = 0; i < times; i++) await tick(jobDeps(), { sweeps: true }) }
 
   return {
-    app, issue, clock, advance, partners, agents, refs, spaces, listings, tourCalls, web, sent, runJobs, jobDeps,
+    app, issue, clock, advance, partners, memWorld, store, agents, refs, spaces, listings, tourCalls, web, sent, runJobs, jobDeps,
     service: () => service,
     setPublishError: (m: string | null) => { publishError = m },
     setHookStatus: (s: number) => { hookStatus = s },
@@ -689,4 +691,83 @@ test('helpers: ids, decisions, contact details, private addresses, signatures, s
   assert.equal(nextAttemptDelayMs(1, () => 0.5), 60_000)
   assert.equal(nextAttemptDelayMs(7, () => 0.5), 24 * 3600_000)
   assert.equal(nextAttemptDelayMs(MAX_ATTEMPTS), null)
+})
+
+// ── staff tools, leads, analytics, export ───────────────────────────────────
+
+test('admin: the moderation queue, reject with a reason, and a fixed listing goes back to review', async () => {
+  const { w, post, patch, get } = await setup('live')
+  const id = (await post(rental())).json().listing.id
+  await w.runJobs()
+  const admin = Fastify()
+  await admin.register(partnerListingAdmin, { prefix: '/ops', service: w.service(), listings: w.listings, partners: w.store })
+  const q = (await admin.inject({ method: 'GET', url: '/ops/moderation' })).json()
+  assert.equal(q.items.length, 1)
+  assert.equal(q.items[0].partner_name, 'Acme Homes')
+  assert.equal(q.items[0].reasons[0].code, 'FIRST_LISTINGS_REVIEW')
+
+  const bad = await admin.inject({ method: 'POST', url: `/ops/moderation/${id.slice(4)}/reject`, payload: { reasons: [{ code: 'MADE_UP', message: 'x' }] } })
+  assert.equal(bad.statusCode, 400, 'only the fixed rejection codes')
+  const rej = await admin.inject({ method: 'POST', url: `/ops/moderation/${id.slice(4)}/reject`, payload: { reasons: [{ code: 'IMAGES_NOT_OF_LISTING', message: 'The photos show a different building', field: 'media' }] } })
+  assert.equal(rej.statusCode, 200, rej.body)
+  const l = (await get(id)).json().listing
+  assert.equal(l.publication_status, 'rejected')
+  assert.equal(l.moderation.reasons[0].by, 'moderator')
+  assert.ok(w.listings._outbox.some(e => e.event_type === 'listing.rejected'))
+
+  const fixed = await patch(id, { title: '2-bedroom apartment, Kilimani (new photos)' })
+  const codes = fixed.json().listing.moderation.reasons.map((r: any) => r.code)
+  assert.equal(fixed.json().listing.publication_status, 'pending_moderation')
+  assert.ok(codes.includes('RESUBMITTED_AFTER_REJECTION'), codes.join())
+
+  const approve = await admin.inject({ method: 'POST', url: `/ops/moderation/${id.slice(4)}/approve` })
+  assert.equal(approve.statusCode, 200, approve.body)
+  assert.equal((await get(id)).json().listing.publication_status, 'published')
+  assert.equal((await admin.inject({ method: 'POST', url: `/ops/moderation/${id.slice(4)}/approve` })).statusCode, 409)
+  const dl = (await admin.inject({ method: 'GET', url: '/ops/dead-letters' })).json()
+  assert.deepEqual(Object.keys(dl).sort(), ['deliveries', 'imports', 'media'])
+})
+
+test('leads need leads:read, are scoped to the partner and every read is logged', async () => {
+  const { w, app, post } = await setup()
+  const l = (await post(rental('L-1', { publish: false }))).json().listing
+  const ref = w.refs.find(r => r.external_id === 'L-1')!
+  w.memWorld.leads = [
+    { id: 'lead-1', space_id: l.tour_id, ref: { id: ref.id, external_id: 'L-1' }, name: 'Achieng', email: 'a@example.com', phone: '+254712000000', message: 'Is it available?', source: 'form', created_at: '2026-12-01T07:00:00Z', partner_id: 'pa', mode: 'test' },
+    { id: 'lead-2', space_id: 'other', ref: { id: 'x', external_id: 'Z' }, name: 'Someone', email: null, phone: null, message: null, source: 'form', created_at: '2026-12-01T07:30:00Z', partner_id: 'pb', mode: 'test' },
+  ]
+  const noScope = w.issue('pa', 'test')
+  assert.equal((await app.inject({ method: 'GET', url: '/v1/leads', headers: auth(noScope) })).statusCode, 403)
+  const key = w.issue('pa', 'test', { scopes: ['leads:read', 'listings:read'] })
+  const r = (await app.inject({ method: 'GET', url: '/v1/leads', headers: auth(key) })).json()
+  assert.equal(r.data.length, 1)
+  assert.equal(r.data[0].listing_id, l.id)
+  assert.equal(r.data[0].phone, '+254712000000')
+  assert.ok(w.listings._audit.some(a => a.action === 'leads.read'))
+})
+
+test('analytics: at most 92 days; export lists the agents published tours, including app-made ones', async () => {
+  const { w, app, key, post } = await setup()
+  const k = w.issue('pa', 'test', { scopes: ['analytics:read', 'listings:read'] })
+  assert.equal((await app.inject({ method: 'GET', url: '/v1/analytics?from=2026-01-01&to=2026-12-01', headers: auth(k) })).json().error.code, 'RANGE_TOO_LARGE')
+  const l = (await post(rental('AN-1'))).json().listing
+  const ref = w.refs.find(r => r.external_id === 'AN-1')!
+  w.memWorld.analytics = [{ space_id: l.tour_id, ref: { id: ref.id, external_id: 'AN-1' }, date: '2026-11-30', counts: { total_views: 12, qr_views: 2 }, partner_id: 'pa', mode: 'test' }]
+  const a = (await app.inject({ method: 'GET', url: '/v1/analytics?from=2026-11-01&to=2026-11-30', headers: auth(k) })).json()
+  assert.deepEqual(a.series[0], { listing_id: l.id, external_id: 'AN-1', date: '2026-11-30', views: 12, total_views: 12, qr_views: 2 })
+
+  const agent = w.agents.find(x => x.partner_id === 'pa' && x.mode === 'test')!
+  const base = { title: 'T', slug: 's', property_type: 'residential', is_published: true, cover_image_url: null, price_kes: 1, listing_status: 'available', transaction_type: 'sale', price_period: null, bedrooms: 2, bathrooms: 1, location_text: null, created_at: 'now' }
+  w.memWorld.spaces = [
+    { ...base, id: l.tour_id, user_id: agent.user_id, updated_at: '2026-12-01T00:00:02Z' },
+    { ...base, id: 'app-made', user_id: agent.user_id, updated_at: '2026-12-01T00:00:01Z', slug: 'app' },
+    { ...base, id: 'someone-else', user_id: 'stranger', updated_at: '2026-12-01T00:00:03Z' },
+  ]
+  const e = (await app.inject({ method: 'GET', url: '/v1/export/listings?limit=1', headers: auth(key) })).json()
+  assert.equal(e.data[0].origin, 'partner')
+  assert.equal(e.data[0].listing_id, l.id)
+  const e2 = (await app.inject({ method: 'GET', url: `/v1/export/listings?limit=1&cursor=${e.next_cursor}`, headers: auth(key) })).json()
+  assert.equal(e2.data[0].origin, 'viewora')
+  assert.equal(e2.data[0].urls.share, 'https://app.viewora.software/p/app')
+  assert.equal(e2.next_cursor, null, 'tours of other accounts never appear')
 })
