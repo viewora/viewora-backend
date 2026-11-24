@@ -3,6 +3,8 @@ import { listingInputSchema, listingPatchSchema, AVAILABILITY, PUBLICATION_STATU
 import { EVENT_TYPES } from './webhooks.js'
 import { SCOPES } from './scopes.js'
 import { claimBody } from './claims.js'
+import { createAgentBody, createTourBody, createUploadBody, completeUploadBody, SPACE_TYPES, FACT_KEYS } from './v1Schemas.js'
+import { guideMarkdown } from './docsGuide.js'
 
 // The OpenAPI description of /v1, generated from the same zod schemas the
 // API validates with, so the two cannot drift. Served at GET /v1/openapi.json
@@ -30,18 +32,89 @@ const op = (o: Op) => ({
   responses: { ...o.responses, 401: errorResponse('Missing, invalid, revoked or expired key'), 403: errorResponse('Partner suspended or scope missing'), 429: errorResponse('Rate limited') },
 })
 
-export function buildOpenApi() {
-  const listing = { type: 'object', properties: { listing: ref('Listing'), applied: { type: 'boolean' }, changed: { type: 'boolean' } } }
+// Sidebar groups for /docs. Each path's first segment picks its tag.
+const TAGS: Record<string, { name: string; description: string }> = {
+  agents: { name: 'Agents', description: 'Each agent or dealer is their own Viewora account, paid for by you.' },
+  tours: { name: 'Tours and uploads', description: 'Create a tour, upload photos and 360° panoramas from your server, publish and embed.' },
+  listings: { name: 'Listings', description: 'Send whole listings (price, availability, location, photos by URL) and keep them in sync.' },
+  imports: { name: 'Listings', description: '' },
+  media: { name: 'Listings', description: '' },
+  webhooks: { name: 'Webhook endpoints', description: 'Register and manage the URLs Viewora sends events to. How to check signatures is under Receiving events in the guide.' },
+  claims: { name: 'Claims', description: 'Ask to manage a tour an agent made in the Viewora app.' },
+  leads: { name: 'Leads and analytics', description: 'Buyers who agreed to share their details, and views per listing.' },
+  analytics: { name: 'Leads and analytics', description: '' },
+  export: { name: 'Leads and analytics', description: '' },
+}
+
+function withTags<T extends { paths: Record<string, Record<string, any>> }>(spec: T) {
+  const used: string[] = []
+  for (const [path, methods] of Object.entries(spec.paths)) {
+    const tag = TAGS[path.split('/')[1]]?.name ?? 'Other'
+    if (!used.includes(tag)) used.push(tag)
+    for (const o of Object.values(methods)) o.tags = [tag]
+  }
+  const tags = used.map(name => ({ name, description: Object.values(TAGS).find(t => t.name === name && t.description)?.description ?? '' }))
+  return { ...spec, tags, 'x-tagGroups': [{ name: 'Reference', tags: used }] }
+}
+
+const extParam = (name: string, description: string) => ({ name, in: 'path', required: true, description, schema: { type: 'string' } })
+const tourIdParam = { name: 'id', in: 'path', required: true, description: "Viewora's tour id (uuid)", schema: { type: 'string', format: 'uuid' } }
+const pageParams = [
+  { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 } },
+  { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
+]
+
+function corePaths() {
+  const agent = { type: 'object', properties: { agent: ref('Agent') } }
+  const tour = { type: 'object', properties: { tour: ref('Tour') } }
   return {
+    '/agents': {
+      post: op({ summary: 'Create an agent', scope: 'agents:write',
+        description: 'Creates a Viewora account for the agent. Calling it again with the same external_id returns the existing agent (200, created: false). email is required for live agents and becomes their login; no email is sent. Test agents ignore email.',
+        body: ref('AgentInput'),
+        responses: { 201: { description: 'Created', content: json({ type: 'object', properties: { agent: ref('Agent'), created: { type: 'boolean' } } }) }, 200: { description: 'Already existed' }, 400: errorResponse('VALIDATION_ERROR'), 403: errorResponse('AGENT_LIMIT_REACHED'), 409: errorResponse('EMAIL_IN_USE'), 502: errorResponse('ACCOUNT_CREATE_FAILED') } }),
+      get: op({ summary: 'List your agents', scope: 'agents:write', parameters: pageParams,
+        responses: { 200: { description: 'A page', content: json({ type: 'object', properties: { agents: { type: 'array', items: ref('Agent') }, limit: { type: 'integer', example: 50 }, offset: { type: 'integer', example: 0 } } }) } } }),
+    },
+    '/agents/{external_id}': {
+      get: op({ summary: 'Read one agent', scope: 'agents:write', parameters: [extParam('external_id', 'Your id for the agent')],
+        responses: { 200: { description: 'The agent', content: json(agent) }, 404: errorResponse('AGENT_NOT_FOUND') } }),
+    },
+    '/tours': {
+      post: op({ summary: 'Create a tour', scope: 'listings:write',
+        description: `type is one of ${SPACE_TYPES.join(', ')}. details may hold: ${FACT_KEYS.join(', ')}. A repeated external_id answers 409 TOUR_EXISTS with the existing tour in error.tour.`,
+        body: ref('TourInput'),
+        responses: { 201: { description: 'Created (draft)', content: json(tour) }, 400: errorResponse('VALIDATION_ERROR'), 403: errorResponse('TOUR_LIMIT_REACHED'), 404: errorResponse('AGENT_NOT_FOUND'), 409: errorResponse('TOUR_EXISTS') } }),
+      get: op({ summary: 'List or find tours', scope: 'listings:read',
+        parameters: [{ name: 'external_id', in: 'query', description: 'Find the tour for one of your listing ids', schema: { type: 'string' } }, { name: 'agent_external_id', in: 'query', schema: { type: 'string' } }, ...pageParams],
+        responses: { 200: { description: 'A page', content: json({ type: 'object', properties: { tours: { type: 'array', items: ref('Tour') }, limit: { type: 'integer', example: 50 }, offset: { type: 'integer', example: 0 } } }) } } }),
+    },
+    '/tours/{id}': {
+      get: op({ summary: 'Read one tour', scope: 'listings:read', parameters: [tourIdParam], responses: { 200: { description: 'The tour', content: json(tour) }, 404: errorResponse('TOUR_NOT_FOUND') } }),
+      delete: op({ summary: 'Delete a tour', scope: 'listings:write', description: 'Permanent. The tour, its scenes and its page are removed.', parameters: [tourIdParam], responses: { 204: { description: 'Deleted' }, 404: errorResponse('TOUR_NOT_FOUND') } }),
+    },
+    '/tours/{id}/publish': { post: op({ summary: 'Publish a tour', scope: 'listings:write', description: 'After this the tour has embed_url and share_url.', parameters: [tourIdParam], responses: { 200: { description: 'Published', content: json(tour) }, 404: errorResponse('TOUR_NOT_FOUND') } }) },
+    '/tours/{id}/unpublish': { post: op({ summary: 'Take a tour down', scope: 'listings:write', parameters: [tourIdParam], responses: { 200: { description: 'Now a draft', content: json(tour) }, 404: errorResponse('TOUR_NOT_FOUND') } }) },
+    '/tours/{id}/uploads': { post: op({ summary: 'Start an upload', scope: 'media:write',
+      description: 'Step 1 of 3. Returns a signed URL valid for 15 minutes. Step 2: PUT the file to upload_url with the headers given. Step 3: POST /tours/{id}/uploads/complete. kind: panorama (a 2:1 360° JPEG, becomes a scene), photo (goes to the gallery) or car_exterior (one angle of a car spin).',
+      parameters: [tourIdParam], body: ref('UploadStart'),
+      responses: { 201: { description: 'Upload URL', content: json({ type: 'object', properties: { upload_key: { type: 'string' }, upload_url: { type: 'string' }, method: { const: 'PUT' }, headers: { type: 'object' }, expires_in: { type: 'integer', example: 900 } } }) }, 413: errorResponse('FILE_TOO_LARGE'), 429: errorResponse('DAILY_UPLOAD_CAP') } }) },
+    '/tours/{id}/uploads/complete': { post: op({ summary: 'Finish an upload', scope: 'media:write',
+      description: 'Step 3 of 3. Processing starts and takes a short while. Calling this twice for the same file is safe. car_exterior needs angle (0 = front).',
+      parameters: [tourIdParam], body: ref('UploadComplete'),
+      responses: { 200: { description: 'Processing', content: json({ type: 'object', properties: { upload: { type: 'object', properties: { upload_key: { type: 'string' }, kind: { type: 'string' }, status: { const: 'processing' } } } } }) }, 400: errorResponse('INVALID_UPLOAD_KEY'), 403: errorResponse('SCENE_LIMIT_REACHED') } }) },
+  }
+}
+
+export function buildOpenApi(opts: { listings?: boolean } = {}) {
+  const listings = opts.listings ?? true
+  const listing = { type: 'object', properties: { listing: ref('Listing'), applied: { type: 'boolean' }, changed: { type: 'boolean' } } }
+  const spec = {
     openapi: '3.1.0',
     info: {
       title: 'Viewora Partner API',
       version: '1.0.0',
-      description: [
-        'Send your property and vehicle listings to Viewora. Your system owns the listing facts; Viewora owns tours, pages and moderation.',
-        'Money is always an integer: whole KES, or USD cents. Timestamps are ISO 8601 UTC. Unknown fields are refused.',
-        'Every response has an X-Request-Id header; quote it when you contact support.',
-      ].join('\n\n'),
+      description: guideMarkdown(listings),
     },
     servers: [{ url: 'https://api.viewora.software/v1' }],
     components: {
@@ -54,6 +127,17 @@ export function buildOpenApi() {
             fields: { type: 'array', items: { type: 'object', properties: { field: { type: 'string' }, message: { type: 'string' } } } },
           } } },
         },
+        Agent: { type: 'object', properties: { external_id: { type: 'string', example: 'agent-118' }, name: { type: 'string', example: 'Wanjiku Motors' }, created_at: { type: 'string', format: 'date-time', example: '2026-11-24T08:00:00Z' } } },
+        AgentInput: schemaOf(createAgentBody),
+        Tour: { type: 'object', properties: {
+          id: { type: 'string', format: 'uuid', example: '3f6c2a9e-8b1d-4c5e-9f7a-2d4b6e8a0c11' }, external_id: { type: 'string', example: 'CAR-123' }, agent_external_id: { type: ['string', 'null'], example: 'agent-118' }, mode: { enum: ['test', 'live'], example: 'test' },
+          title: { type: 'string', example: 'Toyota Prado TX 2019' }, type: { enum: [...SPACE_TYPES], example: 'automotive' }, status: { enum: ['draft', 'published'], example: 'published' }, has_360: { type: 'boolean', example: true }, has_photos: { type: 'boolean', example: true },
+          cover_image_url: { type: ['string', 'null'] }, embed_url: { type: ['string', 'null'], example: 'https://app.viewora.software/embed/toyota-prado-tx-2019' }, share_url: { type: ['string', 'null'], example: 'https://app.viewora.software/p/toyota-prado-tx-2019' },
+          created_at: { type: 'string', format: 'date-time', example: '2026-11-24T08:00:00Z' }, updated_at: { type: 'string', format: 'date-time', example: '2026-11-24T08:05:00Z' },
+        } },
+        TourInput: schemaOf(createTourBody),
+        UploadStart: schemaOf(createUploadBody),
+        UploadComplete: schemaOf(completeUploadBody),
         ListingInput: schemaOf(listingInputSchema),
         ListingPatch: schemaOf(listingPatchSchema),
         Listing: {
@@ -77,7 +161,7 @@ export function buildOpenApi() {
       },
     },
     'x-scopes': SCOPES,
-    paths: {
+    paths: { ...corePaths(), ...(listings ? {
       '/listings': {
         post: op({ summary: 'Create a listing', scope: 'listings:write', parameters: [idemHeader], body: ref('ListingInput'),
           description: 'Synchronous. Media sent by source_url are fetched in the background; the listing goes live when they are ready.',
@@ -147,9 +231,15 @@ export function buildOpenApi() {
         responses: { 200: { description: 'Series' }, 400: errorResponse('RANGE_TOO_LARGE') } }) },
       '/export/listings': { get: op({ summary: 'Read-only feed of your agents\' published tours, including ones made in the Viewora app', scope: 'listings:read',
         parameters: [{ name: 'cursor', in: 'query', schema: { type: 'string' } }, { name: 'limit', in: 'query', schema: { type: 'integer' } }], responses: { 200: { description: 'A page' } } }) },
-    },
-    webhooks: { listingEvent: { post: { requestBody: { content: json(ref('WebhookEvent')) }, responses: { 200: { description: 'Any 2xx acknowledges the event' } } } } },
+    } : {}) } as Record<string, Record<string, any>>,
+    ...(listings ? { webhooks: { event: { post: {
+      summary: 'Event sent to your endpoint',
+      description: 'POSTed to the URL you registered, with a Viewora-Signature header. Answer any 2xx within 10 seconds.',
+      requestBody: { content: json(ref('WebhookEvent')) },
+      responses: { 200: { description: 'Any 2xx acknowledges the event' } },
+    } } } } : {}),
   }
+  return withTags(spec)
 }
 
 /** A Postman collection (v2.1) for the same endpoints, with a sandbox key variable. */

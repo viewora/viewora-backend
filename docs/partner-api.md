@@ -6,6 +6,8 @@ photos, publish, and embed the tour on your listing page.
 
 Base URL: `https://api.viewora.software/v1`
 
+**Send partners to https://api.viewora.software/docs.** That page has the guide and every endpoint, with a Try it console. This file is the longer internal version.
+
 ## Keys
 
 Viewora staff give you two keys:

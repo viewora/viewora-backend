@@ -3,10 +3,12 @@
 //  - quote engine: the quote pages read { code, statusMessage, problems } as is
 //  - partner API (/v1): a documented, versioned contract for outside developers
 //  - /embed-policy: read by the app's embed page as { frame_ancestors }
+//  - /docs: the OpenAPI and Postman files are read by tools as they are
 export function keepsOwnShape(url: string): boolean {
   return /^\/(admin\/)?quote(\/|\?|$)/.test(url)
     || /^\/v1(\/|\?|$)/.test(url)
     || /^\/embed-policy(\/|\?|$)/.test(url)
+    || /^\/docs(\/|\?|$)/.test(url)
 }
 
 /** Undoes the global envelope on a response body from fastify.inject. */

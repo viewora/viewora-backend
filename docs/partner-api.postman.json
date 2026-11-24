@@ -25,6 +25,304 @@
   ],
   "item": [
     {
+      "name": "Create an agent",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/agents",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "agents"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "description": "Creates a Viewora account for the agent. Calling it again with the same external_id returns the existing agent (200, created: false). email is required for live agents and becomes their login; no email is sent. Test agents ignore email.\n\nScope: `agents:write`"
+      }
+    },
+    {
+      "name": "List your agents",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/agents",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "agents"
+          ]
+        },
+        "description": "Scope: `agents:write`"
+      }
+    },
+    {
+      "name": "Read one agent",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/agents/:external_id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "agents",
+            ":external_id"
+          ]
+        },
+        "description": "Scope: `agents:write`"
+      }
+    },
+    {
+      "name": "Create a tour",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/tours",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "tours"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "description": "type is one of residential, commercial, hospitality, education, automotive, land, other. details may hold: price_kes, listing_status, transaction_type, price_period, bedrooms, bathrooms, area_sqm, vehicle_year, vehicle_mileage_km, vehicle_transmission, vehicle_fuel_type, land_acres, land_type, amenities. A repeated external_id answers 409 TOUR_EXISTS with the existing tour in error.tour.\n\nScope: `listings:write`"
+      }
+    },
+    {
+      "name": "List or find tours",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/tours",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "tours"
+          ]
+        },
+        "description": "Scope: `listings:read`"
+      }
+    },
+    {
+      "name": "Read one tour",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/tours/:id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "tours",
+            ":id"
+          ]
+        },
+        "description": "Scope: `listings:read`"
+      }
+    },
+    {
+      "name": "Delete a tour",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/tours/:id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "tours",
+            ":id"
+          ]
+        },
+        "description": "Permanent. The tour, its scenes and its page are removed.\n\nScope: `listings:write`"
+      }
+    },
+    {
+      "name": "Publish a tour",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/tours/:id/publish",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "tours",
+            ":id",
+            "publish"
+          ]
+        },
+        "description": "After this the tour has embed_url and share_url.\n\nScope: `listings:write`"
+      }
+    },
+    {
+      "name": "Take a tour down",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/tours/:id/unpublish",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "tours",
+            ":id",
+            "unpublish"
+          ]
+        },
+        "description": "Scope: `listings:write`"
+      }
+    },
+    {
+      "name": "Start an upload",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/tours/:id/uploads",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "tours",
+            ":id",
+            "uploads"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "description": "Step 1 of 3. Returns a signed URL valid for 15 minutes. Step 2: PUT the file to upload_url with the headers given. Step 3: POST /tours/{id}/uploads/complete. kind: panorama (a 2:1 360° JPEG, becomes a scene), photo (goes to the gallery) or car_exterior (one angle of a car spin).\n\nScope: `media:write`"
+      }
+    },
+    {
+      "name": "Finish an upload",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{$guid}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/tours/:id/uploads/complete",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "tours",
+            ":id",
+            "uploads",
+            "complete"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "description": "Step 3 of 3. Processing starts and takes a short while. Calling this twice for the same file is safe. car_exterior needs angle (0 = front).\n\nScope: `media:write`"
+      }
+    },
+    {
       "name": "Create a listing",
       "request": {
         "method": "POST",

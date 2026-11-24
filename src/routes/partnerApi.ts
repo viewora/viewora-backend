@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { hashPartnerKey, parsePartnerKey, type KeyMode } from '../utils/partnerKeys.js'
 import { supabaseStore, type AgentRow, type KeyRecord, type Partner, type PartnerStore, type SpaceSummary, type TourRefRow } from '../partners/store.js'
-import { callAsGateway, completeUpload, makeCallAs, KIND_TO_MEDIA, UPLOAD_KINDS, type CallAs, type InternalResult, type TourGateway } from '../partners/tourGateway.js'
+import { callAsGateway, completeUpload, makeCallAs, KIND_TO_MEDIA, type CallAs, type InternalResult, type TourGateway } from '../partners/tourGateway.js'
 import { supabaseListingStore, type ListingStore } from '../partners/listingStore.js'
 import { listingService, type ListingService } from '../partners/listingService.js'
 import { startPartnerJobs } from '../partners/jobs.js'
@@ -16,6 +16,7 @@ import { hasScope, isExpired, type Scope } from '../partners/scopes.js'
 import { rateKey } from '../partners/rateKey.js'
 import partnerListingRoutes from './partnerListings.js'
 import { buildOpenApi } from '../partners/openapi.js'
+import { FACT_KEYS, agentParams, completeUploadBody, createAgentBody, createTourBody, createUploadBody, listQuery, tourParams } from '../partners/v1Schemas.js'
 
 // Partner API (/v1): property and car apps create tours for their agents.
 //
@@ -54,60 +55,6 @@ declare module 'fastify' {
     partnerCtx?: PartnerContext
   }
 }
-
-const EXTERNAL_ID = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9._:\-]+$/, 'Use letters, numbers, dot, dash, underscore or colon')
-const SPACE_TYPES = ['residential', 'commercial', 'hospitality', 'education', 'automotive', 'land', 'other'] as const
-const FACT_KEYS = [
-  'price_kes', 'listing_status', 'transaction_type', 'price_period', 'bedrooms', 'bathrooms', 'area_sqm',
-  'vehicle_year', 'vehicle_mileage_km', 'vehicle_transmission', 'vehicle_fuel_type', 'land_acres', 'land_type', 'amenities',
-] as const
-
-const createAgentBody = z.object({
-  external_id: EXTERNAL_ID,
-  name: z.string().trim().min(1).max(120),
-  email: z.string().trim().toLowerCase().email().max(255).optional(),
-})
-
-const createTourBody = z.object({
-  agent_external_id: EXTERNAL_ID,
-  external_id: EXTERNAL_ID,
-  title: z.string().trim().min(1).max(120),
-  type: z.enum(SPACE_TYPES),
-  description: z.string().max(2000).optional(),
-  location_text: z.string().max(200).optional(),
-  // Listing facts are checked by the same rules as the dashboard.
-  details: z.record(z.string(), z.unknown()).optional(),
-})
-
-const listQuery = z.object({
-  external_id: EXTERNAL_ID.optional(),
-  agent_external_id: EXTERNAL_ID.optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  offset: z.coerce.number().int().min(0).max(100_000).default(0),
-})
-
-const tourParams = z.object({ id: z.string().uuid() })
-const agentParams = z.object({ externalId: EXTERNAL_ID })
-
-const createUploadBody = z.object({
-  kind: z.enum(UPLOAD_KINDS),
-  file_name: z.string().trim().min(1).max(255),
-  content_type: z.string().trim().min(1).max(120),
-  file_size: z.number().int().positive().max(250_000_000),
-})
-
-const completeUploadBody = z.object({
-  kind: z.enum(UPLOAD_KINDS),
-  upload_key: z.string().trim().min(1).max(512),
-  name: z.string().trim().min(1).max(100).optional(),
-  angle: z.number().int().min(0).max(359).optional(),
-  width: z.number().int().positive().max(20000).optional(),
-  height: z.number().int().positive().max(20000).optional(),
-}).superRefine((d, ctx) => {
-  if (d.kind === 'car_exterior' && d.angle === undefined) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['angle'], message: 'angle (0–359) is required for car_exterior photos' })
-  }
-})
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 

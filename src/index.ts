@@ -48,6 +48,7 @@ import quoteStaffAppRoutes from './routes/quoteStaffApp.js'
 import partnerApiRoutes from './routes/partnerApi.js'
 import partnerAdminRoutes from './routes/partnerAdmin.js'
 import partnerAppRoutes from './routes/partnerApp.js'
+import partnerDocsRoutes from './routes/partnerDocs.js'
 import partnerPublicRoutes from './routes/partnerPublic.js'
 import { keepsOwnShape } from './utils/ownShapeRoutes.js'
 import tilesRoutes from './routes/tiles.js'
@@ -433,6 +434,8 @@ if (process.env.PARTNER_API_ENABLED === '1') {
     fastify.register(partnerPublicRoutes)
     // Listing platform, app side: agents answer claims; lead forms show the sharing wording.
     if (process.env.PARTNER_LISTINGS_ENABLED === '1') fastify.register(partnerAppRoutes, { prefix: '/partner' })
+    // Developer docs (guide + reference) at /docs.
+    if (process.env.PARTNER_DOCS_ENABLED === '1') fastify.register(partnerDocsRoutes)
   }
 }
 fastify.register(tilesRoutes)

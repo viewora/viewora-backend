@@ -5,7 +5,7 @@ Your system owns the listing facts (price, availability, location, photos).
 Viewora owns the tour, the public page and moderation. Sync is one way, from
 you to Viewora. Viewora never writes back into your system.
 
-Base URL: `https://api.viewora.software/v1`. Keys, agents and tours work as in
+Developers should read https://api.viewora.software/docs (guide, full reference and Try it). Base URL: `https://api.viewora.software/v1`. Keys, agents and tours work as in
 [partner-api.md](partner-api.md). The full machine-readable description is at
 `GET /v1/openapi.json`, also saved as `docs/partner-api.openapi.json`. A
 Postman collection is in `docs/partner-api.postman.json`.

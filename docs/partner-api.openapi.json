@@ -3,7 +3,7 @@
   "info": {
     "title": "Viewora Partner API",
     "version": "1.0.0",
-    "description": "Send your property and vehicle listings to Viewora. Your system owns the listing facts; Viewora owns tours, pages and moderation.\n\nMoney is always an integer: whole KES, or USD cents. Timestamps are ISO 8601 UTC. Unknown fields are refused.\n\nEvery response has an X-Request-Id header; quote it when you contact support."
+    "description": "# Introduction\n\nPut 360° tours on your property and car listings. You create a Viewora account for each of your agents or dealers, send their listings, and show the tour on your own listing page.\n\n- **Base URL:** `https://api.viewora.software/v1`\n- **Format:** JSON in, JSON out. Timestamps are ISO 8601 in UTC.\n- **Money is always a whole number:** KES in shillings, USD in cents. `85000.5` and `\"85000\"` are refused, never rounded.\n- **Files for your tools:** this reference is also available as [OpenAPI](/docs/openapi.json) and as a [Postman collection](/docs/postman.json).\n\nEvery answer carries an `X-Request-Id` header. Quote it when you contact Viewora about a request.\n\n# Quick start\n\nUse your test key (`vo_test_…`) for all of this. Test agents, tours and listings are kept apart from live ones and are never shown to the public.\n\n**1. Create an agent.** Each agent or dealer gets their own Viewora account.\n\n```bash\ncurl -X POST https://api.viewora.software/v1/agents \\\n  -H \"Authorization: Bearer $VIEWORA_KEY\" -H \"Content-Type: application/json\" \\\n  -d '{\"external_id\":\"agent-118\",\"name\":\"Test Agent\"}'\n```\n\n**2. Send a listing.** Photos sent by URL are fetched in the background, and the listing goes live when they are ready.\n\n```bash\ncurl -X POST https://api.viewora.software/v1/listings \\\n  -H \"Authorization: Bearer $VIEWORA_KEY\" -H \"Content-Type: application/json\" \\\n  -H \"Idempotency-Key: $(uuidgen)\" \\\n  -d '{\n    \"external_id\": \"HSE-0042\",\n    \"agent_external_id\": \"agent-118\",\n    \"vertical\": \"property\",\n    \"transaction\": \"rent\",\n    \"title\": \"2-bedroom apartment, Kilimani\",\n    \"price\": { \"amount\": 85000, \"currency\": \"KES\", \"period\": \"month\" },\n    \"availability\": \"available\",\n    \"location\": { \"county\": \"Nairobi\", \"area\": \"Kilimani\" },\n    \"property\": { \"property_type\": \"apartment\", \"bedrooms\": 2, \"bathrooms\": 2 },\n    \"media\": [{ \"kind\": \"photo\", \"source_url\": \"https://cdn.example.co.ke/hse-0042/1.jpg\" }],\n    \"publish\": true\n  }'\n```\n\n**3. Hear about changes.** Register a webhook so you know when a listing goes live or is held for review. Keep the `secret` it returns: it is shown once.\n\n```bash\ncurl -X POST https://api.viewora.software/v1/webhooks \\\n  -H \"Authorization: Bearer $VIEWORA_KEY\" -H \"Content-Type: application/json\" \\\n  -d '{\"url\":\"https://crm.example.co.ke/viewora\",\"events\":[\"*\"]}'\n```\n\n**4. Show the tour.** When the listing is published it has `urls.embed`. Put it in an iframe on your listing page:\n\n```html\n<iframe src=\"EMBED_URL\" width=\"100%\" height=\"480\" style=\"border:0\"\n        allow=\"fullscreen; xr-spatial-tracking\" allowfullscreen loading=\"lazy\"></iframe>\n<script src=\"https://app.viewora.software/embed.js\" defer></script>\n```\n\n`embed.js` is optional; it lets the tour go full screen on iPhone. Tell Viewora which sites will show your tours (for example `https://cars.example.co.ke`, plus `http://localhost:3000` while you build). Tours then only load inside those sites.\n\nWhen this works with your test key, ask Viewora for a live key and repeat with real data.\n\n# Keys and scopes\n\nSend your key on every request:\n\n```\nAuthorization: Bearer vo_live_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n```\n\n- `vo_test_…` is for building. `vo_live_…` is for real listings.\n- Keep keys on your server. Never put them in a browser, a mobile app or a public repository.\n- New keys expire after 12 months (`401 KEY_EXPIRED`). Ask Viewora for a new key before then.\n- If a key leaks, tell Viewora at once. It is revoked and you get a new one.\n\nEach key carries scopes. A missing scope answers `403 SCOPE_MISSING`.\n\n| Scope | Allows |\n|---|---|\n| `agents:write` | Creating and reading agents |\n| `listings:read` | Reading tours, listings, imports, claims and the export feed |\n| `listings:write` | Creating and changing tours and listings, bulk imports and claims |\n| `media:write` | Uploading and adding photos |\n| `webhooks:manage` | Managing your webhooks |\n| `analytics:read` | Views per listing (on request) |\n| `leads:read` | Buyers who asked about your listings (after the data-processing addendum is signed) |\n\n# Rules for every request\n\n- **Unknown fields are refused** rather than ignored, so typos show up at once.\n- **Send `Idempotency-Key: <uuid>` on every POST, PATCH and DELETE.** Retrying with the same key and body returns the first answer (with `Idempotent-Replayed: true`) for 24 hours. The same key with a different body answers `422 IDEMPOTENCY_KEY_REUSED`.\n- **Your own ids work everywhere.** `external_id` is your id for an agent, tour or listing. A listing can be read as `/v1/listings/lst_…` (Viewora's id) or `/v1/listings/ext:HSE-0042` (yours).- **Another partner's ids always answer 404.**\n- **Agents own their tours.** Each agent can sign in at app.viewora.software (with \"Forgot password\") and see the tours you made for them. Creating an agent sends no email.\n\n# Receiving events\n\nViewora POSTs an event to your endpoint when something changes. Endpoints must use `https://` on a public address, and you can have up to 5 per mode.\n\n**Events:** `listing.created`, `listing.updated`, `listing.published`, `listing.unpublished`, `listing.moderation_held`, `listing.rejected`, `listing.expired`, `listing.archived`, `listing.restored`, `media.failed`, `import.completed`, `claim.approved`, `claim.declined`, `claim.expired`. Send `\"*\"` for all of them.\n\n```json\n{ \"id\": \"evt_…\", \"type\": \"listing.published\", \"created_at\": \"2026-11-24T09:30:00Z\", \"mode\": \"live\",\n  \"data\": { \"listing\": { \"id\": \"lst_…\", \"external_id\": \"HSE-0042\", \"version\": 4, \"publication_status\": \"published\" } } }\n```\n\n## Check the signature\n\nEvery delivery has a `Viewora-Signature` header: `t=<unix seconds>,v1=<hex>`. Work out HMAC-SHA256 of `t + \".\" + raw body` with your secret, and accept the request if it matches any `v1` and `t` is less than 5 minutes old. Use the raw body exactly as received, before any JSON parsing.\n\n**Node.js**\n\n```js\nimport crypto from 'node:crypto'\n\nexport function verifyViewora(secret, rawBody, header) {\n  const parts = header.split(',').map(p => p.split('='))\n  const t = Number(parts.find(([k]) => k === 't')?.[1])\n  const sigs = parts.filter(([k]) => k === 'v1').map(([, v]) => v)\n  if (!t || Math.abs(Date.now() / 1000 - t) > 300) return false\n  const expected = crypto.createHmac('sha256', secret).update(`${t}.${rawBody}`).digest('hex')\n  return sigs.some(s => s.length === expected.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(expected)))\n}\n```\n\n**PHP**\n\n```php\nfunction verify_viewora(string $secret, string $rawBody, string $header): bool {\n    $t = 0; $sigs = [];\n    foreach (explode(',', $header) as $part) {\n        [$k, $v] = array_pad(explode('=', $part, 2), 2, '');\n        if ($k === 't') $t = (int) $v;\n        if ($k === 'v1') $sigs[] = $v;\n    }\n    if ($t === 0 || abs(time() - $t) > 300) return false;\n    $expected = hash_hmac('sha256', $t . '.' . $rawBody, $secret);\n    foreach ($sigs as $s) if (hash_equals($expected, $s)) return true;\n    return false;\n}\n// $ok = verify_viewora($secret, file_get_contents('php://input'), $_SERVER['HTTP_VIEWORA_SIGNATURE'] ?? '');\n```\n\n**Python**\n\n```python\nimport hashlib, hmac, time\n\ndef verify_viewora(secret: str, raw_body: bytes, header: str) -> bool:\n    parts = [p.split(\"=\", 1) for p in header.split(\",\") if \"=\" in p]\n    t = next((v for k, v in parts if k == \"t\"), \"\")\n    sigs = [v for k, v in parts if k == \"v1\"]\n    if not t.isdigit() or abs(time.time() - int(t)) > 300:\n        return False\n    expected = hmac.new(secret.encode(), t.encode() + b\".\" + raw_body, hashlib.sha256).hexdigest()\n    return any(hmac.compare_digest(expected, s) for s in sigs)\n```\n\n## Delivery\n\n- **Answer with any 2xx within 10 seconds.** Do slow work after you answer.\n- **Retries:** a failed delivery is retried after 1 min, 5 min, 30 min, 2 h, 6 h, 12 h and 24 h.\n- **Repeats and order:** an event can arrive more than once or out of order. Use `id` to drop repeats and the listing `version` to drop stale events.\n- **Switched off:** an endpoint that fails for 3 days without one success is switched off, and Viewora emails your technical contact. Fix it, then call `POST /v1/webhooks/{id}/enable`.\n- **New secret:** `POST /v1/webhooks/{id}/rotate-secret`. For 24 hours each delivery is signed with both secrets (`t=…,v1=<new>,v1=<old>`), so you can switch without missing events.\n- Events never contain buyers' contact details.\n\n# Claiming an agent's tour\n\nAn agent may already have a tour they made in the Viewora app. Ask to manage it with `POST /v1/claims` instead of making a second tour. The agent approves or declines in the app, and you get `claim.approved` or `claim.declined`. Claims nobody answers expire after 14 days (`claim.expired`). After approval, `POST /v1/listings` with the same `external_id` puts your listing on that tour.\n\n# Leads and consent\n\n`GET /v1/leads` lists buyers who asked about your listings through Viewora pages. It needs the `leads:read` scope, which Viewora grants only after the data-processing addendum is signed.\n\n- Only buyers who ticked the box agreeing to share their details with you are listed. Each lead carries `consent.wording` (the exact words they agreed to) and `consent.given_at`.\n- A buyer can withdraw. Their lead then leaves this feed, and you must delete any copy you hold within the time your agreement sets.\n- Use leads only for the purpose in your agreement. Every read is logged.\n\n# Errors\n\nEvery error has the same shape. Validation errors add `fields`.\n\n```json\n{ \"error\": { \"code\": \"VALIDATION_ERROR\", \"message\": \"price.amount must be a whole number\",\n             \"fields\": [{ \"field\": \"price.amount\", \"message\": \"Expected an integer\" }] } }\n```\n\n| Status | Meaning | What to do |\n|---|---|---|\n| 400 | The request is wrong (`VALIDATION_ERROR`) | Fix the fields listed, then retry |\n| 401 | Missing, wrong, revoked or expired key | Check the key; ask Viewora for a new one |\n| 403 | Scope missing, account suspended or a limit reached | Read `code`; contact Viewora if needed |\n| 404 | Not found, or it belongs to another partner | Check the id and the key's mode (test or live) |\n| 409 | Conflict, for example the `external_id` already exists | Read the existing item and update it instead |\n| 422 | Idempotency key reused with a different body | Use a new key for a new request |\n| 429 | Too many requests | Wait for `Retry-After` seconds, then retry |\n| 5xx | A fault on Viewora's side | Retry with backoff and the same `Idempotency-Key` |\n\nEach endpoint in the reference lists the codes it can return.\n\n# Limits\n\n| What | Limit |\n|---|---|\n| Reads | 300 per minute per key |\n| Tour and listing changes | 120 per minute per key |\n| Uploads | 600 per minute per key; 2,000 a day per partner unless agreed otherwise (resets at midnight EAT) |\n| New agents | 60 per minute per key |\n| Bulk imports | 10 requests per minute, 500 listings each |\n| Live listings | 2,000 per partner unless agreed otherwise |\nPlan limits (tours per agent, scenes per tour, file size) come from the plan your agreement pays for."
   },
   "servers": [
     {
@@ -55,6 +55,270 @@
             }
           }
         }
+      },
+      "Agent": {
+        "type": "object",
+        "properties": {
+          "external_id": {
+            "type": "string",
+            "example": "agent-118"
+          },
+          "name": {
+            "type": "string",
+            "example": "Wanjiku Motors"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-11-24T08:00:00Z"
+          }
+        }
+      },
+      "AgentInput": {
+        "type": "object",
+        "properties": {
+          "external_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^[A-Za-z0-9._:\\-]+$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 255,
+            "format": "email",
+            "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+          }
+        },
+        "required": [
+          "external_id",
+          "name"
+        ]
+      },
+      "Tour": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "3f6c2a9e-8b1d-4c5e-9f7a-2d4b6e8a0c11"
+          },
+          "external_id": {
+            "type": "string",
+            "example": "CAR-123"
+          },
+          "agent_external_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "agent-118"
+          },
+          "mode": {
+            "enum": [
+              "test",
+              "live"
+            ],
+            "example": "test"
+          },
+          "title": {
+            "type": "string",
+            "example": "Toyota Prado TX 2019"
+          },
+          "type": {
+            "enum": [
+              "residential",
+              "commercial",
+              "hospitality",
+              "education",
+              "automotive",
+              "land",
+              "other"
+            ],
+            "example": "automotive"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "published"
+            ],
+            "example": "published"
+          },
+          "has_360": {
+            "type": "boolean",
+            "example": true
+          },
+          "has_photos": {
+            "type": "boolean",
+            "example": true
+          },
+          "cover_image_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "embed_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "https://app.viewora.software/embed/toyota-prado-tx-2019"
+          },
+          "share_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "https://app.viewora.software/p/toyota-prado-tx-2019"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-11-24T08:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-11-24T08:05:00Z"
+          }
+        }
+      },
+      "TourInput": {
+        "type": "object",
+        "properties": {
+          "agent_external_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^[A-Za-z0-9._:\\-]+$"
+          },
+          "external_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^[A-Za-z0-9._:\\-]+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "residential",
+              "commercial",
+              "hospitality",
+              "education",
+              "automotive",
+              "land",
+              "other"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "location_text": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "agent_external_id",
+          "external_id",
+          "title",
+          "type"
+        ]
+      },
+      "UploadStart": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "panorama",
+              "photo",
+              "car_exterior"
+            ]
+          },
+          "file_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "content_type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "file_size": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 250000000
+          }
+        },
+        "required": [
+          "kind",
+          "file_name",
+          "content_type",
+          "file_size"
+        ]
+      },
+      "UploadComplete": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "panorama",
+              "photo",
+              "car_exterior"
+            ]
+          },
+          "upload_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "angle": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 359
+          },
+          "width": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 20000
+          },
+          "height": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 20000
+          }
+        },
+        "required": [
+          "kind",
+          "upload_key"
+        ]
       },
       "ListingInput": {
         "type": "object",
@@ -1262,6 +1526,1021 @@
     "analytics:read"
   ],
   "paths": {
+    "/agents": {
+      "post": {
+        "summary": "Create an agent",
+        "description": "Creates a Viewora account for the agent. Calling it again with the same external_id returns the existing agent (200, created: false). email is required for live agents and becomes their login; no email is sent. Test agents ignore email.\n\nScope: `agents:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Already existed"
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agent": {
+                      "$ref": "#/components/schemas/Agent"
+                    },
+                    "created": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "EMAIL_IN_USE",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ACCOUNT_CREATE_FAILED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Agents"
+        ]
+      },
+      "get": {
+        "summary": "List your agents",
+        "description": "Scope: `agents:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agents": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Agent"
+                      }
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "example": 50
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "example": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/agents/{external_id}": {
+      "get": {
+        "summary": "Read one agent",
+        "description": "Scope: `agents:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "external_id",
+            "in": "path",
+            "required": true,
+            "description": "Your id for the agent",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agent": {
+                      "$ref": "#/components/schemas/Agent"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "AGENT_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/tours": {
+      "post": {
+        "summary": "Create a tour",
+        "description": "type is one of residential, commercial, hospitality, education, automotive, land, other. details may hold: price_kes, listing_status, transaction_type, price_period, bedrooms, bathrooms, area_sqm, vehicle_year, vehicle_mileage_km, vehicle_transmission, vehicle_fuel_type, land_acres, land_type, amenities. A repeated external_id answers 409 TOUR_EXISTS with the existing tour in error.tour.\n\nScope: `listings:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TourInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created (draft)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tour": {
+                      "$ref": "#/components/schemas/Tour"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "AGENT_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "TOUR_EXISTS",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tours and uploads"
+        ]
+      },
+      "get": {
+        "summary": "List or find tours",
+        "description": "Scope: `listings:read`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "external_id",
+            "in": "query",
+            "description": "Find the tour for one of your listing ids",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_external_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tours": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Tour"
+                      }
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "example": 50
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "example": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tours and uploads"
+        ]
+      }
+    },
+    "/tours/{id}": {
+      "get": {
+        "summary": "Read one tour",
+        "description": "Scope: `listings:read`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Viewora's tour id (uuid)",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tour": {
+                      "$ref": "#/components/schemas/Tour"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "TOUR_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tours and uploads"
+        ]
+      },
+      "delete": {
+        "summary": "Delete a tour",
+        "description": "Permanent. The tour, its scenes and its page are removed.\n\nScope: `listings:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Viewora's tour id (uuid)",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "TOUR_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tours and uploads"
+        ]
+      }
+    },
+    "/tours/{id}/publish": {
+      "post": {
+        "summary": "Publish a tour",
+        "description": "After this the tour has embed_url and share_url.\n\nScope: `listings:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Viewora's tour id (uuid)",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Published",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tour": {
+                      "$ref": "#/components/schemas/Tour"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "TOUR_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tours and uploads"
+        ]
+      }
+    },
+    "/tours/{id}/unpublish": {
+      "post": {
+        "summary": "Take a tour down",
+        "description": "Scope: `listings:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Viewora's tour id (uuid)",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Now a draft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tour": {
+                      "$ref": "#/components/schemas/Tour"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "TOUR_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tours and uploads"
+        ]
+      }
+    },
+    "/tours/{id}/uploads": {
+      "post": {
+        "summary": "Start an upload",
+        "description": "Step 1 of 3. Returns a signed URL valid for 15 minutes. Step 2: PUT the file to upload_url with the headers given. Step 3: POST /tours/{id}/uploads/complete. kind: panorama (a 2:1 360° JPEG, becomes a scene), photo (goes to the gallery) or car_exterior (one angle of a car spin).\n\nScope: `media:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Viewora's tour id (uuid)",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadStart"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Upload URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "upload_key": {
+                      "type": "string"
+                    },
+                    "upload_url": {
+                      "type": "string"
+                    },
+                    "method": {
+                      "const": "PUT"
+                    },
+                    "headers": {
+                      "type": "object"
+                    },
+                    "expires_in": {
+                      "type": "integer",
+                      "example": 900
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "FILE_TOO_LARGE",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tours and uploads"
+        ]
+      }
+    },
+    "/tours/{id}/uploads/complete": {
+      "post": {
+        "summary": "Finish an upload",
+        "description": "Step 3 of 3. Processing starts and takes a short while. Calling this twice for the same file is safe. car_exterior needs angle (0 = front).\n\nScope: `media:write`",
+        "security": [
+          {
+            "partnerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Viewora's tour id (uuid)",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadComplete"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Processing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "upload": {
+                      "type": "object",
+                      "properties": {
+                        "upload_key": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "const": "processing"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_UPLOAD_KEY",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Partner suspended or scope missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tours and uploads"
+        ]
+      }
+    },
     "/listings": {
       "post": {
         "summary": "Create a listing",
@@ -1385,7 +2664,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Listings"
+        ]
       },
       "get": {
         "summary": "List your listings",
@@ -1543,7 +2825,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Listings"
+        ]
       }
     },
     "/listings/{id}": {
@@ -1622,7 +2907,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Listings"
+        ]
       },
       "patch": {
         "summary": "Update partner-owned fields",
@@ -1763,7 +3051,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Listings"
+        ]
       },
       "delete": {
         "summary": "Withdraw and archive (restorable for 30 days)",
@@ -1874,7 +3165,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Listings"
+        ]
       }
     },
     "/listings/{id}/restore": {
@@ -1969,7 +3263,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Listings"
+        ]
       }
     },
     "/listings/bulk": {
@@ -2086,7 +3383,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Listings"
+        ]
       }
     },
     "/imports/{id}": {
@@ -2152,7 +3452,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Listings"
+        ]
       }
     },
     "/listings/reconcile": {
@@ -2224,7 +3527,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Listings"
+        ]
       }
     },
     "/media": {
@@ -2335,7 +3641,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Listings"
+        ]
       }
     },
     "/webhooks": {
@@ -2442,7 +3751,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Webhook endpoints"
+        ]
       },
       "get": {
         "summary": "List endpoints",
@@ -2486,7 +3798,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Webhook endpoints"
+        ]
       }
     },
     "/webhooks/{id}": {
@@ -2542,7 +3857,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Webhook endpoints"
+        ]
       }
     },
     "/webhooks/{id}/test": {
@@ -2598,7 +3916,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Webhook endpoints"
+        ]
       }
     },
     "/webhooks/{id}/enable": {
@@ -2654,7 +3975,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Webhook endpoints"
+        ]
       }
     },
     "/webhooks/{id}/rotate-secret": {
@@ -2710,7 +4034,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Webhook endpoints"
+        ]
       }
     },
     "/claims": {
@@ -2827,7 +4154,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Claims"
+        ]
       },
       "get": {
         "summary": "Your claims",
@@ -2886,7 +4216,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Claims"
+        ]
       }
     },
     "/claims/{id}": {
@@ -2952,7 +4285,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Claims"
+        ]
       },
       "delete": {
         "summary": "Withdraw a claim that is still waiting",
@@ -3016,7 +4352,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Claims"
+        ]
       }
     },
     "/webhooks/{id}/deliveries": {
@@ -3072,7 +4411,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Webhook endpoints"
+        ]
       }
     },
     "/leads": {
@@ -3149,7 +4491,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Leads and analytics"
+        ]
       }
     },
     "/analytics": {
@@ -3232,7 +4577,10 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Leads and analytics"
+        ]
       }
     },
     "/export/listings": {
@@ -3294,13 +4642,18 @@
               }
             }
           }
-        }
+        },
+        "tags": [
+          "Leads and analytics"
+        ]
       }
     }
   },
   "webhooks": {
-    "listingEvent": {
+    "event": {
       "post": {
+        "summary": "Event sent to your endpoint",
+        "description": "POSTed to the URL you registered, with a Viewora-Signature header. Answer any 2xx within 10 seconds.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -3317,5 +4670,44 @@
         }
       }
     }
-  }
+  },
+  "tags": [
+    {
+      "name": "Agents",
+      "description": "Each agent or dealer is their own Viewora account, paid for by you."
+    },
+    {
+      "name": "Tours and uploads",
+      "description": "Create a tour, upload photos and 360° panoramas from your server, publish and embed."
+    },
+    {
+      "name": "Listings",
+      "description": "Send whole listings (price, availability, location, photos by URL) and keep them in sync."
+    },
+    {
+      "name": "Webhook endpoints",
+      "description": "Register and manage the URLs Viewora sends events to. How to check signatures is under Receiving events in the guide."
+    },
+    {
+      "name": "Claims",
+      "description": "Ask to manage a tour an agent made in the Viewora app."
+    },
+    {
+      "name": "Leads and analytics",
+      "description": "Buyers who agreed to share their details, and views per listing."
+    }
+  ],
+  "x-tagGroups": [
+    {
+      "name": "Reference",
+      "tags": [
+        "Agents",
+        "Tours and uploads",
+        "Listings",
+        "Webhook endpoints",
+        "Claims",
+        "Leads and analytics"
+      ]
+    }
+  ]
 }
