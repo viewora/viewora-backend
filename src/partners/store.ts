@@ -60,6 +60,8 @@ export type SpaceSummary = {
   has_gallery: boolean | null
   created_at: string
   updated_at: string
+  /** The Viewora account that owns the tour. */
+  user_id?: string
 }
 
 export type CreateUserResult = { userId: string } | { error: 'email_in_use' | 'failed' }
@@ -84,6 +86,8 @@ export interface PartnerStore {
   listTourRefs(partnerId: string, mode: KeyMode, opts: { agentId?: string; limit: number; offset: number }): Promise<TourRefRow[]>
   insertTourRef(row: Omit<TourRefRow, 'id' | 'created_at'>): Promise<TourRefRow | 'duplicate'>
   deleteTourRef(id: string): Promise<void>
+  /** Gives the tour to another agent's account and points the reference at that agent. False if the tour was not where expected. */
+  moveTour(ref: { id: string; space_id: string }, from: { agentId: string; userId: string }, to: { agentId: string; userId: string }): Promise<boolean>
   getSpaces(ids: string[]): Promise<SpaceSummary[]>
 
   /** Has this exact uploaded file already been turned into a scene / car photo? (retry safety) */
@@ -94,7 +98,7 @@ export interface PartnerStore {
 const PARTNER_COLS = 'id, slug, name, status, allowed_embed_origins, daily_upload_cap, agent_plan_id, paid_until, max_agents'
 const AGENT_COLS = 'id, partner_id, mode, external_id, user_id, name, created_at'
 const TOUR_COLS = 'id, partner_id, mode, external_id, space_id, agent_id, created_at'
-const SPACE_COLS = 'id, title, slug, property_type, is_published, cover_image_url, has_360, has_gallery, created_at, updated_at'
+const SPACE_COLS = 'id, title, slug, property_type, is_published, cover_image_url, has_360, has_gallery, created_at, updated_at, user_id'
 
 export function supabaseStore(fastify: FastifyInstance): PartnerStore {
   const db = fastify.supabase
@@ -225,6 +229,20 @@ export function supabaseStore(fastify: FastifyInstance): PartnerStore {
 
     async deleteTourRef(id) {
       await db.from('api_partner_tours').delete().eq('id', id)
+    },
+
+    async moveTour(ref, from, to) {
+      const { data: moved, error } = await db.from('properties').update({ user_id: to.userId })
+        .eq('id', ref.space_id).eq('user_id', from.userId).select('id')
+      if (error) throw new Error(error.message)
+      if (!moved?.length) return false
+      const r = await db.from('api_partner_tours').update({ agent_id: to.agentId }).eq('id', ref.id).eq('agent_id', from.agentId)
+      if (r.error) {
+        // Put the tour back so the reference and the owner never disagree.
+        await db.from('properties').update({ user_id: from.userId }).eq('id', ref.space_id)
+        throw new Error(r.error.message)
+      }
+      return true
     },
 
     async getSpaces(ids) {

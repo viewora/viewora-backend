@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import type { KeyMode } from '../utils/partnerKeys.js'
 import type { MediaCounts } from './listingModel.js'
 import type {
-  AnalyticsRow, AuditInput, DeliveryRow, EventInput, ExportSpace, IdemRow, ImportRow, LeadRow, ListingStore,
-  MediaRow, OutboxRow, StateRow, WebhookRow,
+  AgentLite, AnalyticsRow, AuditInput, ClaimRow, DeliveryRow, EventInput, ExportSpace, IdemRow, ImportRow, LeadRow, ListingStore,
+  MediaRow, OutboxRow, StateRow, TextRow, WebhookRow,
 } from './listingStore.js'
 import type { TourRefRow } from './store.js'
 
@@ -15,7 +15,9 @@ export type MemoryWorld = {
   refs: () => TourRefRow[]
   partnerNames?: Record<string, string>
   mediaCounts?: (spaceId: string) => MediaCounts
-  leads?: (LeadRow & { partner_id: string; mode: KeyMode })[]
+  /** consent: null = the buyer did not agree to share (never returned). */
+  leads?: (Omit<LeadRow, 'consent'> & { partner_id: string; mode: KeyMode; consent: LeadRow['consent'] | null })[]
+  agents?: () => (AgentLite & { partner_name?: string })[]
   analytics?: (AnalyticsRow & { partner_id: string; mode: KeyMode })[]
   spaces?: ExportSpace[]
 }
@@ -31,6 +33,12 @@ export function memoryListingStore(world: MemoryWorld, clock: () => number = Dat
   const webhooks: WebhookRow[] = []
   const deliveries: (DeliveryRow & { locked_until?: string | null })[] = []
   const imports: (ImportRow & { locked_until?: string | null })[] = []
+  const claims: ClaimRow[] = []
+  const texts: TextRow[] = [
+    { id: randomUUID(), key: 'lead_share_consent', locale: 'en', version: 1, subject: null, body: 'Share my details with {partner}.', active: true, created_by: 'seed', created_at: new Date(0).toISOString() },
+    { id: randomUUID(), key: 'webhook_disabled_email', locale: 'en', version: 1, subject: 'Webhook switched off', body: 'Hello {partner}, {url} was switched off. Enable: {webhook_id}', active: true, created_by: 'seed', created_at: new Date(0).toISOString() },
+  ]
+  const consents: (Parameters<ListingStore['insertConsent']>[0] & { withdrawn_at: string | null })[] = []
   let seq = 0
   const iso = () => new Date(clock()).toISOString()
   const refOf = (id: string) => world.refs().find(r => r.id === id)
@@ -45,8 +53,10 @@ export function memoryListingStore(world: MemoryWorld, clock: () => number = Dat
   const store: ListingStore & {
     _states: typeof states; _audit: typeof audit; _outbox: typeof outbox; _media: typeof media
     _webhooks: typeof webhooks; _deliveries: typeof deliveries; _imports: typeof imports
+    _claims: typeof claims; _texts: typeof texts; _consents: typeof consents
   } = {
     _states: states, _audit: audit, _outbox: outbox, _media: media, _webhooks: webhooks, _deliveries: deliveries, _imports: imports,
+    _claims: claims, _texts: texts, _consents: consents,
 
     async getState(id) { const s = states.get(id); return s ? clone(s) : null },
     async getStates(ids) { return ids.flatMap(id => states.has(id) ? [clone(states.get(id)!)] : []) },
@@ -228,17 +238,64 @@ export function memoryListingStore(world: MemoryWorld, clock: () => number = Dat
       if (q.since) rows = rows.filter(l => l.created_at >= q.since!)
       rows = rows.sort((a, b) => (`${b.created_at}|${b.id}` < `${a.created_at}|${a.id}` ? -1 : 1))
       if (q.after) rows = rows.filter(l => `${l.created_at}|${l.id}` < `${q.after!.t}|${q.after!.id}`)
-      return rows.slice(0, q.limit).map(({ partner_id, mode, ...l }) => clone(l))
+      return rows.filter(l => l.consent).slice(0, q.limit).map(({ partner_id, mode, ...l }) => clone(l) as LeadRow)
     },
     async analytics(pid, mode, q) {
       return (world.analytics ?? []).filter(r => r.partner_id === pid && r.mode === mode && r.date >= q.from && r.date <= q.to && (!q.spaceId || r.space_id === q.spaceId))
         .map(({ partner_id, mode, ...r }) => clone(r))
     },
-    async exportSpaces(userIds, q) {
+    async exportSpaces(pid, mode, q) {
+      const userIds = (world.agents?.() ?? []).filter(a => a.partner_id === pid && a.mode === mode).map(a => a.user_id)
       let rows = (world.spaces ?? []).filter(s => userIds.includes(s.user_id) && s.is_published)
         .sort((a, b) => (`${b.updated_at}|${b.id}` < `${a.updated_at}|${a.id}` ? -1 : 1))
       if (q.after) rows = rows.filter(s => `${s.updated_at}|${s.id}` < `${q.after!.t}|${q.after!.id}`)
       return rows.slice(0, q.limit).map(clone)
+    },
+    async duePurges(now, limit) {
+      return [...states.values()].filter(s => s.publication_status === 'archived' && s.restore_until && s.restore_until < now).slice(0, limit).map(clone)
+    },
+    async agentsByUsers(pid, mode, userIds) {
+      return (world.agents?.() ?? []).filter(a => a.partner_id === pid && a.mode === mode && userIds.includes(a.user_id)).map(clone)
+    },
+    async agentsForUser(userId) {
+      return (world.agents?.() ?? []).filter(a => a.user_id === userId).map(a => ({ ...clone(a), partner_name: a.partner_name ?? world.partnerNames?.[a.partner_id] ?? 'A partner' }))
+    },
+    async insertClaim(row) {
+      const open = claims.filter(c => c.status === 'pending')
+      if (open.some(c => c.space_id === row.space_id || (c.partner_id === row.partner_id && c.mode === row.mode && c.external_id === row.external_id))) return 'duplicate'
+      const c: ClaimRow = { id: randomUUID(), status: 'pending', created_at: iso(), expires_at: new Date(clock() + 14 * 86400_000).toISOString(), decided_at: null, decided_by: null, ...clone(row) }
+      claims.push(c)
+      return clone(c)
+    },
+    async getClaim(id) { const c = claims.find(x => x.id === id); return c ? clone(c) : null },
+    async listClaims(f) {
+      return claims.filter(c => (!f.partnerId || c.partner_id === f.partnerId) && (!f.mode || c.mode === f.mode)
+        && (!f.agentIds || f.agentIds.includes(c.agent_id)) && (!f.status || c.status === f.status)).slice(-f.limit).reverse().map(clone)
+    },
+    async decideClaim(id, status, by, now) {
+      const c = claims.find(x => x.id === id && x.status === 'pending')
+      if (!c) return null
+      Object.assign(c, { status, decided_by: by, decided_at: now })
+      return clone(c)
+    },
+    async dueClaimExpiries(now, limit) { return claims.filter(c => c.status === 'pending' && c.expires_at < now).slice(0, limit).map(clone) },
+    async activeText(key, locale) { const t = texts.find(x => x.key === key && x.locale === locale && x.active); return t ? clone(t) : null },
+    async listTexts() { return texts.map(clone) },
+    async saveText(row) {
+      const same = texts.filter(t => t.key === row.key && t.locale === row.locale)
+      for (const t of same) t.active = false
+      const t: TextRow = { id: randomUUID(), version: Math.max(0, ...same.map(x => x.version)) + 1, active: true, created_at: iso(), ...clone(row) }
+      texts.push(t)
+      return clone(t)
+    },
+    async insertConsent(row) {
+      if (consents.some(c => c.lead_id === row.lead_id)) throw new Error('consent: duplicate key')
+      consents.push({ ...clone(row), withdrawn_at: null })
+    },
+    async withdrawConsent(leadId, now) {
+      const c = consents.find(x => x.lead_id === leadId && !x.withdrawn_at)
+      if (c) c.withdrawn_at = now
+      return Boolean(c)
     },
   }
   return store

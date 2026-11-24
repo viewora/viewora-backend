@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { ListingStore, MediaRow, OutboxRow, WebhookRow } from './listingStore.js'
 import type { ListingService, Ctx } from './listingService.js'
+import type { ClaimService } from './claims.js'
 import { FETCHED_KINDS } from './listingService.js'
 import type { PartnerStore } from './store.js'
 import type { TourGateway } from './tourGateway.js'
@@ -22,6 +23,9 @@ export type JobDeps = {
   redis?: { incr: Function; expire: Function } | null
   log?: { info: Function; warn: Function; error: Function }
   now?: () => number
+  claims?: ClaimService
+  /** Tells the partner an endpoint was switched off (email, when enabled). Failures are logged, never thrown. */
+  notify?: { webhookDisabled(w: WebhookRow): Promise<void> }
 }
 
 const nowMs = (d: JobDeps) => (d.now ? d.now() : Date.now())
@@ -91,9 +95,9 @@ export async function deliverWebhooks(d: JobDeps): Promise<number> {
     if (isTest) continue
     if (!w.failing_since) await d.listings.updateWebhook(w.id, { failing_since: iso(now) })
     else if (now - Date.parse(w.failing_since) > DISABLE_AFTER_MS) {
-      // Emailing the partner's technical contact is left to staff for now (no automatic messages).
       await d.listings.updateWebhook(w.id, { status: 'disabled', disabled_reason: 'Failed without a success for 3 days. Fix the endpoint, then POST /v1/webhooks/{id}/enable.' })
       d.log?.warn({ webhook: w.id, partner: w.partner_id }, 'partner webhook disabled after 3 days of failures')
+      if (d.notify) await d.notify.webhookDisabled({ ...w, status: 'disabled' }).catch(e => d.log?.error({ webhook: w.id, err: String(e) }, 'partner webhook-disabled notice failed'))
     }
   }
   return due.length
@@ -101,7 +105,11 @@ export async function deliverWebhooks(d: JobDeps): Promise<number> {
 
 async function sendOne(d: JobDeps, w: WebhookRow, ev: OutboxRow, key: Buffer): Promise<{ ok: boolean; status: number | null; error: string | null }> {
   let secret: string
-  try { secret = decryptSecret(w.secret_cipher, key) } catch {
+  const previous: string[] = []
+  try {
+    secret = decryptSecret(w.secret_cipher, key)
+    if (w.prev_secret_cipher && w.prev_secret_expires_at && Date.parse(w.prev_secret_expires_at) > nowMs(d)) previous.push(decryptSecret(w.prev_secret_cipher, key))
+  } catch {
     return { ok: false, status: null, error: 'Signing secret could not be read (key changed?)' }
   }
   const body = eventBody(ev)
@@ -113,7 +121,7 @@ async function sendOne(d: JobDeps, w: WebhookRow, ev: OutboxRow, key: Buffer): P
         'user-agent': 'Viewora-Webhooks/1',
         'viewora-event-id': `evt_${ev.id}`,
         'viewora-event-type': ev.event_type,
-        'viewora-signature': signPayload(secret, body, Math.floor(nowMs(d) / 1000)),
+        'viewora-signature': signPayload(secret, body, Math.floor(nowMs(d) / 1000), previous),
       },
     })
     if (res.status >= 200 && res.status < 300) return { ok: true, status: res.status, error: null }
@@ -273,6 +281,9 @@ export async function runSweeps(d: JobDeps): Promise<void> {
   for (const s of await d.listings.dueExpiries(iso(now), 50)) await d.service.expire(s).catch(e => d.log?.warn({ err: String(e) }, 'partner expiry failed'))
   // Listings waiting for photos to finish processing on the tour.
   for (const s of await d.listings.statesByStatus('submitted', iso(now - 2 * 60_000), 20)) await d.service.reevaluate(s.tour_ref_id).catch(() => {})
+  // Archived listings past their 30-day restore window are deleted for good.
+  for (const s of await d.listings.duePurges(iso(now), 20)) await d.service.purge(s).catch(e => d.log?.warn({ ref: s.tour_ref_id, err: String(e) }, 'partner purge failed'))
+  if (d.claims) await d.claims.expireDue().catch(e => d.log?.warn({ err: String(e) }, 'partner claim expiry failed'))
   await d.listings.purgeIdem(iso(now))
 }
 

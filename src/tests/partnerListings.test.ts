@@ -14,6 +14,11 @@ import { decryptSecret, encryptSecret, nextAttemptDelayMs, signPayload, verifySi
 import { effectiveScopes, hasScope } from '../partners/scopes.js'
 import { buildOpenApi, buildPostman } from '../partners/openapi.js'
 import partnerListingAdmin from '../routes/partnerListingAdmin.js'
+import partnerApp from '../routes/partnerApp.js'
+import leadsRoutes from '../routes/leads.js'
+import { claimService } from '../partners/claims.js'
+import { partnerNotifier } from '../partners/notify.js'
+import { leadConsent } from '../partners/leadConsent.js'
 
 // ── a small world: two partners, agents, fake tours, fake internet ──────────
 
@@ -50,12 +55,12 @@ function world() {
     async createSpace(userId, facts) {
       const id = uuid()
       spaces.set(id, { id, title: facts.title, slug: null, property_type: facts.space_type, is_published: false, cover_image_url: null,
-        has_360: false, has_gallery: false, created_at: 'now', updated_at: 'now', owner: userId, files: {}, facts })
+        has_360: false, has_gallery: false, created_at: 'now', updated_at: 'now', owner: userId, user_id: userId, files: {}, facts })
       tourCalls.push(`create ${id}`)
       return { ok: true, id }
     },
     async updateSpace(_u, id, facts) { const s = spaces.get(id)!; s.facts = facts; s.title = facts.title; tourCalls.push(`update ${id}`); return { ok: true } },
-    async deleteSpace(_u, id) { spaces.delete(id) },
+    async deleteSpace(_u, id) { spaces.delete(id); tourCalls.push(`delete ${id}`) },
     async setCarIdentity(_u, id) { tourCalls.push(`car ${id}`); return { ok: true } },
     async setPublished(_u, id, publish) {
       const s = spaces.get(id)!
@@ -95,7 +100,14 @@ function world() {
       refs.push(r)
       return r
     },
-    deleteTourRef: async () => {},
+    deleteTourRef: async id => { const i = refs.findIndex(r => r.id === id); if (i >= 0) refs.splice(i, 1) },
+    moveTour: async (ref, from, to) => {
+      const s = spaces.get(ref.space_id)
+      const r = refs.find(x => x.id === ref.id)
+      if (!s || s.user_id !== from.userId || !r || r.agent_id !== from.agentId) return false
+      s.user_id = to.userId; s.owner = to.userId; r.agent_id = to.agentId
+      return true
+    },
     getSpaces: async ids => ids.flatMap(i => spaces.get(i) ?? []),
     sceneExists: async () => false,
     vehicleViewExists: async () => false,
@@ -104,6 +116,7 @@ function world() {
   const memWorld: Parameters<typeof memoryListingStore>[0] = {
     refs: () => refs,
     partnerNames: { pa: 'Acme Homes', pb: 'Other Co' },
+    agents: () => agents.map(a => ({ ...a, partner_name: partners[a.partner_id]?.name })),
     mediaCounts: id => ({ photo: spaces.get(id)?.files.photo ?? 0, panorama: spaces.get(id)?.files.panorama ?? 0, tour: 0, car_exterior: spaces.get(id)?.files.car_exterior ?? 0 }),
   }
   const listings = memoryListingStore(memWorld, clock)
@@ -135,11 +148,24 @@ function world() {
     })
     return a
   }
-  const jobDeps = (): JobDeps => ({ listings, partners: store, service, tours, fetch, webhookKey: () => KEY, now: clock })
+  const emails: { to: string[]; subject: string; text: string }[] = []
+  const claims = claimService({ partners: store, listings, now: clock })
+  const notify = partnerNotifier({
+    listings, enabled: () => true, send: async m => { emails.push(m) },
+    contact: async id => partners[id] ? { name: partners[id].name, email: `tech@${partners[id].slug}.example` } : null,
+  })
+  const jobDeps = (): JobDeps => ({ listings, partners: store, service, tours, fetch, webhookKey: () => KEY, now: clock, claims, notify })
+  /** A tour the agent made in the Viewora app (no partner reference). */
+  const appTour = (userId: string, title = 'Townhouse in Lavington') => {
+    const id = uuid()
+    spaces.set(id, { id, title, slug: `app-${id.slice(-4)}`, property_type: 'residential', is_published: true, cover_image_url: null,
+      has_360: true, has_gallery: false, created_at: 'now', updated_at: 'now', owner: userId, user_id: userId, files: { panorama: 1 }, facts: {} })
+    return id
+  }
   const runJobs = async (times = 3) => { for (let i = 0; i < times; i++) await tick(jobDeps(), { sweeps: true }) }
 
   return {
-    app, issue, clock, advance, partners, memWorld, store, agents, refs, spaces, listings, tourCalls, web, sent, runJobs, jobDeps,
+    app, issue, clock, advance, partners, memWorld, store, emails, claims, appTour, agents, refs, spaces, listings, tourCalls, web, sent, runJobs, jobDeps,
     service: () => service,
     setPublishError: (m: string | null) => { publishError = m },
     setHookStatus: (s: number) => { hookStatus = s },
@@ -733,8 +759,9 @@ test('leads need leads:read, are scoped to the partner and every read is logged'
   const l = (await post(rental('L-1', { publish: false }))).json().listing
   const ref = w.refs.find(r => r.external_id === 'L-1')!
   w.memWorld.leads = [
-    { id: 'lead-1', space_id: l.tour_id, ref: { id: ref.id, external_id: 'L-1' }, name: 'Achieng', email: 'a@example.com', phone: '+254712000000', message: 'Is it available?', source: 'form', created_at: '2026-12-01T07:00:00Z', partner_id: 'pa', mode: 'test' },
-    { id: 'lead-2', space_id: 'other', ref: { id: 'x', external_id: 'Z' }, name: 'Someone', email: null, phone: null, message: null, source: 'form', created_at: '2026-12-01T07:30:00Z', partner_id: 'pb', mode: 'test' },
+    { id: 'lead-1', space_id: l.tour_id, ref: { id: ref.id, external_id: 'L-1' }, name: 'Achieng', email: 'a@example.com', phone: '+254712000000', message: 'Is it available?', source: 'form', created_at: '2026-12-01T07:00:00Z', partner_id: 'pa', mode: 'test', consent: { wording: 'Share my details with Acme Homes.', given_at: '2026-12-01T07:00:00Z' } },
+    { id: 'lead-3', space_id: l.tour_id, ref: { id: ref.id, external_id: 'L-1' }, name: 'Said no', email: 'n@example.com', phone: null, message: null, source: 'form', created_at: '2026-12-01T07:10:00Z', partner_id: 'pa', mode: 'test', consent: null },
+    { id: 'lead-2', space_id: 'other', ref: { id: 'x', external_id: 'Z' }, name: 'Someone', email: null, phone: null, message: null, source: 'form', created_at: '2026-12-01T07:30:00Z', partner_id: 'pb', mode: 'test', consent: { wording: 'x', given_at: 'x' } },
   ]
   const noScope = w.issue('pa', 'test')
   assert.equal((await app.inject({ method: 'GET', url: '/v1/leads', headers: auth(noScope) })).statusCode, 403)
@@ -743,6 +770,8 @@ test('leads need leads:read, are scoped to the partner and every read is logged'
   assert.equal(r.data.length, 1)
   assert.equal(r.data[0].listing_id, l.id)
   assert.equal(r.data[0].phone, '+254712000000')
+  assert.equal(r.data[0].consent.wording, 'Share my details with Acme Homes.', 'the exact words the buyer agreed to')
+  assert.ok(!r.data.some((x: any) => x.name === 'Said no'), 'a buyer who did not agree is never shared')
   assert.ok(w.listings._audit.some(a => a.action === 'leads.read'))
 })
 
@@ -770,4 +799,214 @@ test('analytics: at most 92 days; export lists the agents published tours, inclu
   assert.equal(e2.data[0].origin, 'viewora')
   assert.equal(e2.data[0].urls.share, 'https://app.viewora.software/p/app')
   assert.equal(e2.next_cursor, null, 'tours of other accounts never appear')
+})
+
+// ── migration 005 features ──────────────────────────────────────────────────
+
+async function agentApp(w: ReturnType<typeof world>, asUser: () => string) {
+  const a = Fastify()
+  a.decorate('authenticate', async (req: any, reply: any) => {
+    if (!req.headers.authorization) return reply.code(401).send({ statusMessage: 'Missing token' })
+    req.user = { sub: asUser() }
+  })
+  await a.register(partnerApp, { prefix: '/partner', listings: w.listings, partners: w.store, claims: w.claims })
+  return a
+}
+
+test('agent change: the tour moves to the new agent and the old agent no longer owns it', async () => {
+  const { w, post, patch } = await setup()
+  const second = { id: '00000000-0000-4000-8000-0000000000a2', partner_id: 'pa', mode: 'test' as const, external_id: 'agent-2', user_id: '00000000-0000-4000-8000-0000000000b2', name: 'Second', created_at: 'now' }
+  w.agents.push(second)
+  const l = (await post(rental())).json().listing
+  const old = w.spaces.get(l.tour_id)!.user_id
+  const res = await patch(l.id, { agent_external_id: 'agent-2' })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(res.json().listing.agent_external_id, 'agent-2')
+  assert.equal(w.spaces.get(l.tour_id)!.user_id, second.user_id)
+  assert.notEqual(old, second.user_id)
+  assert.equal(w.refs.find(r => r.space_id === l.tour_id)!.agent_id, second.id)
+  assert.ok(w.listings._audit.some(a => a.action === 'listing.agent_changed'))
+  const unknown = await patch(l.id, { agent_external_id: 'nobody' })
+  assert.equal(unknown.json().error.code, 'AGENT_NOT_FOUND')
+  // Another partner's agent with the same external id is never used.
+  const other = await w.app()
+  const pbKey = w.issue('pb', 'test')
+  const theirs = (await other.inject({ method: 'POST', url: '/v1/listings', headers: auth(pbKey), payload: rental('PB-1', { publish: false }) })).json().listing
+  assert.equal(w.refs.find(r => r.space_id === theirs.tour_id)!.partner_id, 'pb')
+})
+
+test('purge: 30 days after archiving, the tour and listing are deleted; the audit log keeps a record', async () => {
+  const { w, app, key, post, get } = await setup()
+  const l = (await post(rental())).json().listing
+  await w.runJobs()
+  await app.inject({ method: 'DELETE', url: `/v1/listings/${l.id}`, headers: auth(key) })
+  w.advance(29 * 86400_000)
+  await w.runJobs(1)
+  assert.ok(w.spaces.has(l.tour_id), 'still restorable on day 29')
+  w.advance(2 * 86400_000)
+  await w.runJobs(1)
+  assert.ok(!w.spaces.has(l.tour_id), 'tour deleted')
+  assert.ok(!w.refs.some(r => r.space_id === l.tour_id), 'reference deleted')
+  assert.equal((await get(l.id)).statusCode, 404)
+  assert.ok(w.listings._audit.some(a => a.action === 'listing.purged' && a.entity_id === l.id.slice(4)))
+  // The external id is free again.
+  assert.equal((await app.inject({ method: 'POST', url: '/v1/listings', headers: auth(key), payload: rental() })).statusCode, 201)
+})
+
+test('claims: partner asks, the agent approves in the app, the partner sends the listing onto the same tour', async () => {
+  const { w, app, key } = await setup()
+  const agent = w.agents.find(a => a.partner_id === 'pa' && a.mode === 'test')!
+  const tour = w.appTour(agent.user_id)
+  const strangerTour = w.appTour('00000000-0000-4000-8000-00000000ffff')
+  const ask = (payload: object) => app.inject({ method: 'POST', url: '/v1/claims', headers: auth(key), payload })
+
+  assert.equal((await ask({ tour_id: strangerTour, agent_external_id: 'agent-1', external_id: 'HSE-77' })).json().error.code, 'TOUR_NOT_FOUND', 'only the agent\'s own tours')
+  const res = await ask({ tour_id: tour, agent_external_id: 'agent-1', external_id: 'HSE-77', note: 'Listed with us since March' })
+  assert.equal(res.statusCode, 201, res.body)
+  const claim = res.json().claim
+  assert.match(claim.id, /^clm_/)
+  assert.equal(claim.status, 'pending')
+  assert.equal((await ask({ tour_id: tour, agent_external_id: 'agent-1', external_id: 'HSE-78' })).json().error.code, 'CLAIM_EXISTS')
+
+  // Another partner cannot see or cancel it.
+  const other = w.issue('pb', 'test')
+  assert.equal((await app.inject({ method: 'GET', url: `/v1/claims/${claim.id}`, headers: auth(other) })).statusCode, 404)
+  assert.equal((await app.inject({ method: 'DELETE', url: `/v1/claims/${claim.id}`, headers: auth(other) })).statusCode, 404)
+
+  // The agent sees it in the app; someone else signed in does not.
+  let user = agent.user_id
+  const agentSide = await agentApp(w, () => user)
+  const mine = (await agentSide.inject({ method: 'GET', url: '/partner/claims', headers: { authorization: 'Bearer t' } })).json().claims
+  assert.equal(mine.length, 1)
+  assert.equal(mine[0].partner_name, 'Acme Homes')
+  assert.equal(mine[0].tour_title, 'Townhouse in Lavington')
+  user = '00000000-0000-4000-8000-00000000eeee'
+  assert.equal((await agentSide.inject({ method: 'GET', url: '/partner/claims', headers: { authorization: 'Bearer t' } })).json().claims.length, 0)
+  assert.equal((await agentSide.inject({ method: 'POST', url: `/partner/claims/${mine[0].id}/approve`, headers: { authorization: 'Bearer t' } })).statusCode, 404)
+
+  user = agent.user_id
+  const ok = await agentSide.inject({ method: 'POST', url: `/partner/claims/${mine[0].id}/approve`, headers: { authorization: 'Bearer t' } })
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.equal((await app.inject({ method: 'GET', url: `/v1/claims/${claim.id}`, headers: auth(key) })).json().claim.status, 'approved')
+  assert.ok(w.listings._outbox.some(e => e.event_type === 'claim.approved'))
+
+  // Now the partner's listing lands on the agent's existing tour, not a new one.
+  const before = w.spaces.size
+  const created = await app.inject({ method: 'POST', url: '/v1/listings', headers: auth(key), payload: rental('HSE-77') })
+  assert.equal(created.statusCode, 201, created.body)
+  assert.equal(created.json().listing.tour_id, tour)
+  assert.equal(w.spaces.size, before, 'no second tour')
+  assert.equal((await agentSide.inject({ method: 'POST', url: `/partner/claims/${mine[0].id}/approve`, headers: { authorization: 'Bearer t' } })).statusCode, 409)
+})
+
+test('claims: declined and expired claims change nothing and tell the partner', async () => {
+  const { w, app, key } = await setup()
+  const agent = w.agents.find(a => a.partner_id === 'pa' && a.mode === 'test')!
+  const t1 = w.appTour(agent.user_id)
+  const t2 = w.appTour(agent.user_id)
+  const c1 = (await app.inject({ method: 'POST', url: '/v1/claims', headers: auth(key), payload: { tour_id: t1, agent_external_id: 'agent-1', external_id: 'D-1' } })).json().claim
+  await app.inject({ method: 'POST', url: '/v1/claims', headers: auth(key), payload: { tour_id: t2, agent_external_id: 'agent-1', external_id: 'D-2' } })
+  const agentSide = await agentApp(w, () => agent.user_id)
+  const id1 = c1.id.slice(4)
+  assert.equal((await agentSide.inject({ method: 'POST', url: `/partner/claims/${id1}/decline`, headers: { authorization: 'Bearer t' } })).statusCode, 200)
+  assert.ok(!w.refs.some(r => r.space_id === t1), 'declining links nothing')
+  assert.ok(w.listings._outbox.some(e => e.event_type === 'claim.declined'))
+  w.advance(15 * 86400_000)
+  await w.runJobs(1)
+  const list = (await app.inject({ method: 'GET', url: '/v1/claims?status=expired', headers: auth(key) })).json().data
+  assert.deepEqual(list.map((c: any) => c.external_id), ['D-2'])
+  assert.ok(w.listings._outbox.some(e => e.event_type === 'claim.expired'))
+  assert.ok(!w.refs.some(r => r.space_id === t2))
+})
+
+test('webhooks: after a secret rotation both secrets sign for 24 hours, then only the new one', async () => {
+  const { w, app, key, post } = await setup()
+  const reg = (await app.inject({ method: 'POST', url: '/v1/webhooks', headers: auth(key), payload: { url: 'https://crm.acme.co.ke/hook', events: ['*'] } })).json()
+  const rot = await app.inject({ method: 'POST', url: `/v1/webhooks/${reg.webhook.id}/rotate-secret`, headers: auth(key) })
+  assert.equal(rot.statusCode, 200, rot.body)
+  const fresh = rot.json().secret
+  assert.notEqual(fresh, reg.secret)
+  assert.ok(rot.json().webhook.previous_secret_valid_until)
+
+  await post(rental('R-1', { publish: false }))
+  await w.runJobs(1)
+  const first = w.sent.at(-1)!
+  assert.equal(first.headers['viewora-signature'].split(',').filter(p => p.startsWith('v1=')).length, 2)
+  const t = Math.floor(w.clock() / 1000)
+  assert.ok(verifySignature(fresh, first.body, first.headers['viewora-signature'], t), 'new secret verifies')
+  assert.ok(verifySignature(reg.secret, first.body, first.headers['viewora-signature'], t), 'old secret still verifies')
+
+  w.advance(25 * 3600_000)
+  await post(rental('R-2', { publish: false }))
+  await w.runJobs(1)
+  const later = w.sent.at(-1)!
+  const t2 = Math.floor(w.clock() / 1000)
+  assert.ok(verifySignature(fresh, later.body, later.headers['viewora-signature'], t2))
+  assert.ok(!verifySignature(reg.secret, later.body, later.headers['viewora-signature'], t2), 'old secret stops after 24 h')
+})
+
+test('webhooks: switching an endpoint off emails the partner with the editable wording', async () => {
+  const { w, app, key, post } = await setup()
+  await app.inject({ method: 'POST', url: '/v1/webhooks', headers: auth(key), payload: { url: 'https://crm.acme.co.ke/hook', events: ['*'] } })
+  w.setHookStatus(503)
+  for (let i = 0; i < 5; i++) { await post(rental(`E-${i}`, { publish: false })); await w.runJobs(1); w.advance(20 * 3600_000) }
+  await w.runJobs(1)
+  assert.equal(w.emails.length, 1, JSON.stringify(w.emails))
+  assert.deepEqual(w.emails[0].to, ['tech@acme.example'])
+  assert.match(w.emails[0].text, /Acme Homes/)
+  assert.match(w.emails[0].text, /https:\/\/crm\.acme\.co\.ke\/hook/)
+  assert.ok(!/\{[a-z_]+\}/.test(w.emails[0].text), 'every placeholder is filled')
+})
+
+test('lead consent: the form gets the partner wording; the answer and exact words are stored with the lead', async () => {
+  const { w, post } = await setup()
+  const l = (await post(rental())).json().listing
+  const consent = leadConsent({
+    listings: w.listings,
+    partnerForSpace: async id => { const r = w.refs.find(x => x.space_id === id); return r ? { partner_id: r.partner_id, mode: r.mode, partner_name: w.partners[r.partner_id].name } : null },
+    getText: async id => w.listings._texts.find(t => t.id === id) ?? null,
+  })
+  const shown = await consent.wordingFor(l.tour_id)
+  assert.equal(shown!.wording, 'Share my details with Acme Homes.')
+  assert.equal(await consent.wordingFor(w.appTour('someone')), null, 'tours that are not partner listings show no sharing box')
+
+  const inserted: any[] = []
+  const supabase = {
+    from(table: string) {
+      if (table === 'leads') return { insert(p: any) { inserted.push(p); return this }, select() { return this }, single: async () => ({ data: { id: '00000000-0000-4000-8000-00000000cccc', ...inserted.at(-1) }, error: null }) }
+      return { select() { return this }, eq() { return this }, single: async () => ({ data: { id: l.tour_id, is_published: true, lead_form_enabled: true, user_id: null, title: 'T', slug: null }, error: null }) }
+    },
+    rpc: async () => ({ data: null, error: null }),
+  }
+  const a = Fastify()
+  a.decorate('supabase', supabase as any)
+  a.decorate('authenticate', async () => {})
+  await a.register(leadsRoutes, { prefix: '/leads', consent })
+  const res = await a.inject({ method: 'POST', url: '/leads', payload: { spaceId: l.tour_id, name: 'Wanjiru', email: 'w@example.com', partnerConsent: { accepted: true, textId: shown!.text_id } } })
+  assert.equal(res.statusCode, 201, res.body)
+  const row = w.listings._consents[0]
+  assert.equal(row.accepted, true)
+  assert.equal(row.wording, 'Share my details with Acme Homes.')
+  assert.equal(row.partner_id, 'pa')
+  const bad = await a.inject({ method: 'POST', url: '/leads', payload: { spaceId: l.tour_id, name: 'X', email: 'x@example.com', partnerConsent: { accepted: true, textId: '00000000-0000-4000-8000-000000000999' } } })
+  assert.equal(bad.statusCode, 201, 'an unknown text never loses the lead')
+  assert.equal(w.listings._consents.length, 1, 'but no consent is recorded for it')
+
+  assert.equal(await w.listings.withdrawConsent(row.lead_id, new Date().toISOString()), true)
+  assert.ok(w.listings._consents[0].withdrawn_at)
+})
+
+test('admin: wording is versioned and the consent text must name the partner', async () => {
+  const { w } = await setup()
+  const admin = Fastify()
+  await admin.register(partnerListingAdmin, { prefix: '/ops', service: w.service(), listings: w.listings, partners: w.store })
+  const bad = await admin.inject({ method: 'POST', url: '/ops/texts', payload: { key: 'lead_share_consent', body: 'Share my details.' } })
+  assert.equal(bad.statusCode, 400)
+  const ok = await admin.inject({ method: 'POST', url: '/ops/texts', payload: { key: 'lead_share_consent', body: 'Ruhusu {partner} kunipigia simu.', locale: 'sw' } })
+  assert.equal(ok.statusCode, 201, ok.body)
+  const again = await admin.inject({ method: 'POST', url: '/ops/texts', payload: { key: 'lead_share_consent', body: 'Ruhusu {partner} kuwasiliana nami.', locale: 'sw' } })
+  assert.equal(again.json().text.version, 2)
+  const live = (await admin.inject({ method: 'GET', url: '/ops/texts' })).json().texts.filter((t: any) => t.key === 'lead_share_consent' && t.locale === 'sw' && t.active)
+  assert.equal(live.length, 1)
+  assert.equal(live[0].body, 'Ruhusu {partner} kuwasiliana nami.')
 })

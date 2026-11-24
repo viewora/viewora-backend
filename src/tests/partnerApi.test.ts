@@ -79,6 +79,7 @@ function world() {
       return r
     },
     deleteTourRef: async rid => { const i = tours.findIndex(t => t.id === rid); if (i >= 0) tours.splice(i, 1) },
+    moveTour: async () => false,
     getSpaces: async ids => ids.flatMap(i => spaces.get(i) ?? []),
     sceneExists: async (_s, url) => scenes.has(url),
     vehicleViewExists: async (_s, url) => views.has(url),

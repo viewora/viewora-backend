@@ -5,6 +5,8 @@ import { sanitizeLeadPhone, sanitizeLeadText } from '../utils/sanitize.js'
 import { sendLeadNotification } from '../email/index.js'
 import { trackServer } from '../utils/analytics.js'
 import { ownerEntitlements } from '../utils/quotas.js'
+import { leadConsent, supabaseConsentDeps } from '../partners/leadConsent.js'
+import { supabaseListingStore } from '../partners/listingStore.js'
 
 const leadBodySchema = z.object({
   spaceId: z.string().uuid().optional(),
@@ -14,6 +16,8 @@ const leadBodySchema = z.object({
   phone: z.string().trim().max(20).optional(),
   message: z.string().max(1000).optional(),
   source: z.enum(['direct', 'qr', 'embed', 'hotspot', 'whatsapp', 'call']).optional(),
+  // Partner listings only: the buyer's answer to sharing their details with the partner.
+  partnerConsent: z.object({ accepted: z.boolean(), textId: z.string().uuid() }).strict().optional(),
 }).superRefine((data, ctx) => {
   if (!data.spaceId && !data.propertyId) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'spaceId or propertyId is required', path: ['spaceId'] })
@@ -34,7 +38,11 @@ const patchLeadBodySchema = z.object({
   status: z.enum(['new', 'contacted', 'qualified', 'closed']),
 })
 
-export default async function (fastify: FastifyInstance) {
+export default async function (fastify: FastifyInstance, opts: { consent?: ReturnType<typeof leadConsent> } = {}) {
+  // Built lazily: only partner listings need it, and only with the listing platform on.
+  let consent = opts.consent ?? null
+  const consentService = () => (consent ??= leadConsent(supabaseConsentDeps(fastify, supabaseListingStore(fastify))))
+
   // PUBLIC ROUTE: Submit a lead
   fastify.post('/', {
     config: {
@@ -101,6 +109,17 @@ export default async function (fastify: FastifyInstance) {
     if (error) {
       fastify.log.error(error)
       return reply.code(500).send({ statusMessage: 'Failed to save lead' })
+    }
+
+    // The lead is saved first; a problem recording consent never loses it
+    // (without a recorded yes, the partner simply never receives the lead).
+    if (body.partnerConsent && (opts.consent || process.env.PARTNER_LISTINGS_ENABLED === '1')) {
+      try {
+        const ok = await consentService().record(data.id, finalId!, body.partnerConsent)
+        if (!ok) request.log.warn({ lead: data.id }, 'partner consent not recorded: text or partner did not match')
+      } catch (err: any) {
+        request.log.error({ lead: data.id, err: err?.message }, 'partner consent not recorded')
+      }
     }
 
     // Optional: Increment lead count in analytics_daily

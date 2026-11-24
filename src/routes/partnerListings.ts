@@ -6,7 +6,8 @@ import { LISTING_RULES, parseListingId, stable, type Ctx, type ListingService, t
 import type { ListingStore, ListSort, WebhookRow } from '../partners/listingStore.js'
 import type { PartnerStore } from '../partners/store.js'
 import { assertPublicHost, SafeFetchError } from '../partners/safeFetch.js'
-import { encryptSecret, EVENT_TYPES, generateWebhookSecret, MAX_WEBHOOKS, webhookKey } from '../partners/webhooks.js'
+import { encryptSecret, EVENT_TYPES, generateWebhookSecret, MAX_WEBHOOKS, ROTATION_OVERLAP_MS, webhookKey } from '../partners/webhooks.js'
+import type { ClaimService } from '../partners/claims.js'
 import type { Scope } from '../partners/scopes.js'
 import { rateKey } from '../partners/rateKey.js'
 
@@ -20,7 +21,11 @@ export type PartnerListingOptions = {
   /** Tests replace the DNS check for webhook URLs. */
   checkHost?: (url: string) => Promise<void>
   webhookKey?: () => Buffer | null
+  claims: ClaimService
+  now?: () => number
 }
+
+const claimsQuery = z.object({ status: z.enum(['pending', 'approved', 'declined', 'cancelled', 'expired']).optional() }).strict()
 
 const cfg = (max: number, scope: Scope) => ({ rateLimit: { max, timeWindow: '1 minute', keyGenerator: rateKey }, scope })
 
@@ -98,6 +103,7 @@ function decodeCursor<T>(raw: string | undefined): T | null | 'bad' {
 const webhookOut = (w: WebhookRow) => ({
   id: `wh_${w.id}`, url: w.url, events: w.events, status: w.status, disabled_reason: w.disabled_reason,
   failing_since: w.failing_since, secret_prefix: w.secret_prefix, created_at: w.created_at,
+  previous_secret_valid_until: w.prev_secret_expires_at && Date.parse(w.prev_secret_expires_at) > Date.now() ? w.prev_secret_expires_at : null,
 })
 const parseWebhookId = (raw: string) => /^wh_([0-9a-f-]{36})$/i.exec(raw)?.[1]?.toLowerCase() ?? null
 
@@ -367,6 +373,28 @@ export default async function partnerListingRoutes(fastify: FastifyInstance, opt
     return reply.code(202).send({ queued: true, note: 'A webhook.test event is on its way. Check GET /v1/webhooks/{id}/deliveries.' })
   })
 
+  // New signing secret. The old one keeps signing for 24 hours (both appear
+  // as v1= in Viewora-Signature), so the partner can switch without a gap.
+  fastify.post('/webhooks/:id/rotate-secret', { config: cfg(10, 'webhooks:manage') }, async (request, reply) => {
+    const w = await loadWebhook(request, reply)
+    if (!w) return
+    const key = getKey()
+    if (!key) return fail(reply, 503, 'WEBHOOKS_UNAVAILABLE', 'Webhooks are not switched on yet. Contact Viewora.')
+    const secret = generateWebhookSecret()
+    const until = new Date((opts.now ?? Date.now)() + ROTATION_OVERLAP_MS).toISOString()
+    await listings.updateWebhook(w.id, {
+      secret_cipher: encryptSecret(secret, key), secret_prefix: secret.slice(0, 10),
+      prev_secret_cipher: w.secret_cipher, prev_secret_expires_at: until,
+    })
+    const c = ctx(request)
+    await listings.insertAudit({ partner_id: c.partner.id, mode: c.mode, actor_type: 'partner_key', actor_id: c.actor.id, action: 'webhook.secret_rotated',
+      entity_type: 'webhook', entity_id: w.id, changes: { secret_prefix: [w.secret_prefix, secret.slice(0, 10)] }, request_id: c.actor.requestId })
+    return reply.send({
+      webhook: webhookOut({ ...w, secret_prefix: secret.slice(0, 10), prev_secret_expires_at: until }), secret,
+      note: `Store this secret now. Until ${until} each delivery is signed with both the new and the old secret.`,
+    })
+  })
+
   fastify.post('/webhooks/:id/enable', { config: cfg(30, 'webhooks:manage') }, async (request, reply) => {
     const w = await loadWebhook(request, reply)
     if (!w) return
@@ -398,8 +426,8 @@ export default async function partnerListingRoutes(fastify: FastifyInstance, opt
       data: page.map(l => ({
         id: `lead_${l.id}`, listing_id: l.ref.id ? `lst_${l.ref.id}` : null, external_id: l.ref.external_id ?? null,
         name: l.name, email: l.email, phone: l.phone, message: l.message, source: l.source, created_at: l.created_at,
-        // Consent wording and version are not recorded per lead yet.
-        consent: null,
+        // The words the buyer agreed to, and when. Leads without this are never shared.
+        consent: { wording: l.consent.wording, given_at: l.consent.given_at },
       })),
       next_cursor: rows.length > q.limit && last ? encodeCursor({ t: last.created_at, id: last.id }) : null,
     })
@@ -426,6 +454,31 @@ export default async function partnerListingRoutes(fastify: FastifyInstance, opt
     })
   })
 
+  // ── claims: link a tour an agent made in the Viewora app ─────────────────
+  const { claims } = opts
+  const sendResult = (reply: FastifyReply, r: Result) => reply.code(r.status).send(r.body)
+
+  fastify.post('/claims', { config: cfg(60, 'listings:write') }, async (request, reply) =>
+    sendResult(reply, await claims.request(ctx(request), request.body)))
+
+  fastify.get('/claims', { config: cfg(120, 'listings:read') }, async (request, reply) => {
+    const q = parse(reply, claimsQuery, request.query ?? {}, 'INVALID_FILTER')
+    if (!q) return
+    return sendResult(reply, await claims.list(ctx(request), q.status))
+  })
+
+  fastify.get('/claims/:id', { config: cfg(120, 'listings:read') }, async (request, reply) => {
+    const p = parse(reply, idParams, request.params)
+    if (!p) return
+    return sendResult(reply, await claims.get(ctx(request), p.id))
+  })
+
+  fastify.delete('/claims/:id', { config: cfg(60, 'listings:write') }, async (request, reply) => {
+    const p = parse(reply, idParams, request.params)
+    if (!p) return
+    return sendResult(reply, await claims.cancel(ctx(request), p.id))
+  })
+
   // ── export (Viewora → partner, read-only) ────────────────────────────────
   // Every published tour of the partner's agents, including ones the agent
   // made in the Viewora app. Read-only: the agreement says partners must not
@@ -436,15 +489,10 @@ export default async function partnerListingRoutes(fastify: FastifyInstance, opt
     const { partner, mode } = request.partnerCtx!
     const cur = decodeCursor<{ t: string; id: string }>(q.cursor)
     if (cur === 'bad') return fail(reply, 400, 'INVALID_CURSOR', 'This cursor is not valid. Start again without a cursor.')
-    const agents = []
-    for (let offset = 0; offset < 5000; offset += 500) {
-      const page = await partners.listAgents(partner.id, mode, 500, offset)
-      agents.push(...page)
-      if (page.length < 500) break
-    }
-    const byUser = new Map(agents.map(a => [a.user_id, a]))
-    const spaces = await listings.exportSpaces([...byUser.keys()], { after: cur ?? undefined, limit: q.limit + 1 })
+    const spaces = await listings.exportSpaces(partner.id, mode, { after: cur ?? undefined, limit: q.limit + 1 })
     const page = spaces.slice(0, q.limit)
+    const agents = await listings.agentsByUsers(partner.id, mode, [...new Set(page.map(s => s.user_id))])
+    const byUser = new Map(agents.map(a => [a.user_id, a]))
     const refs = await Promise.all(page.map(s => partners.getTourRef(partner.id, mode, { spaceId: s.id })))
     const appUrl = (process.env.APP_URL ?? 'https://app.viewora.software').replace(/\/$/, '')
     const last = page[page.length - 1]

@@ -8,7 +8,8 @@ import type { PartnerStore } from '../partners/store.js'
 
 // Staff tools for the listing platform, under /admin/partners/ops (the
 // ADMIN_SECRET guard comes from the parent plugin): the moderation queue,
-// and the dead-letter lists for webhooks, media and imports.
+// the dead-letter lists for webhooks, media and imports, the editable
+// wording (consent text, partner emails) and consent withdrawal.
 
 export type PartnerListingAdminOptions = { service: ListingService; listings: ListingStore; partners: PartnerStore }
 
@@ -27,6 +28,14 @@ const rejectBody = z.object({
     field: z.string().trim().max(60).optional(),
   }).strict()).min(1).max(10),
 }).strict()
+
+const textBody = z.object({
+  key: z.enum(['lead_share_consent', 'webhook_disabled_email']),
+  locale: z.string().regex(/^[a-z]{2}$/).default('en'),
+  subject: z.string().trim().max(200).nullable().optional(),
+  body: z.string().trim().min(1).max(4000),
+}).strict()
+const leadParams = z.object({ leadId: z.string().uuid() })
 
 const staffId = (request: any) => String(request.headers['x-admin-id'] ?? 'staff').slice(0, 120)
 const send = (reply: FastifyReply, r: { status: number; body: any }) =>
@@ -82,8 +91,12 @@ export default async function partnerListingAdmin(fastify: FastifyInstance, opts
     ])
     const hooks = new Map<string, any>()
     for (const d of deliveries) if (!hooks.has(d.webhook_id)) hooks.set(d.webhook_id, await listings.getWebhook(d.webhook_id))
+    const events = new Map((await Promise.all([...new Set(deliveries.map(d => d.event_id))].map(id => listings.getEvent(id)))).flatMap(e => e ? [[e.id, e] as const] : []))
     return reply.send({
-      deliveries: deliveries.map(d => ({ ...d, webhook_url: hooks.get(d.webhook_id)?.url ?? null, webhook_status: hooks.get(d.webhook_id)?.status ?? null })),
+      deliveries: deliveries.map(d => ({
+        ...d, event_type: events.get(d.event_id)?.event_type ?? null,
+        webhook_url: hooks.get(d.webhook_id)?.url ?? null, webhook_status: hooks.get(d.webhook_id)?.status ?? null,
+      })),
       media,
       imports: imports.map(i => ({ ...i, items: undefined })),
     })
@@ -135,5 +148,31 @@ export default async function partnerListingAdmin(fastify: FastifyInstance, opts
       }
     }
     return reply.send({ webhooks: out })
+  })
+
+  // ── wording: consent text and partner emails (versioned; never hardcoded) ──
+  fastify.get('/texts', async (_request, reply) => {
+    return reply.send({ texts: await listings.listTexts(), placeholders: { lead_share_consent: ['{partner}'], webhook_disabled_email: ['{partner}', '{url}', '{webhook_id}'] } })
+  })
+
+  fastify.post('/texts', async (request, reply) => {
+    const b = parseWithSchema(reply, textBody, request.body)
+    if (!b) return
+    if (b.key === 'lead_share_consent' && !b.body.includes('{partner}')) {
+      return reply.code(400).send({ statusMessage: 'The consent text must name the partner: include {partner}.' })
+    }
+    const t = await listings.saveText({ key: b.key, locale: b.locale, subject: b.subject ?? null, body: b.body, created_by: staffId(request) })
+    await auditLog(fastify, request, 'partner.text.save', 'api_text', t.id, { key: t.key, locale: t.locale, version: t.version })
+    return reply.code(201).send({ text: t })
+  })
+
+  // A buyer asked to stop sharing: the partner no longer receives this lead.
+  fastify.post('/consents/:leadId/withdraw', async (request, reply) => {
+    const p = parseWithSchema(reply, leadParams, request.params)
+    if (!p) return
+    const done = await listings.withdrawConsent(p.leadId, new Date().toISOString())
+    if (!done) return reply.code(404).send({ statusMessage: 'No active sharing consent for this lead.' })
+    await auditLog(fastify, request, 'partner.consent.withdraw', 'lead', p.leadId)
+    return reply.send({ ok: true })
   })
 }

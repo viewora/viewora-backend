@@ -19,6 +19,8 @@ export const LISTING_RULES = {
   /** No update or confirmation for this long and a listing expires. */
   expiryDays: { rent: 60, lease: 60, sale: 90 } as Record<string, number>,
   restoreDays: 30,
+  /** After the restore window, the archived listing and its tour are deleted for good. */
+  purgeAfterRestoreWindow: true,
   /** Archiving more than 10% of active listings within an hour is held (a broken export looks like a mass delete). */
   bulkDeleteHold: { windowMs: 3600_000, maxShare: 0.10, minActive: 20 },
   bulkMaxItems: 500,
@@ -448,7 +450,8 @@ export function listingService(deps: ListingDeps) {
   async function patch(ctx: Ctx, rawId: string, body: unknown, ifMatch: number | null, opts: { importId?: string | null } = {}): Promise<Result> {
     const found = await resolve(ctx, rawId)
     if (!found?.state) return notFound()
-    const { ref, state, agent } = found
+    const { state } = found
+    let { ref, agent } = found
     const own = checkPatchOwnership(body, state.change_origin === 'app' ? 'app' : 'api')
     if (!own.ok) return fail(own.status, own.code, own.message, own.fields.length ? { fields: own.fields } : undefined)
     if (ifMatch !== null && ifMatch !== state.version) {
@@ -463,8 +466,18 @@ export function listingService(deps: ListingDeps) {
     if (isStaleUpdate(state.partner_updated_at, p.partner_updated_at)) {
       return { status: 200, body: { listing: await outOne(ref, state), applied: false, reason: 'stale' } }
     }
-    if (p.agent_external_id && p.agent_external_id !== state.listing.agent_external_id) {
-      return fail(409, 'AGENT_CHANGE_NOT_SUPPORTED', 'Moving a listing to another agent is not supported yet. Archive it and create it again under the new agent.')
+    if (p.agent_external_id && p.agent_external_id !== agent.external_id) {
+      // The tour moves to the new agent's Viewora account; leads and views stay with the tour.
+      const next = await partners.getAgent(ctx.partner.id, ctx.mode, p.agent_external_id)
+      if (!next) return fail(404, 'AGENT_NOT_FOUND', 'No agent with this agent_external_id. Create it with POST /v1/agents first.')
+      const moved = await partners.moveTour(ref, { agentId: agent.id, userId: agent.user_id }, { agentId: next.id, userId: next.user_id })
+      if (!moved) return fail(409, 'AGENT_CHANGE_FAILED', 'The tour is no longer owned by the current agent, so it was not moved. Contact Viewora.')
+      await listings.insertAudit({
+        partner_id: ctx.partner.id, mode: ctx.mode, actor_type: ctx.actor.type, actor_id: ctx.actor.id, request_id: ctx.actor.requestId ?? null,
+        action: 'listing.agent_changed', entity_type: 'listing', entity_id: ref.id, changes: { agent_external_id: [agent.external_id, next.external_id] },
+      })
+      ref = { ...ref, agent_id: next.id }
+      agent = next
     }
     const before = toInput(state.listing)
     const merged = mergePatch(before, p)
@@ -666,6 +679,24 @@ export function listingService(deps: ListingDeps) {
     return { status: 200, body: { ok: true } }
   }
 
+  /**
+   * Deletes an archived listing whose restore window has passed: the tour
+   * (with its photos), the reference and the listing state. The audit log
+   * keeps a record. Returns false when there was nothing to delete.
+   */
+  async function purge(state: StateRow): Promise<boolean> {
+    if (!LISTING_RULES.purgeAfterRestoreWindow) return false
+    const x = await loadForSystem(state.tour_ref_id)
+    if (!x || x.state.publication_status !== 'archived' || !x.state.restore_until || Date.parse(x.state.restore_until) > now()) return false
+    await tours.deleteSpace(x.agent.user_id, x.ref.space_id)
+    await partners.deleteTourRef(x.ref.id)
+    await listings.insertAudit({
+      partner_id: x.partner.id, mode: x.state.mode, actor_type: 'system', actor_id: 'purge', action: 'listing.purged',
+      entity_type: 'listing', entity_id: x.ref.id, changes: { external_id: [x.ref.external_id, null], tour_id: [x.ref.space_id, null] },
+    })
+    return true
+  }
+
   async function expire(state: StateRow): Promise<void> {
     const x = await loadForSystem(state.tour_ref_id)
     if (!x || x.state.publication_status !== 'published') return
@@ -679,7 +710,7 @@ export function listingService(deps: ListingDeps) {
     }])])
   }
 
-  return { create, patch, upsert, check, get, archive, restore, reevaluate, approve, reject, expire, resolve, out, outOne, outMany }
+  return { create, patch, upsert, check, get, archive, restore, reevaluate, approve, reject, expire, purge, resolve, out, outOne, outMany }
 }
 
 export type ListingService = ReturnType<typeof listingService>

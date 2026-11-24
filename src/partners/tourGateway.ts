@@ -115,7 +115,9 @@ export function callAsGateway(callAs: CallAs, store: PartnerStore, mediaBase: st
       return res.status === 200 ? { ok: true } : err(res, 'Could not update the tour.')
     },
     async deleteSpace(userId, spaceId) {
-      await callAs(userId, 'DELETE', `/spaces/${spaceId}`)
+      const res = await callAs(userId, 'DELETE', `/spaces/${spaceId}`)
+      // Already gone is fine; anything else must not be mistaken for a deletion.
+      if (res.status >= 400 && res.status !== 404) throw new Error(`delete tour ${spaceId}: ${res.status}`)
     },
     async setCarIdentity(userId, spaceId, identity) {
       const res = await callAs(userId, 'PATCH', `/spaces/${spaceId}/vehicle-identity`, identity)

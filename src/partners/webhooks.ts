@@ -7,6 +7,7 @@ export const EVENT_TYPES = [
   'listing.created', 'listing.updated', 'listing.published', 'listing.unpublished',
   'listing.moderation_held', 'listing.rejected', 'listing.archived', 'listing.restored',
   'listing.expired', 'media.failed', 'import.completed',
+  'claim.approved', 'claim.declined', 'claim.expired',
 ] as const
 export type EventType = typeof EVENT_TYPES[number] | 'webhook.test'
 
@@ -19,6 +20,8 @@ export const MAX_ATTEMPTS = RETRY_DELAYS_S.length + 1
 export const DISABLE_AFTER_MS = 3 * 86400_000
 /** Partners should refuse signatures older than this. */
 export const SIGNATURE_TOLERANCE_S = 300
+/** After a rotation the old secret keeps signing this long, so the partner can switch without missing events. */
+export const ROTATION_OVERLAP_MS = 24 * 3600_000
 
 const ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 
@@ -51,20 +54,23 @@ export function decryptSecret(stored: string, key: Buffer): string {
   return Buffer.concat([d.update(ct), d.final()]).toString('utf8')
 }
 
-/** Viewora-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "t.body">. */
-export function signPayload(secret: string, body: string, t = Math.floor(Date.now() / 1000)): string {
-  const v1 = createHmac('sha256', secret).update(`${t}.${body}`).digest('hex')
-  return `t=${t},v1=${v1}`
+/**
+ * Viewora-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "t.body">.
+ * During a secret rotation there is one v1 per valid secret (new first).
+ */
+export function signPayload(secret: string, body: string, t = Math.floor(Date.now() / 1000), alsoSignWith: string[] = []): string {
+  const sig = (s: string) => createHmac('sha256', s).update(`${t}.${body}`).digest('hex')
+  return [`t=${t}`, ...[secret, ...alsoSignWith].map(s => `v1=${sig(s)}`)].join(',')
 }
 
-/** What a partner runs on their side (also used in the docs and tests). */
+/** What a partner runs on their side (also used in the docs and tests). Any matching v1 passes. */
 export function verifySignature(secret: string, body: string, header: string, now = Math.floor(Date.now() / 1000)): boolean {
-  const parts = Object.fromEntries(header.split(',').map(p => p.split('=') as [string, string]))
-  const t = Number(parts.t)
-  if (!Number.isFinite(t) || Math.abs(now - t) > SIGNATURE_TOLERANCE_S || !parts.v1) return false
+  const pairs = header.split(',').map(p => { const i = p.indexOf('='); return [p.slice(0, i).trim(), p.slice(i + 1).trim()] as const })
+  const t = Number(pairs.find(([k]) => k === 't')?.[1])
+  const sigs = pairs.filter(([k]) => k === 'v1').map(([, v]) => v)
+  if (!Number.isFinite(t) || Math.abs(now - t) > SIGNATURE_TOLERANCE_S || !sigs.length) return false
   const expected = Buffer.from(createHmac('sha256', secret).update(`${t}.${body}`).digest('hex'))
-  const got = Buffer.from(parts.v1)
-  return got.length === expected.length && timingSafeEqual(got, expected)
+  return sigs.some(v => { const got = Buffer.from(v); return got.length === expected.length && timingSafeEqual(got, expected) })
 }
 
 export function subscribed(events: readonly string[], type: string): boolean {

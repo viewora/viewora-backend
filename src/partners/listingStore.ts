@@ -3,7 +3,7 @@ import type { KeyMode } from '../utils/partnerKeys.js'
 import type { TourRefRow } from './store.js'
 import type { Availability, ListingInput, MediaCounts, PublicationStatus, Transaction, Vertical } from './listingModel.js'
 
-// Every read and write of the listing tables (migrations 003 and 004),
+// Every read and write of the listing tables (migrations 003 to 005),
 // behind one interface. Tenant scoping lives here: every partner-facing
 // method takes partnerId and mode. Routes never touch these tables directly.
 
@@ -89,6 +89,8 @@ export type WebhookRow = {
   id: string; partner_id: string; mode: KeyMode; url: string; events: string[]
   secret_cipher: string; secret_prefix: string; status: 'active' | 'disabled'; disabled_reason: string | null
   failing_since: string | null; created_at: string; deleted_at: string | null
+  /** Migration 005: the secret before the last rotation, still signing until it expires. */
+  prev_secret_cipher?: string | null; prev_secret_expires_at?: string | null
 }
 
 export type DeliveryStatus = 'pending' | 'succeeded' | 'dead' | 'discarded'
@@ -111,7 +113,21 @@ export type IdemRow = { method: string; path: string; request_hash: string; stat
 export type LeadRow = {
   id: string; space_id: string; ref: Pick<TourRefRow, 'id' | 'external_id'>
   name: string | null; email: string | null; phone: string | null; message: string | null; source: string | null; created_at: string
+  /** The buyer agreed, in these words, to share their details with the partner. */
+  consent: { wording: string; given_at: string }
 }
+
+export type ClaimStatus = 'pending' | 'approved' | 'declined' | 'cancelled' | 'expired'
+export type ClaimRow = {
+  id: string; partner_id: string; mode: KeyMode; agent_id: string; space_id: string; external_id: string; note: string | null
+  status: ClaimStatus; created_at: string; expires_at: string; decided_at: string | null; decided_by: string | null
+}
+export type TextRow = {
+  id: string; key: string; locale: string; version: number; subject: string | null; body: string; active: boolean
+  created_by: string | null; created_at: string
+}
+export type ConsentInput = { lead_id: string; partner_id: string; mode: KeyMode; text_id: string | null; wording: string; locale: string; accepted: boolean }
+export type AgentLite = { id: string; partner_id: string; mode: KeyMode; external_id: string; user_id: string; name: string | null }
 export type AnalyticsRow = { space_id: string; ref: Pick<TourRefRow, 'id' | 'external_id'>; date: string; counts: Record<string, number> }
 export type ExportSpace = {
   id: string; user_id: string; title: string; slug: string | null; property_type: string; is_published: boolean
@@ -138,6 +154,8 @@ export interface ListingStore {
   /** Other listings (any partner) with the same VIN or chassis hash, not archived. */
   findVehicleMatches(tourRefId: string, vinHash: string | null, chassisHash: string | null): Promise<string[]>
   dueExpiries(nowIso: string, limit: number): Promise<StateRow[]>
+  /** Archived listings whose restore window has passed. */
+  duePurges(nowIso: string, limit: number): Promise<StateRow[]>
   /** Listings in a status, last changed before the given time (oldest first). */
   statesByStatus(status: PublicationStatus, changedBeforeIso: string, limit: number): Promise<StateRow[]>
   moderationQueue(limit: number): Promise<(ListedState & { partner_name: string })[]>
@@ -187,8 +205,25 @@ export interface ListingStore {
 
   leads(partnerId: string, mode: KeyMode, q: { spaceId?: string; since?: string; after?: { t: string; id: string }; limit: number }): Promise<LeadRow[]>
   analytics(partnerId: string, mode: KeyMode, q: { from: string; to: string; spaceId?: string }): Promise<AnalyticsRow[]>
-  /** Published tours owned by these agents' accounts, newest change first (export feed). */
-  exportSpaces(userIds: string[], q: { after?: { t: string; id: string }; limit: number }): Promise<ExportSpace[]>
+  /** Published tours owned by the partner's agents in this mode, newest change first (export feed). */
+  exportSpaces(partnerId: string, mode: KeyMode, q: { after?: { t: string; id: string }; limit: number }): Promise<ExportSpace[]>
+  agentsByUsers(partnerId: string, mode: KeyMode, userIds: string[]): Promise<AgentLite[]>
+  /** Every partner agent row for one Viewora account (an account can be an agent of several partners). */
+  agentsForUser(userId: string): Promise<(AgentLite & { partner_name: string })[]>
+
+  insertClaim(row: Pick<ClaimRow, 'partner_id' | 'mode' | 'agent_id' | 'space_id' | 'external_id' | 'note'>): Promise<ClaimRow | 'duplicate'>
+  getClaim(id: string): Promise<ClaimRow | null>
+  listClaims(f: { partnerId?: string; mode?: KeyMode; agentIds?: string[]; status?: ClaimStatus; limit: number }): Promise<ClaimRow[]>
+  /** Moves a pending claim to a final status; null when it was no longer pending. */
+  decideClaim(id: string, status: Exclude<ClaimStatus, 'pending'>, by: string | null, nowIso: string): Promise<ClaimRow | null>
+  dueClaimExpiries(nowIso: string, limit: number): Promise<ClaimRow[]>
+
+  activeText(key: string, locale: string): Promise<TextRow | null>
+  listTexts(): Promise<TextRow[]>
+  /** Saves a new version and makes it the live one. */
+  saveText(row: { key: string; locale: string; subject: string | null; body: string; created_by: string | null }): Promise<TextRow>
+  insertConsent(row: ConsentInput): Promise<void>
+  withdrawConsent(leadId: string, nowIso: string): Promise<boolean>
 }
 
 // ── Supabase implementation ─────────────────────────────────────────────────
@@ -196,7 +231,10 @@ export interface ListingStore {
 const STATE_COLS = 'tour_ref_id, partner_id, mode, vertical, transaction, version, availability, publication_status, moderation_reasons, listing, pending_listing, vin_hash, chassis_hash, partner_updated_at, published_at, expires_at, archived_at, restore_until, reviewed_at, reviewed_by, last_import_id, change_origin, created_at, updated_at'
 const REF_COLS = 'id, partner_id, mode, external_id, space_id, agent_id, created_at'
 const MEDIA_COLS = 'id, tour_ref_id, partner_id, mode, kind, source_url, sort_order, caption, angle, status, error_code, error_message, attempts, next_attempt_at, sha256, space_media_id, vehicle_view_id, created_at'
-const WEBHOOK_COLS = 'id, partner_id, mode, url, events, secret_cipher, secret_prefix, status, disabled_reason, failing_since, created_at, deleted_at'
+const WEBHOOK_COLS = 'id, partner_id, mode, url, events, secret_cipher, secret_prefix, status, disabled_reason, failing_since, created_at, deleted_at, prev_secret_cipher, prev_secret_expires_at'
+const CLAIM_COLS = 'id, partner_id, mode, agent_id, space_id, external_id, note, status, created_at, expires_at, decided_at, decided_by'
+const TEXT_COLS = 'id, key, locale, version, subject, body, active, created_by, created_at'
+const AGENT_COLS = 'id, partner_id, mode, external_id, user_id, name'
 const DELIVERY_COLS = 'id, webhook_id, event_id, partner_id, status, attempts, next_attempt_at, last_status, last_error, created_at, delivered_at'
 const IMPORT_COLS = 'id, partner_id, mode, key_id, status, dry_run, items, total, cursor, counts, errors, created_at, started_at, finished_at'
 const EXPORT_COLS = 'id, user_id, title, slug, property_type, is_published, cover_image_url, price_kes, listing_status, transaction_type, price_period, bedrooms, bathrooms, location_text, created_at, updated_at'
@@ -305,6 +343,11 @@ export function supabaseListingStore(fastify: FastifyInstance): ListingStore {
       const rows = must(await db.from('api_listing_state').select('tour_ref_id')
         .or(ors.join(',')).neq('tour_ref_id', id).neq('publication_status', 'archived').limit(10), 'vehicle matches') as any[]
       return rows.map(r => r.tour_ref_id)
+    },
+
+    async duePurges(nowIso, limit) {
+      return must(await db.from('api_listing_state').select(STATE_COLS)
+        .eq('publication_status', 'archived').lt('restore_until', nowIso).order('restore_until').limit(limit), 'due purges') as StateRow[]
     },
 
     async dueExpiries(nowIso, limit) {
@@ -516,8 +559,10 @@ export function supabaseListingStore(fastify: FastifyInstance): ListingStore {
 
     async leads(partnerId, mode, q) {
       let query = db.from('leads')
-        .select('id, property_id, name, email, phone, message, source, created_at, properties!inner(api_partner_tours!inner(id, external_id, partner_id, mode))')
+        .select('id, property_id, name, email, phone, message, source, created_at, properties!inner(api_partner_tours!inner(id, external_id, partner_id, mode)), api_lead_consents!inner(wording, accepted, created_at, withdrawn_at, partner_id)')
         .eq('properties.api_partner_tours.partner_id', partnerId).eq('properties.api_partner_tours.mode', mode)
+        // Only buyers who agreed to share their details with this partner.
+        .eq('api_lead_consents.partner_id', partnerId).eq('api_lead_consents.accepted', true).is('api_lead_consents.withdrawn_at', null)
       if (q.spaceId) query = query.eq('property_id', q.spaceId)
       if (q.since) query = query.gte('created_at', q.since)
       if (q.after) query = query.or(afterCondition('created_at', q.after, 'id', true))
@@ -525,8 +570,9 @@ export function supabaseListingStore(fastify: FastifyInstance): ListingStore {
       return rows.map(r => {
         const refs = r.properties?.api_partner_tours
         const ref = Array.isArray(refs) ? refs[0] : refs
+        const c = Array.isArray(r.api_lead_consents) ? r.api_lead_consents[0] : r.api_lead_consents
         return { id: r.id, space_id: r.property_id, ref: { id: ref?.id, external_id: ref?.external_id }, name: r.name, email: r.email,
-          phone: r.phone, message: r.message, source: r.source, created_at: r.created_at }
+          phone: r.phone, message: r.message, source: r.source, created_at: r.created_at, consent: { wording: c?.wording, given_at: c?.created_at } }
       })
     },
 
@@ -546,11 +592,76 @@ export function supabaseListingStore(fastify: FastifyInstance): ListingStore {
       })
     },
 
-    async exportSpaces(userIds, q) {
+    async exportSpaces(partnerId, mode, q) {
+      const rows = must(await db.rpc('api_export_spaces', {
+        p_partner: partnerId, p_mode: mode, p_after_t: q.after?.t ?? null, p_after_id: q.after?.id ?? null, p_limit: q.limit,
+      }), 'export') as any[]
+      const keys = EXPORT_COLS.split(', ')
+      return (rows ?? []).map(r => Object.fromEntries(keys.map(k => [k, r[k] ?? null])) as ExportSpace)
+    },
+
+    async agentsByUsers(partnerId, mode, userIds) {
       if (!userIds.length) return []
-      let query = db.from('properties').select(EXPORT_COLS).in('user_id', userIds).eq('is_published', true)
-      if (q.after) query = query.or(afterCondition('updated_at', q.after, 'id', true))
-      return must(await query.order('updated_at', { ascending: false }).order('id', { ascending: false }).limit(q.limit), 'export') as ExportSpace[]
+      return must(await db.from('api_partner_agents').select(AGENT_COLS).eq('partner_id', partnerId).eq('mode', mode).in('user_id', userIds), 'agents by user') as AgentLite[]
+    },
+
+    async agentsForUser(userId) {
+      const rows = must(await db.from('api_partner_agents').select(`${AGENT_COLS}, api_partners(name)`).eq('user_id', userId), 'agents for user') as any[]
+      return rows.map(({ api_partners, ...a }) => ({ ...a, partner_name: api_partners?.name ?? 'A partner' }))
+    },
+
+    async insertClaim(row) {
+      const r = await db.from('api_listing_claims').insert(row).select(CLAIM_COLS).single()
+      if (r.error?.code === '23505') return 'duplicate'
+      return must(r, 'insert claim') as ClaimRow
+    },
+
+    async getClaim(id) {
+      return (must(await db.from('api_listing_claims').select(CLAIM_COLS).eq('id', id).maybeSingle(), 'claim') as ClaimRow) ?? null
+    },
+
+    async listClaims(f) {
+      let q = db.from('api_listing_claims').select(CLAIM_COLS)
+      if (f.partnerId) q = q.eq('partner_id', f.partnerId)
+      if (f.mode) q = q.eq('mode', f.mode)
+      if (f.agentIds) { if (!f.agentIds.length) return []; q = q.in('agent_id', f.agentIds) }
+      if (f.status) q = q.eq('status', f.status)
+      return must(await q.order('created_at', { ascending: false }).limit(f.limit), 'claims') as ClaimRow[]
+    },
+
+    async decideClaim(id, status, by, nowIso) {
+      const r = await db.from('api_listing_claims').update({ status, decided_by: by, decided_at: nowIso })
+        .eq('id', id).eq('status', 'pending').select(CLAIM_COLS).maybeSingle()
+      return (must(r, 'decide claim') as ClaimRow) ?? null
+    },
+
+    async dueClaimExpiries(nowIso, limit) {
+      return must(await db.from('api_listing_claims').select(CLAIM_COLS).eq('status', 'pending').lt('expires_at', nowIso).limit(limit), 'due claims') as ClaimRow[]
+    },
+
+    async activeText(key, locale) {
+      const r = await db.from('api_texts').select(TEXT_COLS).eq('key', key).eq('locale', locale).eq('active', true).maybeSingle()
+      return (must(r, 'text') as TextRow) ?? null
+    },
+
+    async listTexts() {
+      return must(await db.from('api_texts').select(TEXT_COLS).order('key').order('locale').order('version', { ascending: false }).limit(200), 'texts') as TextRow[]
+    },
+
+    async saveText(row) {
+      const cur = must(await db.from('api_texts').select('version').eq('key', row.key).eq('locale', row.locale)
+        .order('version', { ascending: false }).limit(1), 'text versions') as { version: number }[]
+      must(await db.from('api_texts').update({ active: false }).eq('key', row.key).eq('locale', row.locale).eq('active', true), 'retire text')
+      return must(await db.from('api_texts').insert({ ...row, version: (cur[0]?.version ?? 0) + 1, active: true }).select(TEXT_COLS).single(), 'save text') as TextRow
+    },
+
+    async insertConsent(row) {
+      must(await db.from('api_lead_consents').insert(row), 'consent')
+    },
+
+    async withdrawConsent(leadId, nowIso) {
+      const r = await db.from('api_lead_consents').update({ withdrawn_at: nowIso }).eq('lead_id', leadId).is('withdrawn_at', null).select('id')
+      return (must(r, 'withdraw consent') as any[]).length > 0
     },
   }
 }

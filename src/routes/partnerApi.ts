@@ -7,6 +7,9 @@ import { callAsGateway, completeUpload, makeCallAs, KIND_TO_MEDIA, UPLOAD_KINDS,
 import { supabaseListingStore, type ListingStore } from '../partners/listingStore.js'
 import { listingService, type ListingService } from '../partners/listingService.js'
 import { startPartnerJobs } from '../partners/jobs.js'
+import { claimService } from '../partners/claims.js'
+import { partnerNotifier, supabasePartnerContact, type SendEmail } from '../partners/notify.js'
+import { isEmailEnabled, sendPlainEmail } from '../email/index.js'
 import { safeFetch } from '../partners/safeFetch.js'
 import { webhookKey } from '../partners/webhooks.js'
 import { hasScope, isExpired, type Scope } from '../partners/scopes.js'
@@ -40,6 +43,8 @@ export type PartnerApiOptions = {
   /** Tests: a clock, and access to the service the routes use. */
   now?: () => number
   exposeService?: (s: ListingService) => void
+  /** Tests: where partner emails go instead of Resend. */
+  sendEmail?: SendEmail
 }
 
 type PartnerContext = { keyId: string; mode: KeyMode; partner: Partner; scopes: string[] | null }
@@ -505,18 +510,27 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
     const listings = opts.listings ?? supabaseListingStore(fastify)
     const tours = opts.tours ?? callAsGateway(callAs, store, mediaBase)
     const service = listingService({ partners: store, listings, tours, appUrl, log: fastify.log, now: opts.now })
+    const claims = claimService({ partners: store, listings, now: opts.now })
     opts.exposeService?.(service)
+    const notify = partnerNotifier({
+      listings,
+      contact: opts.sendEmail ? async id => { const p = await store.getPartner(id); return p ? { name: p.name, email: (p as any).contact_email ?? null } : null } : supabasePartnerContact(fastify),
+      send: opts.sendEmail ?? sendPlainEmail,
+      // Off until staff switch it on: nothing reaches a real inbox by accident.
+      enabled: () => Boolean(opts.sendEmail) || (process.env.PARTNER_WEBHOOK_EMAILS === '1' && isEmailEnabled()),
+      log: fastify.log,
+    })
     if (opts.jobs ?? process.env.PARTNER_JOBS_ENABLED !== '0') {
       let stop: (() => void) | null = null
       fastify.addHook('onReady', async () => {
         stop = startPartnerJobs({
           listings, partners: store, service, tours, fetch: safeFetch, webhookKey: opts.webhookKey ?? (() => webhookKey()),
-          redis: redis() ?? null, log: fastify.log,
+          redis: redis() ?? null, log: fastify.log, claims, notify,
         })
       })
       fastify.addHook('onClose', async () => { stop?.() })
     }
-    await fastify.register(partnerListingRoutes, { service, listings, partners: store, checkHost: opts.checkHost, webhookKey: opts.webhookKey })
+    await fastify.register(partnerListingRoutes, { service, listings, partners: store, checkHost: opts.checkHost, webhookKey: opts.webhookKey, claims, now: opts.now })
     const spec = buildOpenApi()
     fastify.get('/openapi.json', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (_req, reply) => reply.send(spec))
   }
