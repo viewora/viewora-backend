@@ -5,7 +5,10 @@ import { hashPartnerKey, parsePartnerKey, type KeyMode } from '../utils/partnerK
 import { supabaseStore, type AgentRow, type KeyRecord, type Partner, type PartnerStore, type SpaceSummary, type TourRefRow } from '../partners/store.js'
 import { callAsGateway, completeUpload, makeCallAs, KIND_TO_MEDIA, UPLOAD_KINDS, type CallAs, type InternalResult, type TourGateway } from '../partners/tourGateway.js'
 import { supabaseListingStore, type ListingStore } from '../partners/listingStore.js'
-import { listingService } from '../partners/listingService.js'
+import { listingService, type ListingService } from '../partners/listingService.js'
+import { startPartnerJobs } from '../partners/jobs.js'
+import { safeFetch } from '../partners/safeFetch.js'
+import { webhookKey } from '../partners/webhooks.js'
 import { hasScope, isExpired, type Scope } from '../partners/scopes.js'
 import { rateKey } from '../partners/rateKey.js'
 import partnerListingRoutes from './partnerListings.js'
@@ -32,6 +35,11 @@ export type PartnerApiOptions = {
   tours?: TourGateway
   checkHost?: (url: string) => Promise<void>
   webhookKey?: () => Buffer | null
+  /** Background jobs (webhooks, media, imports, expiry). Default: on, unless PARTNER_JOBS_ENABLED=0. */
+  jobs?: boolean
+  /** Tests: a clock, and access to the service the routes use. */
+  now?: () => number
+  exposeService?: (s: ListingService) => void
 }
 
 type PartnerContext = { keyId: string; mode: KeyMode; partner: Partner; scopes: string[] | null }
@@ -496,8 +504,18 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
   if (opts.listingsEnabled ?? process.env.PARTNER_LISTINGS_ENABLED === '1') {
     const listings = opts.listings ?? supabaseListingStore(fastify)
     const tours = opts.tours ?? callAsGateway(callAs, store, mediaBase)
-    const service = listingService({ partners: store, listings, tours, appUrl, log: fastify.log })
-    fastify.decorate('partnerListingService', service)
+    const service = listingService({ partners: store, listings, tours, appUrl, log: fastify.log, now: opts.now })
+    opts.exposeService?.(service)
+    if (opts.jobs ?? process.env.PARTNER_JOBS_ENABLED !== '0') {
+      let stop: (() => void) | null = null
+      fastify.addHook('onReady', async () => {
+        stop = startPartnerJobs({
+          listings, partners: store, service, tours, fetch: safeFetch, webhookKey: opts.webhookKey ?? (() => webhookKey()),
+          redis: redis() ?? null, log: fastify.log,
+        })
+      })
+      fastify.addHook('onClose', async () => { stop?.() })
+    }
     await fastify.register(partnerListingRoutes, { service, listings, partners: store, checkHost: opts.checkHost, webhookKey: opts.webhookKey })
     const spec = buildOpenApi()
     fastify.get('/openapi.json', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (_req, reply) => reply.send(spec))

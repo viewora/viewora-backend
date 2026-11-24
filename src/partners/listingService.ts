@@ -568,7 +568,9 @@ export function listingService(deps: ListingDeps) {
         listings.countActive(ctx.partner.id, ctx.mode),
         listings.countRecentArchives(ctx.partner.id, ctx.mode, iso(now() - rule.windowMs)),
       ])
-      if (active >= rule.minActive && (recent + 1) > active * rule.maxShare) {
+      // Measured against the listings active when the hour began.
+      const base = active + recent
+      if (base >= rule.minActive && (recent + 1) > base * rule.maxShare) {
         return fail(409, 'BULK_DELETE_HELD', `More than ${rule.maxShare * 100}% of your active listings were removed in the last hour. If this is intended, send the request again with "confirm_bulk_delete": true in the body; otherwise check your export.`)
       }
     }
