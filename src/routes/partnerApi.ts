@@ -2,8 +2,14 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { hashPartnerKey, parsePartnerKey, type KeyMode } from '../utils/partnerKeys.js'
-import { unwrapEnvelope } from '../utils/ownShapeRoutes.js'
 import { supabaseStore, type AgentRow, type KeyRecord, type Partner, type PartnerStore, type SpaceSummary, type TourRefRow } from '../partners/store.js'
+import { callAsGateway, completeUpload, makeCallAs, KIND_TO_MEDIA, UPLOAD_KINDS, type CallAs, type InternalResult, type TourGateway } from '../partners/tourGateway.js'
+import { supabaseListingStore, type ListingStore } from '../partners/listingStore.js'
+import { listingService } from '../partners/listingService.js'
+import { hasScope, isExpired, type Scope } from '../partners/scopes.js'
+import { rateKey } from '../partners/rateKey.js'
+import partnerListingRoutes from './partnerListings.js'
+import { buildOpenApi } from '../partners/openapi.js'
 
 // Partner API (/v1): property and car apps create tours for their agents.
 //
@@ -13,17 +19,22 @@ import { supabaseStore, type AgentRow, type KeyRecord, type Partner, type Partne
 // processing are exactly the same as in the dashboard. This file only adds
 // partner auth, the partner's own ids, and a stable response shape.
 
-export type InternalResult = { status: number; body: any }
-export type CallAs = (userId: string, method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', url: string, payload?: unknown) => Promise<InternalResult>
+export type { CallAs, InternalResult }
 
 export type PartnerApiOptions = {
   store?: PartnerStore
   callAs?: CallAs
   appUrl?: string
   mediaBaseUrl?: string
+  /** /v1/listings and the rest of the listing platform (PARTNER_LISTINGS_ENABLED=1). */
+  listingsEnabled?: boolean
+  listings?: ListingStore
+  tours?: TourGateway
+  checkHost?: (url: string) => Promise<void>
+  webhookKey?: () => Buffer | null
 }
 
-type PartnerContext = { keyId: string; mode: KeyMode; partner: Partner }
+type PartnerContext = { keyId: string; mode: KeyMode; partner: Partner; scopes: string[] | null }
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -64,13 +75,6 @@ const listQuery = z.object({
 
 const tourParams = z.object({ id: z.string().uuid() })
 const agentParams = z.object({ externalId: EXTERNAL_ID })
-
-const UPLOAD_KINDS = ['panorama', 'photo', 'car_exterior'] as const
-const KIND_TO_MEDIA: Record<typeof UPLOAD_KINDS[number], string> = {
-  panorama: 'panorama',
-  photo: 'gallery_image',
-  car_exterior: 'vehicle_view',
-}
 
 const createUploadBody = z.object({
   kind: z.enum(UPLOAD_KINDS),
@@ -121,12 +125,7 @@ function forward(reply: FastifyReply, res: InternalResult, fallback: string) {
   return fail(reply, status, code, message, b.fields ? { fields: b.fields } : undefined)
 }
 
-function rateKey(req: FastifyRequest) {
-  const auth = req.headers.authorization
-  return typeof auth === 'string' && auth.startsWith('Bearer vo_') ? `pk:${hashPartnerKey(auth.slice(7).trim()).slice(0, 24)}` : req.ip
-}
-
-const rl = (max: number) => ({ rateLimit: { max, timeWindow: '1 minute', keyGenerator: rateKey } })
+const rl = (max: number, scope?: Scope) => ({ rateLimit: { max, timeWindow: '1 minute', keyGenerator: rateKey }, ...(scope ? { scope } : {}) })
 
 function todayEAT(now = Date.now()) {
   return new Date(now + 3 * 3600_000).toISOString().slice(0, 10)
@@ -139,23 +138,7 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
   const appUrl = (opts.appUrl ?? process.env.APP_URL ?? 'https://app.viewora.software').replace(/\/$/, '')
   const mediaBase = (opts.mediaBaseUrl ?? process.env.MEDIA_DOMAIN ?? `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`).replace(/\/$/, '')
 
-  const callAs: CallAs = opts.callAs ?? (async (userId, method, url, payload) => {
-    const res = await fastify.inject({
-      method,
-      url,
-      payload: payload as any,
-      // Gives each agent its own bucket in the existing per-route rate limits.
-      remoteAddress: `partner-agent:${userId}`,
-      headers: {
-        'x-internal-api-key': process.env.INTERNAL_API_KEY as string,
-        'x-internal-user-id': userId,
-      },
-    })
-    let body: any = {}
-    try { body = res.json() } catch { body = {} }
-    // Inner routes answer in the global { success, data } envelope.
-    return { status: res.statusCode, body: unwrapEnvelope(body) }
-  })
+  const callAs: CallAs = opts.callAs ?? makeCallAs(fastify)
 
   // Many HTTP clients send "Content-Type: application/json" with no body on
   // POST/DELETE (e.g. publish). Accept that as an empty body instead of the
@@ -185,14 +168,39 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
   const redis = () => (fastify as any).redis as { get: Function; setEx: Function; del: Function; incr: Function; expire: Function } | null | undefined
 
   // ── partner key auth ──────────────────────────────────────────────────────
+  // Every response carries the request id, so partners can quote it to support.
+  fastify.addHook('onSend', async (request, reply) => { reply.header('x-request-id', String(request.id)) })
+
+  /** Too many bad keys from one IP: 10 a minute, then a 15-minute block. */
+  async function authFailed(request: FastifyRequest) {
+    const r = redis()
+    if (!r) return
+    try {
+      const k = `partner:authfail:${request.ip}`
+      const n = Number(await r.incr(k))
+      if (n === 1) void Promise.resolve(r.expire(k, 60)).catch(() => {})
+      if (n > 10) await r.setEx(`partner:authblock:${request.ip}`, 15 * 60, '1')
+    } catch { /* counting is best effort */ }
+  }
+
   fastify.addHook('preHandler', async (request, reply) => {
+    // The API description is public, like the docs.
+    if (request.method === 'GET' && request.url.split('?')[0].endsWith('/openapi.json')) return
+    const r = redis()
+    if (r) {
+      try {
+        if (await r.get(`partner:authblock:${request.ip}`)) return fail(reply, 429, 'RATE_LIMITED', 'Too many requests with invalid keys. Try again in 15 minutes.')
+      } catch { /* fall through */ }
+    }
     const parsed = parsePartnerKey(request.headers.authorization)
-    if (!parsed) return fail(reply, 401, 'UNAUTHORIZED', 'Send your API key as "Authorization: Bearer vo_live_…" or "vo_test_…".')
+    if (!parsed) {
+      await authFailed(request)
+      return fail(reply, 401, 'UNAUTHORIZED', 'Send your API key as "Authorization: Bearer vo_live_…" or "vo_test_…".')
+    }
     const hash = hashPartnerKey(parsed.key)
     const cacheKey = `partnerkey:${hash}`
 
     let rec: KeyRecord | null = null
-    const r = redis()
     if (r) {
       try { const c = await r.get(cacheKey); if (c) rec = JSON.parse(c) } catch { /* fall through */ }
     }
@@ -206,10 +214,18 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
         if (r) void Promise.resolve(r.setEx(cacheKey, 60, JSON.stringify(rec))).catch(() => {})
       }
     }
-    if (!rec || rec.revoked || rec.mode !== parsed.mode) return fail(reply, 401, 'UNAUTHORIZED', 'This API key is not valid or has been revoked.')
+    if (!rec || rec.revoked || rec.mode !== parsed.mode) {
+      await authFailed(request)
+      return fail(reply, 401, 'UNAUTHORIZED', 'This API key is not valid or has been revoked.')
+    }
+    if (isExpired(rec.expiresAt)) return fail(reply, 401, 'KEY_EXPIRED', 'This API key has expired. Ask Viewora for a new one.')
     if (rec.partner.status !== 'active') return fail(reply, 403, 'PARTNER_SUSPENDED', 'This partner account is suspended. Contact Viewora.')
+    const needed = (request.routeOptions?.config as any)?.scope as Scope | undefined
+    if (needed && !hasScope(rec.scopes, needed)) {
+      return fail(reply, 403, 'SCOPE_MISSING', `This key does not have the ${needed} scope. Ask Viewora to add it.`, { scope: needed })
+    }
 
-    request.partnerCtx = { keyId: rec.keyId, mode: rec.mode, partner: rec.partner }
+    request.partnerCtx = { keyId: rec.keyId, mode: rec.mode, partner: rec.partner, scopes: rec.scopes ?? null }
     request.log.info({ partner: rec.partner.slug, keyId: rec.keyId, mode: rec.mode }, 'partner api request')
   })
 
@@ -266,7 +282,7 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
 
   // ── agents ────────────────────────────────────────────────────────────────
 
-  fastify.post('/agents', { config: rl(60) }, async (request, reply) => {
+  fastify.post('/agents', { config: rl(60, 'agents:write') }, async (request, reply) => {
     const body = parse(reply, createAgentBody, request.body)
     if (!body) return
     const { partner, mode } = request.partnerCtx!
@@ -308,7 +324,7 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
     return reply.code(201).send({ agent: agentOut(row), created: true })
   })
 
-  fastify.get('/agents', { config: rl(300) }, async (request, reply) => {
+  fastify.get('/agents', { config: rl(300, 'agents:write') }, async (request, reply) => {
     const q = parse(reply, listQuery.pick({ limit: true, offset: true }), request.query)
     if (!q) return
     const { partner, mode } = request.partnerCtx!
@@ -316,7 +332,7 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
     return reply.send({ agents: rows.map(agentOut), limit: q.limit, offset: q.offset })
   })
 
-  fastify.get('/agents/:externalId', { config: rl(300) }, async (request, reply) => {
+  fastify.get('/agents/:externalId', { config: rl(300, 'agents:write') }, async (request, reply) => {
     const p = parse(reply, agentParams, request.params)
     if (!p) return
     const { partner, mode } = request.partnerCtx!
@@ -327,7 +343,7 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
 
   // ── tours ─────────────────────────────────────────────────────────────────
 
-  fastify.post('/tours', { config: rl(120) }, async (request, reply) => {
+  fastify.post('/tours', { config: rl(120, 'listings:write') }, async (request, reply) => {
     const body = parse(reply, createTourBody, request.body)
     if (!body) return
     const { partner, mode } = request.partnerCtx!
@@ -365,7 +381,7 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
     return reply.code(201).send({ tour })
   })
 
-  fastify.get('/tours', { config: rl(300) }, async (request, reply) => {
+  fastify.get('/tours', { config: rl(300, 'listings:read') }, async (request, reply) => {
     const q = parse(reply, listQuery, request.query)
     if (!q) return
     const { partner, mode } = request.partnerCtx!
@@ -384,7 +400,7 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
     return reply.send({ tours: await toursOut(refs), limit: q.limit, offset: q.offset })
   })
 
-  fastify.get('/tours/:id', { config: rl(300) }, async (request, reply) => {
+  fastify.get('/tours/:id', { config: rl(300, 'listings:read') }, async (request, reply) => {
     const t = await loadTour(request, reply)
     if (!t) return
     const [tour] = await toursOut([t.ref])
@@ -400,10 +416,10 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
     const [tour] = await toursOut([t.ref])
     return reply.send({ tour })
   }
-  fastify.post('/tours/:id/publish', { config: rl(120) }, setPublished(true))
-  fastify.post('/tours/:id/unpublish', { config: rl(120) }, setPublished(false))
+  fastify.post('/tours/:id/publish', { config: rl(120, 'listings:write') }, setPublished(true))
+  fastify.post('/tours/:id/unpublish', { config: rl(120, 'listings:write') }, setPublished(false))
 
-  fastify.delete('/tours/:id', { config: rl(120) }, async (request, reply) => {
+  fastify.delete('/tours/:id', { config: rl(120, 'listings:write') }, async (request, reply) => {
     const t = await loadTour(request, reply)
     if (!t) return
     const res = await callAs(t.agent.user_id, 'DELETE', `/spaces/${t.ref.space_id}`)
@@ -417,7 +433,7 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
   // 2. POST /tours/:id/uploads/complete  → processing starts; a panorama
   //    becomes a 360 scene, a car_exterior photo joins the car's spin.
 
-  fastify.post('/tours/:id/uploads', { config: rl(600) }, async (request, reply) => {
+  fastify.post('/tours/:id/uploads', { config: rl(600, 'media:write') }, async (request, reply) => {
     const t = await loadTour(request, reply)
     if (!t) return
     const body = parse(reply, createUploadBody, request.body)
@@ -455,7 +471,7 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
     })
   })
 
-  fastify.post('/tours/:id/uploads/complete', { config: rl(600) }, async (request, reply) => {
+  fastify.post('/tours/:id/uploads/complete', { config: rl(600, 'media:write') }, async (request, reply) => {
     const t = await loadTour(request, reply)
     if (!t) return
     const body = parse(reply, completeUploadBody, request.body)
@@ -467,38 +483,23 @@ export default async function partnerApi(fastify: FastifyInstance, opts: Partner
       return fail(reply, 400, 'INVALID_UPLOAD_KEY', 'upload_key does not belong to this tour. Use the key returned when the upload was started.')
     }
     const publicUrl = `${mediaBase}/${body.upload_key}`
-
-    const done = await callAs(t.agent.user_id, 'POST', '/uploads/complete', {
-      spaceId: t.ref.space_id,
-      mediaType: KIND_TO_MEDIA[body.kind],
-      objectKey: body.upload_key,
-      publicUrl,
-      width: body.width,
-      height: body.height,
-      client_event_id: `partner:${body.upload_key}`.slice(0, 255),
+    const done = await completeUpload(callAs, store, t.agent.user_id, {
+      spaceId: t.ref.space_id, kind: body.kind, uploadKey: body.upload_key, publicUrl,
+      name: body.name, angle: body.angle, width: body.width, height: body.height,
     })
-    if (done.status !== 200) return forward(reply, done, 'Could not finish the upload.')
-    const mediaId = done.body?.id as string | undefined
-
-    if (body.kind === 'panorama' && !(await store.sceneExists(t.ref.space_id, publicUrl))) {
-      const scene = await callAs(t.agent.user_id, 'POST', `/spaces/${t.ref.space_id}/scenes`, {
-        name: body.name ?? 'Scene',
-        raw_image_url: publicUrl,
-      })
-      if (scene.status !== 201) return forward(reply, scene, 'The file was saved but could not be turned into a 360 scene.')
-    }
-    if (body.kind === 'car_exterior' && !(await store.vehicleViewExists(t.ref.space_id, publicUrl))) {
-      const view = await callAs(t.agent.user_id, 'POST', `/spaces/${t.ref.space_id}/vehicle-views`, {
-        image_url: publicUrl,
-        media_id: mediaId ?? null,
-        angle: body.angle,
-        label: body.name ?? null,
-        width: body.width ?? null,
-        height: body.height ?? null,
-      })
-      if (view.status !== 201) return forward(reply, view, 'The file was saved but could not be added to the car.')
-    }
+    if (!done.ok) return fail(reply, done.status, done.code === 'TOUR_UPDATE_FAILED' ? (STATUS_CODES[done.status] ?? 'INTERNAL_ERROR') : done.code, done.message)
 
     return reply.send({ upload: { upload_key: body.upload_key, kind: body.kind, status: 'processing' } })
   })
+
+  // ── listing platform (Phases 1 to 3) ──────────────────────────────────────
+  if (opts.listingsEnabled ?? process.env.PARTNER_LISTINGS_ENABLED === '1') {
+    const listings = opts.listings ?? supabaseListingStore(fastify)
+    const tours = opts.tours ?? callAsGateway(callAs, store, mediaBase)
+    const service = listingService({ partners: store, listings, tours, appUrl, log: fastify.log })
+    fastify.decorate('partnerListingService', service)
+    await fastify.register(partnerListingRoutes, { service, listings, partners: store, checkHost: opts.checkHost, webhookKey: opts.webhookKey })
+    const spec = buildOpenApi()
+    fastify.get('/openapi.json', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (_req, reply) => reply.send(spec))
+  }
 }

@@ -49,6 +49,7 @@ function world() {
   const store: PartnerStore = {
     findKeyByHash: async h => keys.get(h) ?? null,
     touchKey: async () => {},
+    getPartner: async pid => partners[pid] ?? null,
     getAgent: async (pid, mode, ext) => agents.find(a => a.partner_id === pid && a.mode === mode && a.external_id === ext) ?? null,
     getAgentsByIds: async ids => agents.filter(a => ids.includes(a.id)),
     listAgents: async (pid, mode) => agents.filter(a => a.partner_id === pid && a.mode === mode),
