@@ -3,6 +3,7 @@
 -- Rollback: migration-partner-api-004.down.sql
 --
 -- Adds:
+--   * api_partners.max_live_listings (default 2,000, per agreement),
 --   * key scopes and expiry on api_partner_keys (two NULLable columns; NULL
 --     scopes = the key keeps the access it has today, so existing keys work),
 --   * the stored listing and a held change on api_listing_state,
@@ -30,6 +31,10 @@ ALTER TABLE public.api_partner_keys
   ADD COLUMN scopes     TEXT[] CHECK (scopes <@ ARRAY['listings:read', 'listings:write', 'media:write', 'agents:write',
                                                      'webhooks:manage', 'leads:read', 'analytics:read']::TEXT[]),
   ADD COLUMN expires_at TIMESTAMPTZ;
+
+-- ── Partners: how many live listings the agreement allows ─────────────────
+ALTER TABLE public.api_partners
+  ADD COLUMN max_live_listings INTEGER NOT NULL DEFAULT 2000 CHECK (max_live_listings BETWEEN 0 AND 1000000);
 
 -- ── Listing state: the stored listing and a held change ───────────────────
 ALTER TABLE public.api_listing_state

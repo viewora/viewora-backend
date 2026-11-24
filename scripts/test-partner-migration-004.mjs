@@ -34,6 +34,8 @@ const ag = await one(`INSERT INTO api_partner_agents (partner_id, mode, external
 const sp = await one(`INSERT INTO properties DEFAULT VALUES RETURNING id`)
 const tr = await one(`INSERT INTO api_partner_tours (partner_id, mode, external_id, space_id, agent_id) VALUES ($1, 'live', 'HSE-0042', $2, $3) RETURNING id`, [p1.id, sp.id, ag.id])
 
+ok('partners get a live listing limit of 2000', (await one(`SELECT max_live_listings FROM api_partners`)).max_live_listings === 2000)
+
 // Keys: scopes and expiry
 await db.query(`INSERT INTO api_partner_keys (partner_id, mode, key_prefix, key_hash) VALUES ($1, 'live', 'vo_live_abcd', 'h1')`, [p1.id])
 ok('an existing-style key (no scopes) still inserts', (await one(`SELECT scopes FROM api_partner_keys`)).scopes === null)
@@ -106,6 +108,7 @@ ok('tour ref delete cascades to state and media',
 await db.exec(sql('migration-partner-api-004.down.sql'))
 const left = await one(`SELECT count(*)::int AS n FROM pg_class WHERE relname = ANY($1)`, [names])
 const cols = await one(`SELECT count(*)::int AS n FROM information_schema.columns WHERE (table_name = 'api_partner_keys' AND column_name IN ('scopes','expires_at'))
+  OR (table_name = 'api_partners' AND column_name = 'max_live_listings')
   OR (table_name = 'api_listing_state' AND column_name IN ('listing','pending_listing','reviewed_at','reviewed_by'))`)
 const fn = await one(`SELECT count(*)::int AS n FROM pg_proc WHERE proname = 'api_listing_commit'`)
 ok('rollback removes the tables, columns and function', left.n === 0 && cols.n === 0 && fn.n === 0)

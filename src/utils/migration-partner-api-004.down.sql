@@ -18,6 +18,9 @@ ALTER TABLE public.api_listing_state
   DROP COLUMN IF EXISTS pending_listing,
   DROP COLUMN IF EXISTS listing;
 
+ALTER TABLE public.api_partners
+  DROP COLUMN IF EXISTS max_live_listings;
+
 ALTER TABLE public.api_partner_keys
   DROP COLUMN IF EXISTS expires_at,
   DROP COLUMN IF EXISTS scopes;
