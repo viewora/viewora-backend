@@ -47,6 +47,10 @@ DECLARE
   v_photos    INT := 0;
   v_links     INT := 0;
   v_hotspots  INT := 0;
+  v_new_ids   UUID[] := '{}';  -- the scenes as they are now in the target tour, in order
+  v_err_msg   TEXT;
+  v_err_ctx   TEXT;
+  v_err_state TEXT;
 BEGIN
   IF p_source = p_target THEN
     RAISE EXCEPTION 'ADD_SAME_TOUR' USING ERRCODE = 'P0001';
@@ -108,6 +112,7 @@ BEGIN
     FROM ordered o
     WHERE s.id = o.id;
     GET DIAGNOSTICS v_scenes = ROW_COUNT;
+    v_new_ids := ARRAY(SELECT id FROM scenes WHERE id = ANY(v_ids) ORDER BY order_index);
 
     IF to_regclass('public.scene_spotlights') IS NOT NULL THEN
       EXECUTE 'UPDATE scene_spotlights SET space_id = $1 WHERE scene_id = ANY($2)' USING p_target, v_ids;
@@ -129,10 +134,12 @@ BEGIN
   ELSE
     -- ── COPY ──────────────────────────────────────────────────────────
     CREATE TEMP TABLE IF NOT EXISTS _scene_copy_map (old_id UUID PRIMARY KEY, new_id UUID NOT NULL, idx INT NOT NULL) ON COMMIT DROP;
-    DELETE FROM _scene_copy_map;
+    -- WHERE true: Supabase's API loads pg-safeupdate, which rejects a DELETE without WHERE (error 21000).
+    DELETE FROM _scene_copy_map WHERE true;
     INSERT INTO _scene_copy_map (old_id, new_id, idx)
     SELECT id, gen_random_uuid(), (v_offset + row_number() OVER (ORDER BY order_index, id) - 1)::int
     FROM scenes WHERE id = ANY(v_ids);
+    v_new_ids := ARRAY(SELECT new_id FROM _scene_copy_map ORDER BY idx);
 
     -- Scenes: every column copied generically (columns added later come along too).
     SELECT jsonb_agg(to_jsonb(s) || jsonb_build_object(
@@ -223,8 +230,14 @@ BEGIN
     'photos', v_photos,
     'hotspots', v_hotspots,
     'links_removed', v_links,
-    'copied', p_copy
+    'copied', p_copy,
+    'scene_ids', to_jsonb(v_new_ids)
   );
+EXCEPTION WHEN OTHERS THEN
+  -- Same error, plus WHERE it happened in DETAIL (the API only passes message/details/hint
+  -- through, and our logs show details). Everything above is rolled back either way.
+  GET STACKED DIAGNOSTICS v_err_msg = MESSAGE_TEXT, v_err_ctx = PG_EXCEPTION_CONTEXT, v_err_state = RETURNED_SQLSTATE;
+  RAISE EXCEPTION USING ERRCODE = v_err_state, MESSAGE = v_err_msg, DETAIL = left(v_err_ctx, 900);
 END;
 $$;
 

@@ -717,7 +717,7 @@ export default async function (fastify: FastifyInstance) {
       }
       if (msg.includes('MOVE_NO_SCENES')) return reply.code(400).send({ statusMessage: 'Pick at least one scene to move.' })
       if (msg.includes('MOVE_SOURCE_NOT_FOUND')) return reply.code(404).send({ statusMessage: 'Tour not found' })
-      fastify.log.error(error, 'move_scenes_to_new_tour failed')
+      fastify.log.error({ dbMessage: error.message, code: error.code, details: error.details, hint: error.hint }, 'move_scenes_to_new_tour failed')
       return reply.code(500).send({ statusMessage: 'Could not move the scenes. Nothing was changed.' })
     }
 
@@ -805,12 +805,12 @@ export default async function (fastify: FastifyInstance) {
       if (msg.includes('MOVE_SOURCE_NOT_FOUND') || msg.includes('ADD_TARGET_NOT_FOUND')) {
         return reply.code(404).send({ statusMessage: 'Tour not found' })
       }
-      fastify.log.error(error, 'add_scenes_to_tour failed')
+      fastify.log.error({ dbMessage: error.message, code: error.code, details: error.details, hint: error.hint }, 'add_scenes_to_tour failed')
       return reply.code(500).send({ statusMessage: 'Could not add the scenes. Nothing was changed.' })
     }
 
-    const result = data as { scenes: number; photos: number; hotspots: number; links_removed: number; copied: boolean }
-    request.log.info({ userId, source: source.id, target: target.id, ...result }, 'Added scenes to another tour')
+    const result = data as { scenes: number; photos: number; hotspots: number; links_removed: number; copied: boolean; scene_ids?: string[] }
+    request.log.info({ userId, source: source.id, target: target.id, copied: result.copied, scenes: result.scenes, photos: result.photos }, 'Added scenes to another tour')
 
     await Promise.all([
       invalidateTourCache(fastify, source.id, source.slug),
@@ -823,6 +823,9 @@ export default async function (fastify: FastifyInstance) {
       space: { id: target.id, slug: target.slug, title: target.title },
       copied: result.copied,
       added: { scenes: result.scenes, photos: result.photos },
+      // Ids in the other tour, in order: the editor opens the first one. Empty before
+      // the migration that returns them has run.
+      scene_ids: result.scene_ids ?? [],
       links_removed: result.links_removed,
     })
   })
