@@ -18,3 +18,32 @@ export function sceneStoragePrefixes(
   }
   return [...prefixes]
 }
+
+/**
+ * Which of these R2 folders / keys some scene or upload row still uses — copies made
+ * by "Add to existing tour" (migration-add-scenes-to-tour.sql) share files with their
+ * originals, so delete routes skip anything listed here. Without the migration no
+ * copies can exist, so a missing function means "nothing shared".
+ */
+export async function filesStillUsed(
+  supabase: { rpc: (fn: string, args: any) => PromiseLike<{ data: any; error: any }> },
+  prefixes: string[],
+  keys: string[],
+  skipMediaIds: string[] = [],
+  log?: { warn: (obj: any, msg?: string) => void },
+): Promise<Set<string>> {
+  if (!prefixes.length && !keys.length) return new Set()
+  const { data, error } = await supabase.rpc('files_still_used', {
+    p_prefixes: prefixes, p_keys: keys, p_skip_media: skipMediaIds,
+  })
+  if (error) {
+    const missing = error.code === 'PGRST202' || error.code === '42883'
+    if (!missing) {
+      // Unknown state: keep everything rather than risk deleting a file another tour shows.
+      log?.warn(error, 'files_still_used failed — keeping the files')
+      return new Set([...prefixes, ...keys])
+    }
+    return new Set()
+  }
+  return new Set((data as string[] | null) ?? [])
+}

@@ -5,7 +5,7 @@ import { parseWithSchema } from '../utils/validation.js'
 import { invalidateSpaceCache, invalidateTourCache, purgeSceneTiles } from '../utils/cache.js'
 import { checkUserQuota, canCreateScene, quotaLimitMessage } from '../utils/quotas.js'
 import { recoverStuckScenes } from '../utils/sceneRecovery.js'
-import { sceneStoragePrefixes } from '../utils/sceneStorage.js'
+import { sceneStoragePrefixes, filesStillUsed } from '../utils/sceneStorage.js'
 
 // ── Param schemas ─────────────────────────────────────────────
 const sceneParamsSchema = z.object({ sceneId: z.string().uuid() })
@@ -391,7 +391,30 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       // Public tour cache first: it's what visitors see.
       await invalidateSpaceCache(fastify, spaceId).catch(() => {})
 
-      if (mediaRecord) {
+      // A copy of this scene in another tour ("Add to existing tour") shares its files.
+      const prefixes = sceneStoragePrefixes(spaceId, scene as any)
+      const shared = await filesStillUsed(
+        fastify.supabase as any, prefixes,
+        mediaRecord?.storage_key ? [mediaRecord.storage_key] : [],
+        mediaRecord ? [mediaRecord.id] : [], fastify.log,
+      )
+      const keepUpload = !!mediaRecord?.storage_key && shared.has(mediaRecord.storage_key)
+
+      if (mediaRecord && keepUpload && uploadedUrl) {
+        // Hand the upload row to a tour that still shows it, so storage stays counted
+        // and deleting that copy later frees the file.
+        try {
+          const { data: heir } = await fastify.supabase
+            .from('scenes').select('space_id')
+            .or(`raw_image_url.eq."${uploadedUrl}",original_raw_image_url.eq."${uploadedUrl}"`)
+            .limit(1).maybeSingle()
+          if (heir?.space_id) {
+            await fastify.supabase.from('property_media').update({ property_id: heir.space_id }).eq('id', mediaRecord.id)
+          }
+        } catch (err) {
+          fastify.log.warn(err, `Could not hand over the upload of scene ${sceneId}`)
+        }
+      } else if (mediaRecord) {
         try {
           await fastify.supabase.from('property_media').delete().eq('id', mediaRecord.id)
           if (mediaRecord.file_size_bytes) {
@@ -412,7 +435,8 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
       const bucketName = process.env.R2_BUCKET_NAME
       if (!bucketName) return
       // A scene moved from another tour keeps its files in that tour's folder.
-      for (const tilesPrefix of sceneStoragePrefixes(spaceId, scene as any)) {
+      for (const tilesPrefix of prefixes) {
+        if (shared.has(tilesPrefix)) continue
         try {
           // Paged: AI-edited scenes keep one tile set per version, easily >1000 objects
           let token: string | undefined
@@ -428,7 +452,7 @@ export default async function scenesRoutes(fastify: FastifyInstance) {
           fastify.log.error(err, `Failed to delete R2 tiles for scene ${sceneId}`)
         }
       }
-      if (mediaRecord?.storage_key) {
+      if (mediaRecord?.storage_key && !keepUpload) {
         try {
           await fastify.s3.send(new DeleteObjectCommand({ Bucket: bucketName, Key: mediaRecord.storage_key }))
         } catch (err) {

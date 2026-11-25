@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { checkStorageQuota, checkFileSizeLimit, isValidFileType, checkUserQuota } from '../utils/quotas.js'
 import { parseWithSchema } from '../utils/validation.js'
 import { scheduleMediaProcessing, updateUploadStatus, refreshMediaFlags } from '../utils/uploads.js'
+import { filesStillUsed } from '../utils/sceneStorage.js'
 
 const idParamsSchema = z.object({
   id: z.string().uuid(),
@@ -588,9 +589,13 @@ export default async function (fastify: FastifyInstance) {
       return reply.code(404).send({ statusMessage: 'Media not found or unauthorized' })
     }
 
-    // 2. Delete from Cloudflare R2
+    // 2. Delete from Cloudflare R2 — unless a copy in another tour still uses the file
+    // ("Add to existing tour" copies photos and scenes without copying files).
     const bucketName = process.env.R2_BUCKET_NAME
-    if (bucketName && media.storage_key) {
+    const shared = media.storage_key
+      ? await filesStillUsed(fastify.supabase as any, [], [media.storage_key], [media.id], fastify.log)
+      : new Set<string>()
+    if (bucketName && media.storage_key && !shared.has(media.storage_key)) {
       try {
         const deleteCommand = new DeleteObjectCommand({
           Bucket: bucketName,

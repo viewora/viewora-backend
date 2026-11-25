@@ -7,7 +7,7 @@ import { parseWithSchema } from '../utils/validation.js'
 import { sendTourPublishedEmail } from '../email/index.js'
 import { invalidateSpaceCache, invalidateTourCache, purgeSceneTiles } from '../utils/cache.js'
 import { randomUUID } from 'node:crypto'
-import { sceneStoragePrefixes } from '../utils/sceneStorage.js'
+import { sceneStoragePrefixes, filesStillUsed } from '../utils/sceneStorage.js'
 import { generateListingDescription } from '../utils/aiDescription.js'
 import { failureReason } from '../utils/gemini.js'
 import { attachNadirCover, nadirCoverSchema, readNadirCover } from '../utils/nadirCover.js'
@@ -126,6 +126,16 @@ const moveScenesBodySchema = z.object({
   // Publish the new tour at its own link straight away (the editor defaults this
   // to whether the source tour is live).
   publish: z.boolean().default(true),
+})
+
+// Copy or move scenes (and chosen photos) into another tour the owner already has —
+// see utils/migration-add-scenes-to-tour.sql for exactly what is copied or moved.
+const addScenesBodySchema = z.object({
+  target_id: uuidSchema,
+  scene_ids: z.array(uuidSchema).min(1).max(1000),
+  photo_ids: z.array(uuidSchema).max(1000).default([]),
+  // true: the scenes stay here too (shared common areas); false: they leave this tour.
+  copy: z.boolean().default(true),
 })
 
 /** First free slug among base, base-2, base-3…, so the new tour gets a readable link. */
@@ -445,7 +455,7 @@ export default async function (fastify: FastifyInstance) {
     ] = await Promise.all([
       fastify.supabase
         .from('property_media')
-        .select('id, storage_key, file_size_bytes, properties!inner(user_id)')
+        .select('id, media_type, public_url, storage_key, file_size_bytes, properties!inner(user_id)')
         .eq('property_id', id)
         .eq('properties.user_id', userId),
       fastify.supabase
@@ -457,6 +467,22 @@ export default async function (fastify: FastifyInstance) {
     if (mediaFetchErr) {
       return reply.code(500).send({ statusMessage: 'Failed to load space media' })
     }
+
+    // 1b. Panorama uploads that a scene in ANOTHER tour still shows (a copy made with
+    // "Add to existing tour") go to that tour instead of being deleted with this one.
+    const handedOver = new Set<string>()
+    for (const m of (mediaItems ?? []) as any[]) {
+      if (m.media_type !== 'panorama' || !m.public_url) continue
+      const { data: heir } = await fastify.supabase
+        .from('scenes').select('space_id')
+        .neq('space_id', id)
+        .or(`raw_image_url.eq."${m.public_url}",original_raw_image_url.eq."${m.public_url}"`)
+        .limit(1).maybeSingle()
+      if (!heir?.space_id) continue
+      const { error: moveErr } = await fastify.supabase.from('property_media').update({ property_id: heir.space_id }).eq('id', m.id)
+      if (!moveErr) handedOver.add(m.id)
+    }
+    const ownMedia = ((mediaItems ?? []) as any[]).filter(m => !handedOver.has(m.id))
 
     // 2. Delete DB record first — if this fails we abort before touching R2.
     // R2 cleanup after a successful DB delete is best-effort; orphan scheduler recovers leftovers.
@@ -472,8 +498,14 @@ export default async function (fastify: FastifyInstance) {
 
     // 3. Cleanup R2 — property_media objects (best-effort after confirmed DB delete)
     const bucketName = process.env.R2_BUCKET_NAME
-    if (bucketName && mediaItems && mediaItems.length > 0) {
-      const keys = mediaItems.filter(m => m.storage_key).map(m => ({ Key: m.storage_key as string }))
+    // Files a copy in another tour still uses are kept (utils/sceneStorage.ts).
+    const scenePrefixes = (sceneItems ?? []).flatMap(scene => sceneStoragePrefixes(id, scene as any))
+    const shared = await filesStillUsed(
+      fastify.supabase as any, scenePrefixes,
+      ownMedia.filter(m => m.storage_key).map(m => m.storage_key as string), ownMedia.map(m => m.id), fastify.log,
+    )
+    if (bucketName && ownMedia.length > 0) {
+      const keys = ownMedia.filter(m => m.storage_key && !shared.has(m.storage_key)).map(m => ({ Key: m.storage_key as string }))
       if (keys.length > 0) {
         try {
           await fastify.s3.send(new DeleteObjectsCommand({ Bucket: bucketName, Delete: { Objects: keys } }))
@@ -488,6 +520,7 @@ export default async function (fastify: FastifyInstance) {
       const { ListObjectsV2Command } = await import('@aws-sdk/client-s3')
       // A scene moved in from another tour keeps its files in that tour's folder.
       await Promise.all(sceneItems.flatMap((scene) => sceneStoragePrefixes(id, scene as any).map(async (prefix) => {
+        if (shared.has(prefix)) return
         try {
           const listed = await fastify.s3.send(new ListObjectsV2Command({ Bucket: bucketName, Prefix: prefix }))
           const objects = (listed.Contents ?? []).filter(o => o.Key).map(o => ({ Key: o.Key as string }))
@@ -501,8 +534,8 @@ export default async function (fastify: FastifyInstance) {
     }
 
     // 4. Update Quotas (tour count is recounted by a DB trigger; storage still via RPC)
-    if (mediaItems && mediaItems.length > 0) {
-      const totalSize = mediaItems.reduce((acc, item) => acc + Number(item.file_size_bytes || 0), 0)
+    if (ownMedia.length > 0) {
+      const totalSize = ownMedia.reduce((acc, item) => acc + Number(item.file_size_bytes || 0), 0)
       if (totalSize > 0) {
         await fastify.supabase.rpc('decrement_storage_usage', { u_id: userId, bytes: totalSize })
       }
@@ -702,6 +735,94 @@ export default async function (fastify: FastifyInstance) {
     return reply.code(201).send({
       space: { id: result.id, slug: result.slug, title: body.title, is_published: !!result.slug },
       moved: { scenes: result.scenes, photos: result.photos },
+      links_removed: result.links_removed,
+    })
+  })
+
+  // ADD SCENES TO ANOTHER EXISTING TOUR — copy (they stay here too, e.g. the
+  // entrance, lift and stairs two units share) or move. One transaction in the
+  // database (add_scenes_to_tour). Files are never copied; copies point at the same
+  // R2 files and the delete routes keep files a copy still uses.
+  fastify.post('/:id/add-scenes-to-tour', {
+    preHandler: fastify.authenticate,
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
+    const userId = (request.user as any).sub
+    const params = parseWithSchema(reply, idParamsSchema, request.params)
+    if (!params) return
+    const body = parseWithSchema(reply, addScenesBodySchema, request.body)
+    if (!body) return
+    if (body.target_id === params.id) return reply.code(400).send({ statusMessage: 'Pick a different tour.' })
+
+    const quotaCtx = await checkUserQuota(fastify, userId)
+    if (quotaCtx.isGrace || !quotaCtx.canWrite) {
+      return reply.code(403).send({ statusMessage: 'Your subscription is not active. Please check your billing status.' })
+    }
+
+    const { data: tours } = await fastify.supabase
+      .from('properties')
+      .select('id, slug, title')
+      .in('id', [params.id, body.target_id])
+      .eq('user_id', userId)
+    const source = (tours ?? []).find((t: any) => t.id === params.id)
+    const target = (tours ?? []).find((t: any) => t.id === body.target_id)
+    if (!source) return reply.code(404).send({ statusMessage: 'Tour not found' })
+    if (!target) return reply.code(404).send({ statusMessage: 'The other tour was not found in your account.' })
+
+    // Scenes-per-tour limit applies to the tour receiving them.
+    const max = quotaCtx.plan.max_scenes_per_tour
+    if (max !== null && max !== undefined) {
+      const { count } = await fastify.supabase
+        .from('scenes').select('id', { count: 'exact', head: true }).eq('space_id', target.id)
+      if ((count ?? 0) + new Set(body.scene_ids).size > max) {
+        return reply.code(403).send({
+          statusMessage: `${quotaLimitMessage(quotaCtx.plan, 'scenes')} “${target.title}” has ${count ?? 0} scenes.`,
+          code: 'SCENE_LIMIT_REACHED',
+          limit: max,
+        })
+      }
+    }
+
+    const { data, error } = await fastify.supabase.rpc('add_scenes_to_tour', {
+      p_user: userId,
+      p_source: source.id,
+      p_target: target.id,
+      p_scene_ids: body.scene_ids,
+      p_photo_ids: body.photo_ids,
+      p_copy: body.copy,
+    })
+    if (error) {
+      if (error.code === 'PGRST202' || error.code === '42883') {
+        fastify.log.error(error, 'add_scenes_to_tour missing — run migration-add-scenes-to-tour.sql')
+        return reply.code(503).send({ statusMessage: 'Adding scenes to another tour is not switched on yet. Please try again later.' })
+      }
+      const msg = error.message ?? ''
+      if (msg.includes('MOVE_SCENE_NOT_IN_TOUR') || msg.includes('MOVE_PHOTO_NOT_IN_TOUR')) {
+        return reply.code(409).send({ statusMessage: 'Some of these scenes or photos changed meanwhile. Reload and try again.' })
+      }
+      if (msg.includes('MOVE_NO_SCENES')) return reply.code(400).send({ statusMessage: 'Pick at least one scene.' })
+      if (msg.includes('ADD_SAME_TOUR')) return reply.code(400).send({ statusMessage: 'Pick a different tour.' })
+      if (msg.includes('MOVE_SOURCE_NOT_FOUND') || msg.includes('ADD_TARGET_NOT_FOUND')) {
+        return reply.code(404).send({ statusMessage: 'Tour not found' })
+      }
+      fastify.log.error(error, 'add_scenes_to_tour failed')
+      return reply.code(500).send({ statusMessage: 'Could not add the scenes. Nothing was changed.' })
+    }
+
+    const result = data as { scenes: number; photos: number; hotspots: number; links_removed: number; copied: boolean }
+    request.log.info({ userId, source: source.id, target: target.id, ...result }, 'Added scenes to another tour')
+
+    await Promise.all([
+      invalidateTourCache(fastify, source.id, source.slug),
+      invalidateTourCache(fastify, target.id, target.slug),
+      ...(body.copy ? [] : body.scene_ids.map(id => purgeSceneTiles(fastify, id))),
+      fastify.redis ? fastify.redis.del(`billing:status:${userId}`).catch(() => {}) : Promise.resolve(),
+    ])
+
+    return reply.send({
+      space: { id: target.id, slug: target.slug, title: target.title },
+      copied: result.copied,
+      added: { scenes: result.scenes, photos: result.photos },
       links_removed: result.links_removed,
     })
   })
